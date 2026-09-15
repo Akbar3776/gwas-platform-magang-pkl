@@ -1,0 +1,21 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local environment files; keep templates tracked
+.env
+.env.*
+!.env.example
+
+# Test and tooling output
+playwright-report/
+test-results/
+*.log
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

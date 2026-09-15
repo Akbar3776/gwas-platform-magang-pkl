@@ -1,0 +1,155 @@
+# ==============================================================================
+# GWAS Pipeline - Development Docker Compose
+# Services: FastAPI (backend), PostgreSQL, Redis, Celery Worker
+# ==============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # FastAPI Backend
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: gwas_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../backend/.env
+    environment:
+      - DATABASE_URL=postgresql://gwas_user:gwas_password@db:5432/gwas_db
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - STORAGE_ROOT=/data/storage
+    volumes:
+      - ../backend/app:/app/app              # live-reload source code saat dev
+      - vcf_storage:/data/storage             # shared storage untuk file VCF & hasil
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - gwas_network
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL - metadata (users, datasets, jobs, results)
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:15-alpine
+    container_name: gwas_postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=gwas_user
+      - POSTGRES_PASSWORD=gwas_password
+      - POSTGRES_DB=gwas_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gwas_user -d gwas_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - gwas_network
+
+  # ---------------------------------------------------------------------------
+  # Redis - Celery broker + result backend + pub/sub progress channel
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: gwas_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - gwas_network
+
+  # ---------------------------------------------------------------------------
+  # Celery Worker - eksekusi subprocess PLINK/GEMMA (normalisasi, QC, imputasi, GWAS)
+  # ---------------------------------------------------------------------------
+  celery_worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: gwas_celery_worker
+    restart: unless-stopped
+    env_file:
+      - ../backend/.env
+    environment:
+      - DATABASE_URL=postgresql://gwas_user:gwas_password@db:5432/gwas_db
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - STORAGE_ROOT=/data/storage
+    volumes:
+      - ../backend/app:/app/app
+      - vcf_storage:/data/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Catatan: di produksi, pecah worker per-queue (normalization, qc, imputation, gwas)
+    # dengan concurrency dan resource limit berbeda. Untuk dev, satu worker generik cukup.
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+    networks:
+      - gwas_network
+
+  # ---------------------------------------------------------------------------
+  # Flower - observability dashboard for Celery workers and tasks
+  # ---------------------------------------------------------------------------
+  flower:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: gwas_flower
+    restart: unless-stopped
+    env_file:
+      - ../backend/.env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - FLOWER_PORT=5555
+    command: celery -A app.tasks.celery_app flower --address=0.0.0.0 --port=5555
+    ports:
+      - "5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+      celery_worker:
+        condition: service_started
+    networks:
+      - gwas_network
+
+volumes:
+  postgres_data:
+  redis_data:
+  vcf_storage:
+
+networks:
+  gwas_network:
+    driver: bridge

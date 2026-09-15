@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<title>Laporan Ringkasan GWAS - {{ job_id }}</title>
+<style>
+    @page {
+        size: A4;
+        margin: 2.2cm 1.8cm;
+        @bottom-center {
+            content: "Halaman " counter(page) " dari " counter(pages);
+            font-size: 9px;
+            color: #888;
+        }
+    }
+    body {
+        font-family: "Helvetica Neue", Arial, sans-serif;
+        color: #1a1a1a;
+        font-size: 11px;
+        line-height: 1.5;
+    }
+    h1 {
+        font-size: 20px;
+        margin-bottom: 2px;
+        color: #0f172a;
+    }
+    .subtitle {
+        color: #64748b;
+        font-size: 11px;
+        margin-bottom: 20px;
+    }
+    h2 {
+        font-size: 14px;
+        border-bottom: 2px solid #0f172a;
+        padding-bottom: 4px;
+        margin-top: 24px;
+        margin-bottom: 10px;
+        color: #0f172a;
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 6px;
+    }
+    th, td {
+        border: 1px solid #d1d5db;
+        padding: 6px 8px;
+        text-align: left;
+    }
+    th {
+        background-color: #f1f5f9;
+        font-weight: 600;
+    }
+    .stat-grid {
+        display: flex;
+        gap: 12px;
+        margin-top: 8px;
+    }
+    .stat-box {
+        border: 1px solid #d1d5db;
+        border-radius: 4px;
+        padding: 10px 14px;
+        flex: 1;
+    }
+    .stat-box .value {
+        font-size: 18px;
+        font-weight: 700;
+        color: #0f172a;
+    }
+    .stat-box .label {
+        font-size: 9px;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+    }
+    .p-value {
+        font-family: "Courier New", monospace;
+    }
+    .footer-note {
+        margin-top: 24px;
+        font-size: 9px;
+        color: #94a3b8;
+    }
+</style>
+</head>
+<body>
+
+    <h1>Laporan Ringkasan Analisis GWAS</h1>
+    <div class="subtitle">
+        Job ID: {{ job_id }} &middot; Dibuat pada {{ generated_at }} &middot; Tipe pipeline: {{ pipeline_type }}
+    </div>
+
+    <h2>1. Parameter Analisis</h2>
+    <table>
+        <thead>
+            <tr><th>Parameter</th><th>Nilai</th></tr>
+        </thead>
+        <tbody>
+            {% for key, value in parameters.items() %}
+            <tr>
+                <td>{{ key }}</td>
+                <td>{{ value }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="2">Tidak ada parameter tercatat.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <h2>2. Ringkasan Quality Control (QC)</h2>
+    <div class="stat-grid">
+        <div class="stat-box">
+            <div class="value">{{ qc_summary.samples_total if qc_summary.samples_total is not none else "-" }}</div>
+            <div class="label">Total Sampel</div>
+        </div>
+        <div class="stat-box">
+            <div class="value">{{ qc_summary.samples_passed if qc_summary.samples_passed is not none else "-" }}</div>
+            <div class="label">Lolos Filter</div>
+        </div>
+        <div class="stat-box">
+            <div class="value">{{ qc_summary.samples_failed if qc_summary.samples_failed is not none else "-" }}</div>
+            <div class="label">Gagal Filter</div>
+        </div>
+    </div>
+
+    <h2>3. Top 10 SNP Paling Signifikan</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Kromosom</th>
+                <th>SNP ID</th>
+                <th>Posisi (BP)</th>
+                <th>P-value</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for snp in top_snps %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ snp.chr }}</td>
+                <td>{{ snp.snp }}</td>
+                <td>{{ snp.bp }}</td>
+                <td class="p-value">{{ "%.3e"|format(snp.p_value) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">Tidak ada data SNP signifikan yang dapat ditampilkan.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <h2>4. Riwayat Tahapan Pipeline</h2>
+    <table>
+        <thead>
+            <tr><th>Tahap</th><th>Status</th><th>Selesai Pada</th></tr>
+        </thead>
+        <tbody>
+            {% for step in steps %}
+            <tr>
+                <td>{{ step.step_name }}</td>
+                <td>{{ step.status }}</td>
+                <td>{{ step.completed_at if step.completed_at else "-" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="footer-note">
+        Laporan ini dibuat otomatis oleh sistem pipeline GWAS. Data mentah lengkap tersedia
+        melalui fitur "Download Full Results (ZIP)" pada dashboard.
+    </div>
+
+</body>
+</html>

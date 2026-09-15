@@ -1,0 +1,67 @@
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python virtual environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node dependencies and frontend build output
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+*.tsbuildinfo
+
+# Runtime logs and local application data
+*.log
+logs/
+storage/
+backend/storage/
+backend/data/
+backend/.celery/
+
+# Large genomics inputs, intermediate files, and generated results
+*.vcf
+*.vcf.gz
+*.bcf
+*.bcf.csi
+*.tbi
+*.bed
+*.bim
+*.fam
+*.assoc
+*.assoc.txt
+*.parquet
+*.pgen
+*.pvar
+*.psam
+*.zip
+
+# Local database and test artifacts
+*.sqlite
+*.sqlite3
+test-results/
+playwright-report/
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

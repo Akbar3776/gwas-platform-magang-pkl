@@ -1,0 +1,35 @@
+# Local secrets; keep .env.example tracked
+.env
+.env.*
+!.env.example
+
+# Python environments, caches, coverage, and logs
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.log
+
+# Local runtime data and genomics outputs
+storage/
+data/
+*.vcf
+*.vcf.gz
+*.bcf
+*.tbi
+*.csi
+*.bed
+*.bim
+*.fam
+*.assoc
+*.assoc.txt
+*.parquet
+
+# Generated Python artifacts in migration tooling
+alembic/__pycache__/

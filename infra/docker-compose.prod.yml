@@ -1,0 +1,149 @@
+services:
+  nginx:
+    build:
+      context: ..
+      dockerfile: infra/nginx/Dockerfile
+    container_name: gwas_nginx_prod
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - gwas_network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: gwas_backend_prod
+    restart: unless-stopped
+    env_file:
+      - ../backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://gwas_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/gwas_db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      STORAGE_ROOT: /data/storage
+    volumes:
+      - vcf_storage:/data/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >-
+      gunicorn app.main:app
+      --bind 0.0.0.0:8000
+      --workers 2
+      --worker-class uvicorn.workers.UvicornWorker
+      --access-logfile -
+      --error-logfile -
+      --timeout 0
+    networks:
+      - gwas_network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  celery_worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: gwas_celery_worker_prod
+    restart: unless-stopped
+    env_file:
+      - ../backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://gwas_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/gwas_db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      STORAGE_ROOT: /data/storage
+    volumes:
+      - vcf_storage:/data/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+    networks:
+      - gwas_network
+
+  flower:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: gwas_flower_prod
+    restart: unless-stopped
+    env_file:
+      - ../backend/.env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+    command: celery -A app.tasks.celery_app flower --address=0.0.0.0 --port=5555
+    ports:
+      - "127.0.0.1:5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+      celery_worker:
+        condition: service_started
+    networks:
+      - gwas_network
+
+  db:
+    image: postgres:15-alpine
+    container_name: gwas_postgres_prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gwas_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-gwas_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - gwas_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: gwas_redis_prod
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - gwas_network
+
+volumes:
+  postgres_data:
+  redis_data:
+  vcf_storage:
+
+networks:
+  gwas_network:
+    driver: bridge

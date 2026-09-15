@@ -1,0 +1,14 @@
+**/node_modules/
+**/dist/
+**/__pycache__/
+**/.venv/
+**/venv/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+backend/.env
+backend/.env.*
+.git/
+.gitignore
+storage/
+*.log
