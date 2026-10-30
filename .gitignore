@@ -33,6 +33,7 @@ logs/
 storage/
 backend/storage/
 backend/data/
+backend/tests/fixtures/data/
 backend/.celery/
 
 # Large genomics inputs, intermediate files, and generated results
@@ -53,6 +54,7 @@ backend/.celery/
 *.zip
 
 # Local database and test artifacts
+*.db
 *.sqlite
 *.sqlite3
 test-results/

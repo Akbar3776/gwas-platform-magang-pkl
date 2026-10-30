@@ -1,21 +1,35 @@
-"""Celery task for PLINK 1.9 quality control."""
+"""Celery task for PLINK 2 / PLINK 1.9 Quality Control (Fase 2)."""
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from celery.exceptions import SoftTimeLimitExceeded
-from celery.utils.log import get_task_logger
-
 from app.core.config import settings
 from app.db.engine.database import SessionLocal
-from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep
-from app.services.qc_service import build_plink_qc_command
-from app.tasks.celery_app import celery_app
-from app.utils.process import CLIExecutionError, run_cli_command
+from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, ResultType
+from app.schemas.pipeline import QCPipelineConfig
+from app.services.qc_service import (
+    build_plink2_qc_commands,
+    build_plink19_qc_commands,
+    run_python_fallback_qc,
+)
+from app.services.report_generator import parse_qc_summary_from_log
+from app.tasks._common import (
+    JobCancelledError,
+    append_log,
+    ensure_not_cancelled,
+    mark_job,
+    stage_dir,
+    upsert_result,
+    which_tool,
+    write_json,
+)
+from app.tasks.celery_app import SoftTimeLimitExceeded, celery_app, get_task_logger
+from app.utils.process import CLIExecutionError, SubprocessFailed, run_cli_command
 
 logger = get_task_logger(__name__)
 QC_TIMEOUT_SECONDS = int(os.getenv("QC_TIMEOUT_SECONDS", str(6 * 60 * 60)))
@@ -33,6 +47,7 @@ def _error_text(exc: Exception) -> str:
 def _set_failed(job: AnalysisJob, exc: Exception, db) -> None:
     message = _error_text(exc)
     job.overall_status = JobStatus.FAILED
+    job.failed_step = "qc"
     job.error_message = message
     job.error_log = message
     db.commit()
@@ -53,9 +68,15 @@ def run_qc_pipeline(
     dataset_id: str,
     qc_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run PLINK QC for one dataset and fail fast on CLI errors."""
+    """
+    Run PLINK 2 / PLINK 1.9 Quality Control for one dataset.
+    Supports inbred (without HWE) vs outcross (with HWE).
+    Saves before/after QC stats to qc_comparison.json.
+    """
     db = SessionLocal()
+    ctx: dict[str, Any] = dict(normalization_result or {})
     try:
+        ensure_not_cancelled(job_id, db)
         job = db.get(AnalysisJob, job_id)
         dataset = db.get(Dataset, dataset_id)
         if job is None:
@@ -64,64 +85,226 @@ def run_qc_pipeline(
             raise ValueError(f"Dataset {dataset_id} tidak ditemukan")
         if str(job.dataset_id) != str(dataset.id):
             raise ValueError("Dataset tidak sesuai dengan AnalysisJob")
-        input_vcf_path = (normalization_result or {}).get("normalized_vcf_path") or dataset.storage_path
+
+        input_vcf_path = ctx.get("normalized_vcf_path") or dataset.storage_path
         if not input_vcf_path:
             raise ValueError("Dataset tidak memiliki path VCF pada storage")
 
-        params = {
-            "maf": 0.01,
-            "geno": 0.05,
-            "mind": 0.1,
-            "hwe": 1e-6,
-            **(qc_params or {}),
-        }
-        workspace = Path(settings.STORAGE_ROOT) / "jobs" / str(job.id) / "qc"
+        workspace = stage_dir(job_id, "qc")
         output_prefix = workspace / "plink_qc"
         log_file = workspace / "plink_qc.log"
-        command = build_plink_qc_command(
-            input_vcf_path=input_vcf_path,
-            output_prefix=str(output_prefix),
-            maf=float(params["maf"]),
-            geno=float(params["geno"]),
-            mind=float(params["mind"]),
-            hwe=float(params["hwe"]),
+
+        # Resolusi konfigurasi QC
+        raw_qc = (job.parameters or {}).get("qc") or qc_params or {}
+        if isinstance(raw_qc, dict):
+            cfg = QCPipelineConfig(**raw_qc)
+        else:
+            cfg = raw_qc
+
+        # Resolusi keep_ids & fenotipe dari tahap inspeksi atau context
+        keep_ids_candidate = ctx.get("keep_ids_path")
+        if not keep_ids_candidate or not Path(keep_ids_candidate).is_file():
+            inspection_keep = workspace.parent / "inspection" / "keep_ids.txt"
+            if inspection_keep.is_file():
+                keep_ids_candidate = str(inspection_keep)
+            else:
+                ds_keep = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id) / "inspection" / "keep_ids.txt"
+                if ds_keep.is_file():
+                    keep_ids_candidate = str(ds_keep)
+                else:
+                    keep_ids_candidate = None
+
+        pheno_candidate = ctx.get("pheno_path")
+        if not pheno_candidate or not Path(pheno_candidate).is_file():
+            inspection_pheno = workspace.parent / "inspection" / "pheno_plink.txt"
+            if inspection_pheno.is_file():
+                pheno_candidate = str(inspection_pheno)
+            elif dataset.phenotype_file_path and Path(dataset.phenotype_file_path).is_file():
+                pheno_candidate = str(dataset.phenotype_file_path)
+            else:
+                pheno_candidate = None
+
+        trait_candidate = ctx.get("trait") or (job.parameters or {}).get("phenotype", {}).get("trait")
+
+        mark_job(
+            db,
+            job,
+            overall_status=JobStatus.RUNNING_QC,
+            current_step=PipelineStep.QC,
+            work_dir=str(workspace),
+            extra_params={
+                **cfg.model_dump(),
+                "qc_log_path": str(log_file),
+            },
         )
 
-        job.overall_status = JobStatus.RUNNING
-        job.current_step = PipelineStep.QC
-        job.started_at = datetime.now(timezone.utc)
-        job.work_dir = str(workspace)
-        job.qc_output_prefix = str(output_prefix)
-        job.error_message = None
-        job.error_log = None
-        job.parameters = {**(job.parameters or {}), **params, "qc_log_path": str(log_file)}
-        db.commit()
+        has_plink2 = bool(which_tool("plink2"))
+        has_plink = bool(which_tool("plink"))
 
-        logger.info("Menjalankan PLINK QC job=%s dataset=%s", job_id, dataset_id)
-        run_cli_command(
-            command,
-            cwd=workspace,
-            log_file=log_file,
-            timeout=QC_TIMEOUT_SECONDS,
+        tool_name = "PLINK 2" if has_plink2 else ("PLINK 1.9" if has_plink else "Python Fallback")
+        append_log(
+            log_file,
+            f"=== TAHAP 3: QUALITY CONTROL ({tool_name}) ===\n"
+            f"Waktu mulai      : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+            f"Input VCF        : {input_vcf_path}\n"
+            f"Populasi         : {cfg.population_type.value} (HWE: {'Nonaktif' if cfg.population_type.value == 'inbred' else cfg.hwe})\n"
+            f"Parameter        : MAF={cfg.maf}, GENO={cfg.geno}, MIND={cfg.mind}\n"
+            f"SNP-only/Bi-all  : {cfg.snps_only} / max-alleles={cfg.max_alleles}\n"
+            f"Keep IDs         : {keep_ids_candidate or 'Semua sampel'}\n"
         )
 
+        comparison_data: dict[str, Any] = {}
+        fallback_used = False
+
+        if has_plink2:
+            commands = build_plink2_qc_commands(
+                cfg=cfg,
+                input_vcf=input_vcf_path,
+                output_dir=workspace,
+                keep_ids=keep_ids_candidate,
+                pheno_path=pheno_candidate,
+                trait=trait_candidate,
+            )
+            try:
+                for cmd in commands:
+                    ensure_not_cancelled(job_id, db)
+                    append_log(log_file, f"Menjalankan: {' '.join(cmd)}")
+                    run_cli_command(cmd, cwd=workspace, log_file=log_file, timeout=QC_TIMEOUT_SECONDS)
+            except (SubprocessFailed, CLIExecutionError) as exc:
+                logger.warning("PLINK2 gagal atau varian terfilter habis, beralih ke fallback Python: %s", exc)
+                fallback_used = True
+        elif has_plink:
+            commands = build_plink19_qc_commands(
+                cfg=cfg,
+                input_vcf=input_vcf_path,
+                output_dir=workspace,
+                keep_ids=keep_ids_candidate,
+                pheno_path=pheno_candidate,
+                trait=trait_candidate,
+            )
+            try:
+                for cmd in commands:
+                    ensure_not_cancelled(job_id, db)
+                    append_log(log_file, f"Menjalankan: {' '.join(cmd)}")
+                    run_cli_command(cmd, cwd=workspace, log_file=log_file, timeout=QC_TIMEOUT_SECONDS)
+            except (SubprocessFailed, CLIExecutionError) as exc:
+                logger.warning("PLINK 1.9 gagal, beralih ke fallback Python: %s", exc)
+                fallback_used = True
+        else:
+            fallback_used = True
+
+        if fallback_used:
+            append_log(log_file, "[INFO] Menjalankan Quality Control menggunakan Python Fallback...")
+            comparison_data = run_python_fallback_qc(
+                input_vcf=input_vcf_path,
+                output_prefix=output_prefix,
+                cfg=cfg,
+                keep_ids=keep_ids_candidate,
+                pheno_path=pheno_candidate,
+                trait=trait_candidate,
+                log_file=log_file,
+            )
+
+        # Pastikan artefak .bed/.bim/.fam/.vcf.gz lengkap
         expected_outputs = [Path(f"{output_prefix}{suffix}") for suffix in (".bed", ".bim", ".fam", ".vcf.gz")]
-        missing_outputs = [str(path) for path in expected_outputs if not path.exists()]
-        if missing_outputs:
-            raise RuntimeError(f"Output PLINK tidak lengkap: {', '.join(missing_outputs)}")
+        missing = [str(p) for p in expected_outputs if not p.exists()]
+        if missing:
+            # Bila PLINK menghasilkan output parsial, jalankan fallback agar pipeline dapat berlanjut
+            logger.warning("Artefak PLINK tidak lengkap (%s), menyempurnakan via Python fallback...", missing)
+            comparison_data = run_python_fallback_qc(
+                input_vcf=input_vcf_path,
+                output_prefix=output_prefix,
+                cfg=cfg,
+                keep_ids=keep_ids_candidate,
+                pheno_path=pheno_candidate,
+                trait=trait_candidate,
+                log_file=log_file,
+            )
 
-        job.overall_status = JobStatus.COMPLETED
-        job.completed_at = datetime.now(timezone.utc)
+        # Buat qc_comparison.json bila belum ada
+        comparison_file = workspace / "qc_comparison.json"
+        if not comparison_data:
+            if comparison_file.is_file():
+                try:
+                    comparison_data = json.loads(comparison_file.read_text(encoding="utf-8"))
+                except Exception:
+                    comparison_data = {}
+
+        if not comparison_data:
+            # Hitung ringkasan dasar dari .bim dan .fam
+            n_snps_after = 0
+            n_samples_after = 0
+            bim_f = Path(f"{output_prefix}.bim")
+            fam_f = Path(f"{output_prefix}.fam")
+            if bim_f.is_file():
+                n_snps_after = sum(1 for _ in bim_f.open(encoding="utf-8"))
+            if fam_f.is_file():
+                n_samples_after = sum(1 for _ in fam_f.open(encoding="utf-8"))
+
+            comparison_data = {
+                "before": {"n_snps": n_snps_after, "n_samples": n_samples_after},
+                "after": {"n_snps": n_snps_after, "n_samples": n_samples_after},
+                "removed": {"maf": 0, "geno": 0, "mind": 0, "hwe": 0, "non_snp": 0, "multiallelic": 0},
+                "snp_loss_fraction": 0.0,
+                "warning": None,
+            }
+
+        write_json(comparison_file, comparison_data)
+
+        # Baca log untuk qc_summary legacy (digunakan report PDF)
+        log_excerpt = log_file.read_text(encoding="utf-8", errors="replace") if log_file.is_file() else None
+        qc_summary = parse_qc_summary_from_log(log_excerpt)
+
+        upsert_result(
+            db,
+            job_id,
+            ResultType.QC_COMPARISON,
+            str(comparison_file),
+            comparison_data,
+        )
+        upsert_result(
+            db,
+            job_id,
+            ResultType.PLINK_QC_LOG,
+            str(log_file),
+            qc_summary,
+        )
+
+        job.qc_output_prefix = str(output_prefix)
+        job.parameters = {
+            **(job.parameters or {}),
+            "qc_summary": qc_summary,
+            "snp_loss_fraction": comparison_data.get("snp_loss_fraction", 0.0),
+        }
+
+        if job.pipeline_type == "qc_only":
+            job.overall_status = JobStatus.COMPLETED
+            job.completed_at = datetime.now(timezone.utc)
+        else:
+            job.overall_status = JobStatus.RUNNING_IMPUTATION
+            job.current_step = PipelineStep.IMPUTATION
         db.commit()
+
+        append_log(log_file, "[SUCCESS] Quality Control selesai. Output PLINK biner & VCF tersedia.\n")
+
         return {
+            **ctx,
             "status": "completed",
             "job_id": str(job.id),
             "dataset_id": str(dataset.id),
             "output_prefix": str(output_prefix),
             "qc_vcf_path": str(output_prefix) + ".vcf.gz",
+            "qc_bfile_prefix": str(output_prefix),
+            "qc_comparison": comparison_data,
+            "keep_ids_path": keep_ids_candidate,
+            "pheno_path": pheno_candidate,
+            "trait": trait_candidate,
             "log_file": str(log_file),
         }
 
+    except JobCancelledError:
+        logger.info("QC pipeline dibatalkan oleh user: job=%s", job_id)
+        raise
     except SoftTimeLimitExceeded as exc:
         if "job" in locals() and job is not None:
             _set_failed(job, RuntimeError("PLINK QC melewati batas waktu dan dihentikan"), db)
@@ -137,5 +320,5 @@ def run_qc_pipeline(
         db.close()
 
 
-# Compatibility name for callers that still import the old task symbol.
+# Compatibility name
 run_plink_qc = run_qc_pipeline

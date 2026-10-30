@@ -1,274 +1,152 @@
-# Struktur Project GWAS Platform
+# 📂 Struktur Proyek & Panduan Komponen (`gwas-platform`)
 
-Dokumen ini merangkum struktur aktual repository `gwas-platform` dan fungsi
-komponen utamanya berdasarkan file yang tersedia saat ini.
+Dokumen ini menjelaskan struktur repositori **GWAS Web Platform** secara menyeluruh, mencakup **kegunaan, fungsi spesifik, interaksi antar-modul, dan alasan arsitektural** untuk setiap file di lapisan *Backend*, *Workers*, *Frontend*, dan *Infrastructure*.
 
-## Gambaran Umum
+---
 
-Project ini dirancang sebagai platform web untuk menjalankan pipeline analisis
-GWAS secara asynchronous:
-
-1. Frontend React menerima upload VCF dan menampilkan status pekerjaan.
-2. Backend FastAPI menyediakan API, autentikasi, metadata dataset, job, dan hasil.
-3. Celery menjalankan tahap komputasi berat seperti QC, imputasi, dan GWAS.
-4. PostgreSQL menyimpan metadata, sedangkan Redis menjadi broker dan result backend Celery.
-5. Volume Docker menyimpan file VCF, file intermediate, dan hasil analisis.
-
-## Tree Project
+## 🌳 1. Pohon Direktori Lengkap
 
 ```text
 gwas-platform/
-|-- README.md                         # Dokumentasi utama, deployment, dan testing
-|-- PROJECT_STRUCTURE.md              # Dokumentasi struktur project ini
-|-- .gitignore
-|-- .github/
-|   `-- workflows/
-|       `-- test.yml                  # CI lint, test, dan build
-|
-|-- backend/
-|   |-- Dockerfile                    # Image FastAPI + tool bioinformatika
-|   |-- .dockerignore                 # Mengecualikan secret dan artefak build
-|   |-- .env.example                  # Template environment backend
-|   |-- requirements.txt              # Dependensi Python utama
-|   |-- requirements-test.txt         # Dependensi Pytest, TestClient, Flake8
-|   |-- app/
-|   |   |-- main.py                   # Entry point FastAPI, CORS, /api/v1 router, health
-|   |   |-- requirements-addition.txt # Dependensi tambahan report/export
-|   |   |-- api/
-|   |   |   `-- routes/
-|   |   |       |-- auth.py            # Endpoint autentikasi
-|   |   |       |-- datasets_and_jobs_isolation_example.py
-|   |   |       |                       # Contoh isolasi akses data
-|   |   |       |-- export.py          # Endpoint export hasil
-|   |   |       |-- jobs.py            # Endpoint job dan status job
-|   |   |       |-- pipeline.py        # Endpoint trigger pipeline GWAS
-|   |   |       |-- reference_panels.py# Endpoint reference panel
-|   |   |       |-- report.py          # Endpoint pembuatan report
-|   |   |       |-- results.py         # Endpoint data hasil dan plot
-|   |   |       `-- upload.py          # Endpoint upload dataset/chunk
-|   |   |-- core/
-|   |   |   |-- config.py             # Konfigurasi dari environment/.env
-|   |   |   |-- logging_config.py     # Logging stdout untuk container
-|   |   |   |-- progress.py           # Boundary publikasi progress worker
-|   |   |   |-- resource_limits.py    # Perhitungan batas resource task
-|   |   |   `-- security.py           # Security dan autentikasi
-|   |   |-- db/
-|   |   |   |-- base.py               # Base SQLAlchemy
-|   |   |   `-- engine/
-|   |   |       |-- database.py       # Engine dan koneksi database
-|   |   |       `-- models.py         # Model User, Dataset, Job, Result
-|   |   |-- schemas/
-|   |   |   |-- jobs.py               # Schema request/response job
-|   |   |   |-- pipeline.py           # Schema pipeline
-|   |   |   |-- results.py            # Schema data hasil plot
-|   |   |   `-- upload.py             # Schema upload
-|   |   |-- services/
-|   |   |   |-- export_service.py     # Penyusunan file export
-|   |   |   |-- manhattan_parser.py   # Parsing data Manhattan Plot
-|   |   |   |-- qc_service.py         # Logika QC
-|   |   |   |-- report_generator.py   # Render report HTML ke PDF
-|   |   |   `-- upload_service.py     # Logika penyimpanan dan upload
-|   |   |-- tasks/
-|   |   |   |-- celery_app.py         # Instance dan konfigurasi Celery
-|   |   |   |-- gemma_tasks.py        # Task analisis GEMMA
-|   |   |   |-- imputation_tasks.py   # Task imputasi
-|   |   |   |-- pipeline_orchestrator.py # Penyusunan Celery chain
-|   |   |   |-- pipeline_tasks.py     # Task tahap-tahap pipeline
-|   |   |   |-- qc_tasks.py           # Task QC
-|   |   |   `-- upload_tasks.py       # Task finalisasi/upload asynchronous
-|   |   |-- templates/
-|   |   |   `-- report_template.html  # Template report hasil GWAS
-|   |   `-- utils/
-|   |       `-- process.py            # Utilitas eksekusi process/subprocess
-|   |-- alembic/                      # Direktori migrasi; belum ada file
-|   |-- tests/
-|   |   |-- test_jobs_api.py          # TestClient endpoint QC dengan mock Celery
-|   |   `-- test_process.py            # Test wrapper subprocess dengan mock Popen
-|   |-- .env                          # Environment lokal; jangan commit secret
-|   |-- IMPUTATION_NOTES.md           # Catatan konfigurasi worker imputasi
-|   `-- INTEGRATION_NOTES.md          # Catatan integrasi auth dan isolasi data
-|
-|-- frontend/
-|   |-- dist/                        # Output build produksi; artefak generated
-|   |-- public/                       # Asset public; belum ada file terdeteksi
-|   `-- src/
-|       |-- App.jsx                   # Layout dan routing aplikasi
-|       |-- main.jsx                  # Bootstrap React dan AuthProvider
-|       |-- api/
-|       |   |-- apiClient.js           # HTTP client umum
-|       |   |-- chunkedUpload.js       # API upload berbasis chunk
-|       |   |-- gwasApi.js             # API data hasil GWAS
-|       |   |-- httpClient.js          # Helper HTTP
-|       |   `-- jobsApi.js             # API job/QC
-|       |-- components/
-|       |   |-- GwasResultsPanel.jsx   # Panel tab Manhattan/QQ Plot
-|       |   |-- JobStatusTracker.jsx   # Tampilan progress job
-|       |   |-- ManhattanPlot.jsx      # Visualisasi Manhattan Plot
-|       |   |-- QQPlot.jsx             # Visualisasi QQ Plot
-|       |   |-- ResultDashboard.jsx    # Ringkasan dan download hasil
-|       |   |-- UploadProgressBar.jsx  # Progress upload
-|       |   |-- VcfUploader.jsx        # Komponen upload VCF
-|       |   `-- JobStatusTracker.test.jsx # Test RTL status tracker
-|       |-- context/
-|       |   `-- AuthContext.jsx        # State autentikasi frontend
-|       |-- hooks/
-|       |   |-- useChunkUpload.js      # State dan proses chunk upload
-|       |   |-- useGwasResults.js      # Pengambilan data hasil GWAS
-|       |   `-- useJobPolling.js       # Polling status job
-|       |-- pages/
-|       |   |-- GwasUploadPage.jsx     # Halaman upload dan trigger QC
-|       |   |-- JobStatusPage.jsx      # Halaman progress job
-|       |   |-- LoginPage.jsx          # Halaman login
-|       |   |-- RegisterPage.jsx       # Halaman registrasi
-|       |   `-- ResultsPage.jsx        # Halaman hasil analisis
-|       `-- utils/
-|           |-- manhattan.js           # Transformasi data Manhattan Plot
-|           `-- qqplot.js              # Transformasi data QQ Plot
-|   |-- index.html                    # HTML entry Vite
-|   |-- package.json                  # Script dan dependensi frontend
-|   |-- package-lock.json             # Lockfile npm
-|   |-- babel.config.cjs              # Transform JSX untuk Jest
-|   |-- jest.config.cjs               # Konfigurasi Jest + jsdom
-|   |-- .eslintrc.cjs                 # Konfigurasi lint React
-|   `-- vite.config.js                # Plugin React dan proxy API/WebSocket
-|
-|-- docs/
-|   `-- design.md                      # Desain arsitektur dan alur sistem
-|
-|-- infra/
-|   |-- docker-compose.yml             # Service development
-|   |-- docker-compose.prod.yml        # Stack production + Nginx
-|   `-- nginx/
-|       |-- Dockerfile                 # Multi-stage React build + Nginx
-|       `-- nginx.conf                 # Static hosting dan reverse proxy
-|
-`-- storage/                           # Area storage lokal; belum ada file
+├── .env.example                            # Template variabel lingkungan (Database, Redis, JWT, Storage)
+├── .gitignore                              # Daftar pengecualian file Git (node_modules, venv, storage, dll.)
+├── README.md                               # Dokumentasi utama proyek, arsitektur, tech stack, & panduan jalan
+├── PROJECT_STRUCTURE.md                    # Dokumentasi struktur direktori & fungsi setiap file (dokumen ini)
+├── Pipeline_Gwas.md                        # Panduan ilmiah rujukan tahapan GWAS lengkap
+│
+├── docs/
+│   ├── design.md                           # Dokumen Desain Sistem (System Design Document) & spesifikasi teknis
+│   └── PLAN_INTEGRASI_PIPELINE_GWAS.md     # Rencana kerja & milestone integrasi 10 fase GWAS
+│
+├── backend/                                # Layanan Backend Python (FastAPI, SQLAlchemy, Celery Workers)
+│   ├── Dockerfile                          # Definisi image Docker untuk API Server & Celery Worker (+ CLI BioTools)
+│   ├── requirements.txt                    # Daftar dependensi paket Python (FastAPI, NumPy, SciPy, Pandas, PyArrow)
+│   ├── alembic.ini                         # Konfigurasi Alembic untuk migrasi skema database
+│   │
+│   ├── alembic/                            # Modul migrasi skema database relasional
+│   │   ├── env.py                          # Konfigurasi runtime migrasi Alembic
+│   │   └── versions/
+│   │       ├── 0001_initial_schema.py      # Migrasi awal pembuatan tabel users, jobs, dan qc_metrics
+│   │       └── c6d8e9f01234_add_gwas_pipeline_phases_and_metadata.py # Migrasi 10 tahap & tipe hasil baru
+│   │
+│   ├── app/                                # Paket aplikasi utama Backend
+│   │   ├── main.py                         # Titik masuk FastAPI, CORS, migrasi SQLite otomatis, & registrasi router
+│   │   │
+│   │   ├── api/routes/                     # Lapisan HTTP Controller / REST API Endpoints
+│   │   │   ├── auth.py                     # Endpoint otentikasi JWT, registrasi, login, & refresh token
+│   │   │   ├── upload.py                   # Endpoint upload chunked VCF, fenotipe, & anotasi GFF3
+│   │   │   ├── capabilities.py             # Endpoint deteksi ketersediaan tool CLI di host (bcftools, plink, beagle, gemma, R)
+│   │   │   ├── pipeline.py                 # Endpoint pemicu eksekusi pipeline GWAS 10 tahap (HTTP 202 Accepted)
+│   │   │   ├── jobs.py                     # Endpoint daftar job, status polling, pembatalan, penghapusan, log, & file browser
+│   │   │   ├── results.py                  # Endpoint data visualisasi (Manhattan, Inspection, QC, PCA, Kinship, LD, Genes)
+│   │   │   ├── export.py                   # Endpoint pengemasan arsip .zip streaming seluruh artefak job
+│   │   │   ├── report.py                   # Endpoint unduh laporan ilmiah eksekutif berformat PDF
+│   │   │   └── reference_panels.py         # Endpoint katalog panel referensi imputasi (1000 Genomes GRCh38/GRCh37)
+│   │   │
+│   │   ├── core/                           # Konfigurasi inti, koneksi database, & keamanan kriptografi
+│   │   │   ├── config.py                   # Manajemen konfigurasi aplikasi (Pydantic Settings)
+│   │   │   ├── database.py                 # Inisialisasi SQLAlchemy Engine, SessionLocal, & tipe UUID/JSON lintas-dialek
+│   │   │   ├── security.py                 # Hashing password (bcrypt) & pembuatan/verifikasi token JWT
+│   │   │   └── resource_limits.py          # Pembatas memori OS (RLIMIT_AS) & pembangun opsi JVM untuk Beagle
+│   │   │
+│   │   ├── db/engine/models.py             # Model database ORM: User, Dataset, AnalysisJob, Result
+│   │   ├── schemas/pipeline.py             # Skema validasi Pydantic v2 untuk seluruh 10 fase GWAS
+│   │   │
+│   │   ├── services/                       # Logika bisnis domain & algoritma komputasi ilmiah
+│   │   │   ├── phenotype_service.py        # Fase 1: Rekonsiliasi sampel, validasi missing, Freedman-Diaconis histogram & boxplot
+│   │   │   ├── qc_service.py               # Fase 2: Pembangun perintah PLINK 2 / 1.9 (inbred vs outcross) & fallback Python
+│   │   │   ├── structure_service.py        # Fase 3+4D: LD pruning, PCA, Centered Kinship K, tabel KING, & kurva LD decay
+│   │   │   ├── assoc_normalizer.py         # Fase 4A/4B: Normalisasi hasil asosiasi PLINK2/GEMMA ke format kanonikal TSV
+│   │   │   ├── postgwas_service.py         # Fase 4E/4F: Unclamped Lambda GC, ambang batas dinamis, & clumping Lead SNPs
+│   │   │   ├── annotation_service.py       # Fase 5: Normalisasi kromosom, parser GFF3 streaming, & klasifikasi biologis gen
+│   │   │   ├── export_service.py           # Generator bundel arsip .zip streaming hemat RAM (stream-zip / zipfile)
+│   │   │   ├── report_generator.py         # Generator laporan PDF ilmiah (WeasyPrint / pure-Python PDF fallback)
+│   │   │   └── manhattan_parser.py         # Parser chunked asosiasi, kalkulator Lambda GC, & Parquet caching
+│   │   │
+│   │   └── tasks/                          # Lapisan eksekusi asinkron Celery Workers & Chaining
+│   │       ├── celery_app.py               # Inisialisasi Celery app & worker task logging
+│   │       ├── _common.py                  # Helper bersama: ensure_not_cancelled, mark_job, stage_dir, upsert_result, which_tool
+│   │       ├── pipeline_orchestrator.py    # Perangkai rantai eksekusi 10 tahap Celery chain & sync runner
+│   │       ├── inspection_tasks.py         # Task Fase 1: Inspeksi fenotipe & sinkronisasi ID sampel
+│   │       ├── normalization_tasks.py      # Task Fase 1B: Validasi, sort, normalisasi, & pengindeksan VCF (bcftools)
+│   │       ├── qc_tasks.py                 # Task Fase 2: Quality Control (PLINK 2 / 1.9 dengan organism mode)
+│   │       ├── imputation_tasks.py         # Task Imputasi: Beagle 5.4 (none / reference / reference_free)
+│   │       ├── structure_tasks.py          # Task Fase 3+4D: Struktur populasi, kinship matrix, & LD decay
+│   │       ├── gemma_tasks.py              # Task Fase 4A/4B: Asosiasi GWAS (GEMMA LMM/GLM + Covariates)
+│   │       ├── multilocus_tasks.py         # Task Fase 4C/4H: Multi-Locus GWAS (FarmCPU/BLINK via R) & Peak comparison
+│   │       ├── postgwas_tasks.py           # Task Fase 4E/4F: Pasca-GWAS, Lambda GC, thresholds dinamis, & clumping
+│   │       ├── visualization_tasks.py      # Task Fase 4G: Pra-pemrosesan cache Parquet untuk Manhattan & QQ plot
+│   │       └── annotation_tasks.py         # Task Fase 5: Pemetaan gen kandidat GFF3 & ekspor daftar gen GO
+│   │
+│   └── tests/                              # Suite pengujian otomatis komprehensif (34 unit & E2E tests)
+│       ├── fixtures/                       # Generator data uji deterministik (toy_gwas.vcf.gz, toy_pheno.txt, toy_annotation.gff3)
+│       ├── test_annotation_service.py      # Pengujian normalisasi kromosom, GFF3 parser, & pemetaan SNP-ke-gen
+│       ├── test_assoc_normalizer.py        # Pengujian normalisasi format asosiasi GEMMA & PLINK2 ke TSV kanonikal
+│       ├── test_jobs_api.py                # Pengujian status jobs, log, & file browser
+│       ├── test_m0_foundation.py           # Pengujian helper _common & formula Lambda GC tanpa clamping
+│       ├── test_m1_models_schemas.py       # Pengujian enum models & schema validasi Pydantic
+│       ├── test_phenotype_service.py       # Pengujian inspeksi fenotipe, rekonsiliasi ID, & Freedman-Diaconis histogram
+│       ├── test_pipeline_e2e.py            # Pengujian integrasi end-to-end 10 tahap pipeline secara sinkron
+│       ├── test_postgwas_service.py        # Pengujian formula Lambda GC, ambang batas dinamis, & clumping
+│       ├── test_process.py                 # Pengujian CLI executor, timeout, & error streaming
+│       ├── test_qc_commands.py             # Pengujian argumen PLINK 2 / 1.9 inbred vs outcross
+│       └── test_structure_service.py       # Pengujian PCA, Kinship, KING table, & LD decay curve
+│
+└── frontend/                               # Antarmuka Klien React 18 SPA (Vite, HTML5 Canvas)
+    ├── package.json                        # Konfigurasi dependensi npm (React, Vite, ESLint)
+    ├── vite.config.js                      # Konfigurasi Vite build & reverse proxy development
+    │
+    └── src/
+        ├── App.jsx                         # Rute aplikasi & navigasi halaman
+        ├── api/
+        │   ├── apiClient.js                # Wrapper fetch dengan auto-bearer & refresh token interceptor
+        │   ├── gwasApi.js                  # Klien API untuk seluruh tahap pipeline hasil GWAS
+        │   └── jobsApi.js                  # Klien API untuk kontrol job, upload, dan log tahapan
+        │
+        ├── components/                     # Komponen antarmuka & visualisasi interaktif
+        │   ├── HistogramChart.jsx          # Visualisasi histogram distribusi fenotipe (Freedman-Diaconis)
+        │   ├── BoxPlotChart.jsx            # Visualisasi boxplot dengan batas outlier Tukey
+        │   ├── DataInspectionPanel.jsx     # Panel Fase 1: Inspeksi konsistensi sampel & ringkasan fenotipe
+        │   ├── QcComparisonPanel.jsx       # Panel Fase 2: Perbandingan metrik sebelum vs sesudah QC
+        │   ├── PcaScatterPlot.jsx          # Visualisasi sebaran PCA (PC1 vs PC2) berbasis Canvas
+        │   ├── ScreePlot.jsx               # Visualisasi varians terjelaskan (PVE) per komponen utama
+        │   ├── KinshipHeatmap.jsx          # Heatmap matriks kekerabatan Centered Kinship
+        │   ├── LdDecayPlot.jsx             # Visualisasi kurva peluruhan Linkage Disequilibrium
+        │   ├── ModelRecommendationCard.jsx # Kartu rekomendasi model statistik GLM vs LMM
+        │   ├── ThresholdSelector.jsx       # Pemilih ambang signifikansi dinamis (Bonferroni, Suggestive, FDR, LOD)
+        │   ├── LeadSnpTable.jsx            # Tabel varian Lead SNPs independen hasil clumping
+        │   ├── PeakComparisonTable.jsx     # Tabel perbandingan puncak asosiasi Single-Locus vs Multi-Locus
+        │   ├── CandidateGenesTable.jsx     # Tabel pemetaan gen kandidat GFF3 & unduh Daftar_Gen_Untuk_GO.txt
+        │   ├── ManhattanPlot.jsx           # Plot Manhattan genomik berbasis HTML5 2D Canvas (Anti-Crash)
+        │   ├── QQPlot.jsx                  # Plot Quantile-Quantile interaktif berbasis Canvas
+        │   ├── GwasResultsPanel.jsx        # Panel utama 6 tab hasil analisis komprehensif
+        │   ├── ResultDashboard.jsx         # Kartu ringkasan metrik & tombol unduh ZIP / PDF
+        │   ├── JobProcessLogs.jsx          # Penampil log proses per tahap dengan auto-refresh & filter
+        │   ├── JobFilesPanel.jsx           # Penjelajah file kerja job dengan pratinjau teks & unduhan
+        │   ├── WorkspaceExplorer.jsx       # Manajemen dataset & riwayat pekerjaan pengguna
+        │   ├── PhenotypeUploader.jsx       # Komponen upload & pratinjau file fenotipe
+        │   ├── AnnotationUploader.jsx      # Komponen upload & pratinjau file anotasi genom GFF3
+        │   └── VcfUploader.jsx             # Komponen upload VCF chunked 5 MB dengan verifikasi SHA-256
+        │
+        └── pages/
+            ├── GwasUploadPage.jsx          # Formulir konfigurasi pipeline lengkap 10 fase
+            ├── JobProgressPage.jsx         # Halaman pemantauan progres job & pembatalan
+            └── ResultsPage.jsx             # Halaman eksplorasi hasil analisis GWAS menyeluruh
 ```
 
-## Backend
+---
 
-### API dan entry point
+## 2. Hubungan Alur Kerja & Interaksi Antar-Modul
 
-`backend/app/main.py` adalah titik masuk FastAPI. File tersebut saat ini
-membuat instance aplikasi, mengaktifkan CORS, memakai prefix API `/api/v1`,
-mendaftarkan seluruh router yang tersedia, dan menyediakan endpoint `/health`.
-
-Router dikelompokkan berdasarkan tanggung jawab:
-
-- `auth.py`: registrasi, login, dan identitas pengguna.
-- `upload.py`: inisiasi, pengiriman chunk, status, dan finalisasi dataset.
-- `jobs.py`: pembuatan dan pemantauan job.
-- `pipeline.py`: trigger pipeline end-to-end.
-- `results.py`: pengambilan data hasil untuk visualisasi.
-- `export.py` dan `report.py`: download arsip hasil dan report PDF.
-- `reference_panels.py`: pengelolaan atau akses panel referensi imputasi.
-
-### Model data
-
-`backend/app/db/engine/models.py` menggunakan SQLAlchemy dan mendefinisikan
-model `User`, `Dataset`, `AnalysisJob`, `Result`, dan `ReferencePanel`, beserta
-relasi utama berikut:
-
-```text
-User 1 --- N Dataset
-User 1 --- N AnalysisJob
-Dataset 1 --- N AnalysisJob
-AnalysisJob 1 --- N Result
-```
-
-Database hanya menyimpan metadata. File VCF dan output pipeline disimpan pada
-storage, sedangkan database menyimpan `storage_path`, status, parameter,
-checksum, dan ringkasan statistik.
-
-### Task pipeline
-
-`backend/app/tasks/celery_app.py` membuat instance Celery dengan Redis sebagai
-broker/result backend. `pipeline_orchestrator.py` menyusun chain asynchronous
-yang secara konseptual berjalan sebagai berikut:
-
-```text
-QC -> Imputation -> GEMMA GWAS -> Parse Results
-```
-
-`pipeline_tasks.py` berisi task tahap pipeline, sedangkan task khusus upload,
-QC, imputasi, dan GEMMA berada pada modul masing-masing. Worker dijalankan
-melalui command Celery dari Docker Compose.
-
-### Service dan report
-
-Folder `services/` memisahkan logika bisnis dari endpoint API. Contohnya,
-`report_generator.py` membaca file association secara streaming, mengambil
-SNP paling signifikan, lalu merender `templates/report_template.html` dengan
-Jinja2 dan WeasyPrint menjadi PDF.
-
-## Frontend
-
-Frontend memakai struktur komponen React yang berpusat pada alur upload dan
-monitoring job:
-
-```text
-VcfUploader
-    -> useChunkUpload
-    -> API upload chunk
-    -> trigger job
-    -> JobStatusTracker / useJobPolling
-    -> GwasResultsPanel
-    -> ManhattanPlot atau QQPlot
-```
-
-`ResultDashboard.jsx` melengkapi alur tersebut dengan ringkasan hasil serta
-download full result ZIP dan summary report PDF.
-
-Catatan kondisi saat ini: `frontend/package.json`, `package-lock.json`,
-`vite.config.js`, dan `index.html` sudah tersedia. `App.jsx` sudah berisi
-konfigurasi routing dan layout aplikasi, tetapi `main.jsx` masih kosong sehingga
-bootstrap React belum meng-mount `App` ke elemen root HTML.
-
-## Infrastruktur
-
-`infra/docker-compose.yml` mendefinisikan service development berikut:
-
-| Service | Fungsi |
-|---|---|
-| `backend` | FastAPI pada port 8000 |
-| `db` | PostgreSQL 15 untuk metadata |
-| `redis` | Broker/result backend Celery dan kanal progress |
-| `celery_worker` | Eksekusi task PLINK/GEMMA dan pipeline |
-
-Volume yang digunakan:
-
-- `postgres_data`: data PostgreSQL.
-- `redis_data`: data Redis.
-- `vcf_storage`: VCF, staging, dan hasil pipeline yang dibagi backend-worker.
-
-Network `gwas_network` menghubungkan semua service. `backend/Dockerfile`
-menyiapkan Python, PLINK, GEMMA, library WeasyPrint, dependensi Python, dan
-user non-root `appuser`.
-
-## Dokumen Pendukung
-
-- `docs/design.md`: rancangan arsitektur, strategi upload chunked, skema data,
-  workflow asynchronous, dan endpoint yang direncanakan.
-- `backend/INTEGRATION_NOTES.md`: catatan CORS, auth, isolasi data, dan
-  integrasi frontend-backend.
-- `backend/IMPUTATION_NOTES.md`: pertimbangan memory limit, queue, concurrency,
-  dan konfigurasi worker imputasi.
-
-## Catatan Implementasi Saat Ini
-
-- `README.md` root masih kosong.
-- Direktori `backend/alembic/` ada, tetapi belum berisi file migrasi yang terdeteksi.
-- Direktori `backend/tests/` ada, tetapi belum berisi file pengujian yang terdeteksi.
-- Direktori `storage/` dan `frontend/public/` belum berisi file.
-- Direktori `infra/nginx/` ada, tetapi belum berisi konfigurasi reverse proxy yang terdeteksi.
-- `frontend/node_modules/` tersedia sebagai hasil instalasi dependency npm dan tidak
-  dirinci sebagai source project.
-- `frontend/dist/` berisi output hasil `vite build` dan merupakan artefak generated,
-  bukan source frontend.
-- File Python `__pycache__/` juga muncul sebagai artefak hasil compile dan tidak
-  dianggap bagian dari struktur source.
-- File `backend/.env` tersedia untuk konfigurasi lokal; nilainya sengaja tidak
-  didokumentasikan di sini karena dapat berisi credential atau secret.
-- Struktur frontend sudah memiliki routing autentikasi, upload, status job, dan
-  hasil analisis, tetapi bootstrap `main.jsx` dan migrasi database masih perlu
-  dilengkapi sebelum deployment.
+1. **Persiapan Data (Fase 1)**:
+   - Pengguna mengunggah VCF, file fenotipe, dan file anotasi GFF3 opsional via [`GwasUploadPage.jsx`](frontend/src/pages/GwasUploadPage.jsx).
+   - Pengguna meninjau statistik fenotipe dan histogram melalui [`DataInspectionPanel.jsx`](frontend/src/components/DataInspectionPanel.jsx).
+2. **Pemicu Analisis**:
+   - Frontend mengirim konfigurasi [`FullPipelineRequest`](backend/app/schemas/pipeline.py) ke `POST /api/v1/pipeline/{dataset_id}/start`.
+   - Endpoint menyimpan parameter ke `analysis_jobs` dan memanggil `trigger_full_pipeline` di [`pipeline_orchestrator.py`](backend/app/tasks/pipeline_orchestrator.py).
+3. **Eksekusi 10 Tahap Berantai (Celery Chain)**:
+   - `run_inspection` $\rightarrow$ `run_vcf_normalization` $\rightarrow$ `run_qc_pipeline` $\rightarrow$ `run_imputation` $\rightarrow$ `run_structure_analysis` $\rightarrow$ `run_gemma_gwas` $\rightarrow$ `run_multilocus_gwas` $\rightarrow$ `run_postgwas_analysis` $\rightarrow$ `run_visualization` $\rightarrow$ `run_annotation`.
+   - Setiap tahap meneruskan konteks hasil (`ctx`) ke tahap berikutnya dan memperbarui `current_step` serta status log.
+4. **Eksplorasi Hasil & Ekspor (Fase Selesai)**:
+   - Peneliti membuka [`ResultsPage.jsx`](frontend/src/pages/ResultsPage.jsx) yang menyajikan tab Manhattan/QQ, Post-GWAS Lead SNPs, Struktur Populasi, Inspeksi/QC, Multi-Locus, dan Anotasi Gen Kandidat.
+   - Peneliti dapat mengunduh seluruh artefak dalam bundel `.zip` via `GET /results/{job_id}/export`, mengunduh laporan PDF resmi via `GET /results/{job_id}/report`, atau mengunduh `Daftar_Gen_Untuk_GO.txt` untuk analisis fungsional lebih lanjut.

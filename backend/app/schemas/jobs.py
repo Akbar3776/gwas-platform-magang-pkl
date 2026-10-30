@@ -26,6 +26,15 @@ class JobTriggerResponse(BaseModel):
     celery_task_id: str
 
 
+class StepLogEntry(BaseModel):
+    step: str
+    label: str
+    tool: str
+    status: str
+    line_count: int = 0
+    log_text: str = ""
+
+
 class JobStatusResponse(BaseModel):
     job_id: uuid.UUID
     pipeline_type: str
@@ -35,6 +44,7 @@ class JobStatusResponse(BaseModel):
     error_log: str | None = None
     last_log_line: str | None = None
     elapsed_seconds: float | None = None
+    step_logs: list[StepLogEntry] = Field(default_factory=list)
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None

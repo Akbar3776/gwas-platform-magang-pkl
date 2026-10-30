@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { apiFetch } from "../api/apiClient";
 
 /**
  * ResultDashboard.jsx
@@ -6,18 +7,7 @@ import React, { useEffect, useRef, useState } from "react";
  * Menampilkan ringkasan statistik hasil satu job GWAS, dengan dua aksi unduh:
  * - "Download Full Results (ZIP)"   -> GET /results/{jobId}/export
  * - "Download Summary Report (PDF)" -> GET /results/{jobId}/report
- *
- * Penanganan download yang lama:
- * - Tombol berubah jadi state loading (spinner + label berubah), bukan sekadar
- *   disabled diam-diam, agar peneliti non-technical yakin prosesnya berjalan.
- * - Elapsed-time counter ditampilkan setelah beberapa detik supaya wajar jika
- *   ZIP besar makan waktu, dan tidak terlihat seperti aplikasi hang.
- * - AbortController memungkinkan user membatalkan unduhan yang berjalan.
- * - Pesan error dibedakan: 409 (job belum selesai) vs kegagalan jaringan lain,
- *   ditulis dalam bahasa awam, bukan raw error message.
  */
-
-const API_BASE = "/api/v1"; // sesuaikan dengan base URL backend FastAPI kamu
 
 function formatElapsed(seconds) {
   if (seconds < 60) return `${seconds} detik`;
@@ -35,7 +25,6 @@ function DownloadButton({ label, loadingLabel, onDownload, variant }) {
 
   useEffect(() => {
     return () => {
-      // Bersihkan timer & batalkan request jika komponen unmount di tengah download.
       if (timerRef.current) clearInterval(timerRef.current);
       if (abortControllerRef.current) abortControllerRef.current.abort();
     };
@@ -68,7 +57,7 @@ function DownloadButton({ label, loadingLabel, onDownload, variant }) {
       setStatus("idle");
     } catch (err) {
       if (err.name === "AbortError") {
-        setStatus("idle"); // dibatalkan user, bukan error sesungguhnya
+        setStatus("idle");
       } else {
         setStatus("error");
         setErrorMessage(err.message || "Terjadi kesalahan saat mengunduh.");
@@ -123,8 +112,8 @@ function DownloadButton({ label, loadingLabel, onDownload, variant }) {
   );
 }
 
-async function triggerBrowserDownload(url, fallbackFilename, signal) {
-  const response = await fetch(url, { signal, credentials: "include" });
+async function triggerBrowserDownload(path, fallbackFilename, signal) {
+  const response = await apiFetch(path, { signal });
 
   if (!response.ok) {
     if (response.status === 409) {
@@ -164,9 +153,7 @@ export default function ResultDashboard({ jobId }) {
 
     async function fetchSummary() {
       try {
-        const res = await fetch(`${API_BASE}/jobs/${jobId}/results`, {
-          credentials: "include",
-        });
+        const res = await apiFetch(`/jobs/${jobId}/results`);
         if (!res.ok) throw new Error("Gagal memuat ringkasan hasil.");
         const data = await res.json();
         if (!cancelled) setSummary(data);
@@ -185,7 +172,7 @@ export default function ResultDashboard({ jobId }) {
 
   return (
     <div className="mx-auto max-w-3xl rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-      <h2 className="text-lg font-semibold text-slate-900">Hasil Analisis GWAS</h2>
+      <h2 className="text-lg font-semibold text-slate-900">Ringkasan & Ekspor Hasil</h2>
       <p className="mb-4 text-sm text-slate-500">Job ID: {jobId}</p>
 
       {loadingSummary && (
@@ -211,7 +198,7 @@ export default function ResultDashboard({ jobId }) {
           variant="primary"
           onDownload={(signal) =>
             triggerBrowserDownload(
-              `${API_BASE}/results/${jobId}/export`,
+              `/results/${jobId}/export`,
               `gwas_results_${jobId}.zip`,
               signal
             )
@@ -223,7 +210,7 @@ export default function ResultDashboard({ jobId }) {
           variant="secondary"
           onDownload={(signal) =>
             triggerBrowserDownload(
-              `${API_BASE}/results/${jobId}/report`,
+              `/results/${jobId}/report`,
               `gwas_summary_report_${jobId}.pdf`,
               signal
             )

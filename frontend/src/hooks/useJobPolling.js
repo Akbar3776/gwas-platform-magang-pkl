@@ -21,7 +21,7 @@ function normalizeStatus(value) {
  *   pollError: string | null,
  * }}
  */
-export function useJobPolling(jobId, { intervalMs = 3000 } = {}) {
+export function useJobPolling(jobId, { intervalMs = 3000, pollTrigger = 0 } = {}) {
   const [jobStatus, setJobStatus] = useState(null);
   const [isPolling, setIsPolling] = useState(false);
   const [pollError, setPollError] = useState(null);
@@ -73,7 +73,7 @@ export function useJobPolling(jobId, { intervalMs = 3000 } = {}) {
         clearTimeout(timerRef.current);
       }
     };
-  }, [jobId, intervalMs]);
+  }, [jobId, intervalMs, pollTrigger]);
 
   return {
     jobStatus,

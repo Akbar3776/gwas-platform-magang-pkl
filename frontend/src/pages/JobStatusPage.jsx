@@ -1,10 +1,7 @@
 import { useParams, useNavigate } from 'react-router-dom'
+import { JobFilesPanel } from '../components/JobFilesPanel.jsx'
 import { JobStatusTracker } from '../components/JobStatusTracker.jsx'
 
-// JobStatusTracker adalah named export (dipakai juga di GwasUploadPage.jsx
-// dengan prop `jobId`). ASUMSI YANG MASIH PERLU DICEK: apakah ia punya
-// callback `onComplete` — kalau tidak ada, hapus prop tsb dan biarkan user
-// pindah ke halaman hasil secara manual (mis. lewat tombol/link).
 export default function JobStatusPage() {
   const { jobId } = useParams()
   const navigate = useNavigate()
@@ -16,6 +13,7 @@ export default function JobStatusPage() {
         jobId={jobId}
         onComplete={() => navigate(`/jobs/${jobId}/results`)}
       />
+      <JobFilesPanel jobId={jobId} isRunning={true} />
     </div>
   )
 }

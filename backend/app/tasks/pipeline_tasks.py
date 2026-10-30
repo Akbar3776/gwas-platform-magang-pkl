@@ -38,11 +38,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-from celery import Task
-
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep
-from app.tasks.celery_app import celery_app
+from app.tasks.celery_app import Task, celery_app
 from app.services.manhattan_parser import generate_manhattan_cache
 from app.utils.process import SubprocessFailed, run_subprocess
 

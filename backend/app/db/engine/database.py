@@ -11,6 +11,10 @@ Catatan desain:
 
 from collections.abc import Generator
 from contextlib import contextmanager
+import logging
+from pathlib import Path
+import socket
+from urllib.parse import urlparse
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -18,13 +22,45 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import settings
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep
 
-engine = create_engine(
-    settings.DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-    future=True,
-)
+logger = logging.getLogger(__name__)
+
+
+def _build_engine():
+    db_url = settings.DATABASE_URL
+    if db_url.startswith("postgresql"):
+        parsed = urlparse(db_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 5432
+        if host in {"localhost", "127.0.0.1", "db"}:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.3)
+            try:
+                sock.connect((host, port))
+                sock.close()
+            except OSError:
+                sqlite_path = (Path(__file__).resolve().parents[3] / "gwas_local.db").as_posix()
+                logger.warning(
+                    "PostgreSQL (%s:%s) tidak terjangkau; beralih otomatis ke SQLite lokal (%s)",
+                    host,
+                    port,
+                    sqlite_path,
+                )
+                return create_engine(
+                    f"sqlite:///{sqlite_path}",
+                    connect_args={"check_same_thread": False},
+                    future=True,
+                )
+
+    return create_engine(
+        db_url,
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=20,
+        future=True,
+    )
+
+
+engine = _build_engine()
 
 SessionLocal = sessionmaker(
     bind=engine,

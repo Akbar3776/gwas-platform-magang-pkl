@@ -14,6 +14,7 @@ services:
       dockerfile: Dockerfile
     container_name: gwas_backend
     restart: unless-stopped
+    working_dir: /app
     ports:
       - "8000:8000"
     env_file:
@@ -24,7 +25,7 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - STORAGE_ROOT=/data/storage
     volumes:
-      - ../backend/app:/app/app              # live-reload source code saat dev
+      - ../backend:/app              # live-reload source code saat dev
       - vcf_storage:/data/storage             # shared storage untuk file VCF & hasil
     depends_on:
       db:
@@ -111,7 +112,7 @@ services:
         condition: service_healthy
     # Catatan: di produksi, pecah worker per-queue (normalization, qc, imputation, gwas)
     # dengan concurrency dan resource limit berbeda. Untuk dev, satu worker generik cukup.
-    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2 -E -Q celery,normalization,qc,imputation,gwas
     deploy:
       resources:
         limits:

@@ -8,9 +8,16 @@ POST /auth/logout    - hapus refresh token cookie + revoke (naikkan token_versio
 GET  /auth/me        - info user yang sedang login
 """
 
+from typing import Annotated
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
+
+try:
+    import email_validator  # noqa: F401
+    from pydantic import EmailStr as EmailField
+except ImportError:
+    EmailField = Annotated[str, Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")]  # type: ignore[misc,assignment]
 from sqlalchemy.orm import Session
 
 from app.core.security import (
@@ -25,13 +32,17 @@ from app.core.security import (
     verify_refresh_token_and_get_user,
 )
 from app.db.engine.database import get_db
-from app.db.engine.models import User
+from app.db.engine.models import User, UserRole
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _role_value(role) -> str:
+    return role.value if hasattr(role, "value") else str(role)
+
+
 class RegisterRequest(BaseModel):
-    email: EmailStr
+    email: EmailField
     password: str = Field(min_length=8, description="Minimal 8 karakter")
     full_name: str | None = None
 
@@ -62,13 +73,13 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         email=payload.email,
         hashed_password=hash_password(payload.password),
         full_name=payload.full_name,
-        role="researcher",
+        role=UserRole.RESEARCHER,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
 
-    return UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=user.role)
+    return UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=_role_value(user.role))
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -95,7 +106,7 @@ def login(
 
     return TokenResponse(
         access_token=access_token,
-        user=UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=user.role),
+        user=UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=_role_value(user.role)),
     )
 
 
@@ -120,7 +131,7 @@ def refresh_access_token(
 
     return TokenResponse(
         access_token=new_access_token,
-        user=UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=user.role),
+        user=UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=_role_value(user.role)),
     )
 
 
@@ -139,4 +150,4 @@ def logout(response: Response, user: User = Depends(get_current_user), db: Sessi
 
 @router.get("/me", response_model=UserOut)
 def read_current_user(user: User = Depends(get_current_user)):
-    return UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=user.role)
+    return UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=_role_value(user.role))

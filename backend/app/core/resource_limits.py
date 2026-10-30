@@ -27,8 +27,12 @@ itu, bukan menggantikannya.
 """
 
 import os
-import resource
 from typing import Callable
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - Windows does not provide the Unix resource module
+    resource = None  # type: ignore[assignment]
 
 # Porsi dari total limit memori container yang dialokasikan untuk Java heap.
 # Sisanya (~25%) sengaja disisakan untuk metaspace, thread stack, GC overhead,
@@ -76,7 +80,8 @@ def make_memory_limited_preexec_fn(virtual_mem_limit_bytes: int) -> Callable[[],
     """
 
     def _set_limit() -> None:
-        resource.setrlimit(resource.RLIMIT_AS, (virtual_mem_limit_bytes, virtual_mem_limit_bytes))
+        if resource is not None:
+            resource.setrlimit(resource.RLIMIT_AS, (virtual_mem_limit_bytes, virtual_mem_limit_bytes))
 
     return _set_limit
 

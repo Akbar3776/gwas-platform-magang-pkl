@@ -11,12 +11,10 @@ sehingga session database dibuat manual dari `SessionLocal` dan WAJIB ditutup
 di blok `finally`.
 """
 
-from celery.utils.log import get_task_logger
-
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import Dataset, UploadStatus
 from app.services import upload_service
-from app.tasks.celery_app import celery_app
+from app.tasks.celery_app import celery_app, get_task_logger
 
 logger = get_task_logger(__name__)
 

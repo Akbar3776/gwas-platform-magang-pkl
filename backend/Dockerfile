@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     bcftools \
     ca-certificates \
+    default-jre \
     && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------------------------
@@ -51,6 +52,14 @@ RUN wget -q "https://github.com/genetics-statistics/GEMMA/releases/download/v0.9
     && rm -f /tmp/gemma.gz
 
 # ------------------------------------------------------------------------------
+# 3b. Instalasi Beagle (Imputasi)
+# ------------------------------------------------------------------------------
+RUN mkdir -p /opt/tools \
+    && wget -q "https://faculty.washington.edu/browning/beagle/beagle.22Jul22.46e.jar" \
+    -O /opt/tools/beagle.jar \
+    && chmod +r /opt/tools/beagle.jar
+
+# ------------------------------------------------------------------------------
 # 4. (Opsional, disiapkan untuk tahap QC/normalisasi lanjutan)
 #    bcftools/vcftools bisa ditambahkan di sini dengan pola wget+build serupa
 #    bila dibutuhkan di luar apt repository slim.
@@ -59,7 +68,7 @@ RUN wget -q "https://github.com/genetics-statistics/GEMMA/releases/download/v0.9
 # Catatan: WeasyPrint butuh library sistem (Pango, Cairo, GDK-PixBuf).
 # Untuk image Docker berbasis Debian/Ubuntu, tambahkan di Dockerfile backend:
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf2.0-0 libcairo2 \
+    libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 libcairo2 \
     libffi-dev shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
 

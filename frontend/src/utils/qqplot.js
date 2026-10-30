@@ -4,26 +4,51 @@
  * dengan asumsi p-value terdistribusi Uniform(0,1) jika tidak ada asosiasi
  * genetik nyata.
  *
- * Rumus expected quantile standar:
- *   expected_i = -log10( (i - 0.5) / n )   untuk i = 1..n, setelah nilai
- *   observed diurutkan menaik (ascending).
+ * Agar tidak membebani memori/browser pada dataset besar, titik pada ekor
+ * atas (nilai -log10(p) tertinggi) dipertahankan 100%, sementara titik yang
+ * menumpuk rapat di dekat nol didownsample secara merata hingga `maxPoints`.
  */
 
 /**
- * @param {number[]} log10pValues - nilai -log10(p) hasil GWAS (sudah didownsample dari backend)
+ * @param {number[]} log10pValues - nilai -log10(p) hasil GWAS
+ * @param {number} [maxPoints=2500] - batas maksimum titik QQ yang dirender
  * @returns {Array<{x:number, y:number}>} pasangan {expected, observed}
  */
-export function buildQQPoints(log10pValues) {
-  const n = log10pValues.length;
+export function buildQQPoints(log10pValues, maxPoints = 2500) {
+  const n = log10pValues ? log10pValues.length : 0;
   if (n === 0) return [];
 
-  const observedSorted = [...log10pValues].sort((a, b) => a - b);
-  const points = new Array(n);
+  // Urutkan menurun (descending): indeks 0 = nilai -log10(p) terbesar (p-value terkecil)
+  const observedDesc = Float32Array.from(log10pValues).sort().reverse();
 
-  for (let i = 0; i < n; i++) {
-    const rank = i + 1; // 1-indexed
+  if (n <= maxPoints) {
+    const points = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const rank = i + 1;
+      const expected = -Math.log10((rank - 0.5) / n);
+      points[i] = { x: expected, y: Number(observedDesc[i]) };
+    }
+    return points;
+  }
+
+  // Pertahankan 100% 500 SNP paling signifikan di ekor atas, dan sampling merata sisanya
+  const topKeep = Math.min(500, Math.floor(maxPoints / 2));
+  const tailBudget = maxPoints - topKeep;
+  const points = [];
+
+  for (let i = 0; i < topKeep; i++) {
+    const rank = i + 1;
     const expected = -Math.log10((rank - 0.5) / n);
-    points[i] = { x: expected, y: observedSorted[i] };
+    points.push({ x: expected, y: Number(observedDesc[i]) });
+  }
+
+  const remaining = n - topKeep;
+  const step = remaining / tailBudget;
+  for (let j = 0; j < tailBudget; j++) {
+    const i = topKeep + Math.min(Math.floor(j * step), remaining - 1);
+    const rank = i + 1;
+    const expected = -Math.log10((rank - 0.5) / n);
+    points.push({ x: expected, y: Number(observedDesc[i]) });
   }
 
   return points;

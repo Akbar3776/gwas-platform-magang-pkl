@@ -1,0 +1,153 @@
+from pathlib import Path
+
+import pytest
+
+from app.schemas.pipeline import PopulationType, QCPipelineConfig
+from app.services.qc_service import (
+    build_plink19_qc_commands,
+    build_plink2_qc_commands,
+    encode_plink_bed_row,
+    run_python_fallback_qc,
+)
+
+
+def test_build_plink2_qc_commands_inbred():
+    cfg = QCPipelineConfig(
+        population_type=PopulationType.INBRED,
+        maf=0.05,
+        geno=0.05,
+        mind=0.05,
+        snps_only=True,
+        max_alleles=2,
+        set_missing_var_ids=True,
+    )
+    cmds = build_plink2_qc_commands(
+        cfg=cfg,
+        input_vcf="/data/in.vcf.gz",
+        output_dir=Path("/data/qc"),
+        keep_ids="/data/keep.txt",
+        pheno_path="/data/pheno.txt",
+        trait="Trait1",
+    )
+    assert len(cmds) == 5
+
+    # Check step 1
+    cmd1 = cmds[1]
+    assert cmd1[0] == "plink2"
+    assert "--keep" in cmd1
+    assert "/data/keep.txt" in cmd1
+    assert "--snps-only" in cmd1
+    assert "--max-alleles" in cmd1
+    assert "--set-all-var-ids" in cmd1
+    assert "--pheno" in cmd1
+    assert "Trait1" in cmd1
+
+    # CRITICAL: HWE must NOT be present for inbred
+    assert "--hwe" not in cmd1
+
+
+def test_build_plink2_qc_commands_outcross():
+    cfg = QCPipelineConfig(
+        population_type=PopulationType.OUTCROSS,
+        maf=0.01,
+        geno=0.05,
+        mind=0.1,
+        hwe=1e-5,
+    )
+    cmds = build_plink2_qc_commands(
+        cfg=cfg,
+        input_vcf="/data/in.vcf.gz",
+        output_dir=Path("/data/qc"),
+    )
+    cmd1 = cmds[1]
+    assert "--hwe" in cmd1
+    idx = cmd1.index("--hwe")
+    assert cmd1[idx + 1] == "1e-05"
+
+
+def test_build_plink19_qc_commands():
+    cfg = QCPipelineConfig(
+        population_type=PopulationType.INBRED,
+        maf=0.05,
+        geno=0.05,
+        mind=0.05,
+    )
+    cmds = build_plink19_qc_commands(
+        cfg=cfg,
+        input_vcf="/data/in.vcf.gz",
+        output_dir=Path("/data/qc"),
+    )
+    assert len(cmds) == 3
+    cmd_main = cmds[1]
+    assert cmd_main[0] == "plink"
+    assert "--biallelic-only" in cmd_main
+    assert "--set-missing-var-ids" in cmd_main
+    assert "--hwe" not in cmd_main
+
+
+def test_encode_plink_bed_row():
+    # 0=HomRef (0b11=3), 1=Het (0b10=2), 2=HomAlt (0b00=0), -1=Missing (0b01=1)
+    # Sample 0: 0 -> 3 (shift 0) = 3
+    # Sample 1: 1 -> 2 (shift 2) = 8
+    # Sample 2: 2 -> 0 (shift 4) = 0
+    # Sample 3: -1 -> 1 (shift 6) = 64
+    # Total byte = 3 + 8 + 0 + 64 = 75
+    encoded = encode_plink_bed_row([0, 1, 2, -1])
+    assert len(encoded) == 1
+    assert encoded[0] == 75
+
+    # 5 samples -> 2 bytes
+    encoded_5 = encode_plink_bed_row([0, 0, 0, 0, 2])
+    assert len(encoded_5) == 2
+    assert encoded_5[0] == 255
+    assert encoded_5[1] == 0
+
+
+def test_run_python_fallback_qc(tmp_path):
+    fixture_vcf = Path(__file__).parent / "fixtures" / "data" / "toy_gwas.vcf.gz"
+    if not fixture_vcf.is_file():
+        from tests.fixtures.make_fixtures import generate_toy_fixtures
+        generate_toy_fixtures()
+
+    out_prefix = tmp_path / "plink_qc"
+    log_file = tmp_path / "plink_qc.log"
+    cfg = QCPipelineConfig(
+        population_type=PopulationType.INBRED,
+        maf=0.05,
+        geno=0.1,
+        mind=0.1,
+    )
+
+    comparison = run_python_fallback_qc(
+        input_vcf=str(fixture_vcf),
+        output_prefix=out_prefix,
+        cfg=cfg,
+        log_file=log_file,
+    )
+
+    assert "before" in comparison
+    assert "after" in comparison
+    assert "removed" in comparison
+    assert comparison["before"]["n_snps"] > 0
+    assert comparison["after"]["n_snps"] > 0
+
+    bed_file = Path(f"{out_prefix}.bed")
+    bim_file = Path(f"{out_prefix}.bim")
+    fam_file = Path(f"{out_prefix}.fam")
+    vcf_file = Path(f"{out_prefix}.vcf.gz")
+
+    assert bed_file.is_file()
+    assert bim_file.is_file()
+    assert fam_file.is_file()
+    assert vcf_file.is_file()
+
+    # Check PLINK bed magic bytes
+    bed_bytes = bed_file.read_bytes()
+    assert bed_bytes[:3] == b"\x6c\x1b\x01"
+
+    # Line counts
+    bim_lines = bim_file.read_text(encoding="utf-8").strip().splitlines()
+    assert len(bim_lines) == comparison["after"]["n_snps"]
+
+    fam_lines = fam_file.read_text(encoding="utf-8").strip().splitlines()
+    assert len(fam_lines) == comparison["after"]["n_samples"]

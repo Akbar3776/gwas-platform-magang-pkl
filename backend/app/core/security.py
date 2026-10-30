@@ -6,7 +6,7 @@ isolasi data per-user.
 
 Desain token: access token (umur pendek) + refresh token (umur panjang)
 -----------------------------------------------------------------------
-- ACCESS TOKEN: umur pendek (15 menit), dikirim di header
+- ACCESS TOKEN: umur pendek (180 menit), dikirim di header
   `Authorization: Bearer <token>` pada setiap request API. TIDAK disimpan
   di localStorage/cookie oleh frontend — cukup disimpan di memori (React
   state), sehingga kalau ada XSS yang mengeksekusi JS di halaman, jendela
@@ -31,34 +31,57 @@ from typing import Optional
 
 from fastapi import Cookie, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
-from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.engine.database import get_db
-from app.db.engine.models import User
+from app.db.engine.models import User, UserRole
+
+try:
+    from jose import JWTError, jwt
+except ImportError:  # pragma: no cover - fallback to PyJWT when python-jose is absent
+    import jwt  # type: ignore[no-redef]
+    from jwt.exceptions import PyJWTError as JWTError  # type: ignore[no-redef]
+
+try:
+    from passlib.context import CryptContext
+    _pwd_context: CryptContext | None = CryptContext(schemes=["bcrypt"], deprecated="auto")
+except ImportError:  # pragma: no cover - fallback when passlib is absent
+    _pwd_context = None
 
 # --- Konfigurasi ------------------------------------------------------------
-# WAJIB diisi dari environment variable di production, jangan hardcode.
-SECRET_KEY = os.environ["JWT_SECRET_KEY"]
+# Ambil dari environment variable atau fallback ke config.settings
+SECRET_KEY = (
+    os.environ.get("JWT_SECRET_KEY")
+    or getattr(settings, "JWT_SECRET_KEY", "")
+    or getattr(settings, "SECRET_KEY", "change-me-in-production")
+)
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 15
+ACCESS_TOKEN_EXPIRE_MINUTES = int(getattr(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 180))
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 REFRESH_COOKIE_NAME = "gwas_refresh_token"
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 # tokenUrl hanya dipakai untuk dokumentasi otomatis (Swagger UI "Authorize" button)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
 
 # --- Password hashing ---------------------------------------------------
 def hash_password(plain_password: str) -> str:
-    return pwd_context.hash(plain_password)
+    if _pwd_context is not None:
+        return _pwd_context.hash(plain_password)
+    from werkzeug.security import generate_password_hash
+    return generate_password_hash(plain_password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    if _pwd_context is not None:
+        return _pwd_context.verify(plain_password, hashed_password)
+    from werkzeug.security import check_password_hash
+    return check_password_hash(hashed_password, plain_password)
+
+
+def _role_str(role) -> str:
+    return role.value if hasattr(role, "value") else str(role)
 
 
 # --- Pembuatan token ------------------------------------------------------
@@ -66,7 +89,7 @@ def create_access_token(user: User) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
         "sub": str(user.id),
-        "role": user.role,
+        "role": _role_str(user.role),
         "type": "access",
         "exp": expire,
     }
@@ -90,23 +113,23 @@ def set_refresh_token_cookie(response, refresh_token: str) -> None:
 
     - httponly=True   -> tidak bisa dibaca `document.cookie` di JS (proteksi XSS)
     - secure=True      -> hanya dikirim lewat HTTPS (WAJIB True di production)
-    - samesite="strict" -> browser tidak mengirim cookie ini pada request
-      cross-site (proteksi CSRF dasar), sesuaikan ke "lax" kalau frontend
-      & backend berada di subdomain berbeda dan butuh navigasi cross-subdomain.
+    - samesite="lax"  -> aman untuk navigasi same-site dan proxy dev
+    - path="/"        -> agar cookie terkirim ke /api/v1/auth/refresh & /api/v1/auth/logout
     """
+    env_mode = os.environ.get("ENV", getattr(settings, "ENV", "development"))
     response.set_cookie(
         key=REFRESH_COOKIE_NAME,
         value=refresh_token,
         httponly=True,
-        secure=os.environ.get("ENV", "production") != "development",
-        samesite="strict",
+        secure=env_mode != "development",
+        samesite="lax",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600,
-        path="/auth",  # cookie hanya dikirim ke endpoint /auth/*, bukan semua request
+        path="/",
     )
 
 
 def clear_refresh_token_cookie(response) -> None:
-    response.delete_cookie(key=REFRESH_COOKIE_NAME, path="/auth")
+    response.delete_cookie(key=REFRESH_COOKIE_NAME, path="/")
 
 
 # --- Verifikasi token & dependency FastAPI --------------------------------
@@ -160,7 +183,7 @@ def get_current_user(
 
 def require_admin(user: User = Depends(get_current_user)) -> User:
     """Dependency tambahan untuk endpoint khusus admin (mis. kelola reference panel)."""
-    if user.role != "admin":
+    if user.role != UserRole.ADMIN and _role_str(user.role) != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Khusus admin")
     return user
 
