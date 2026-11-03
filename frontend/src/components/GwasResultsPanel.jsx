@@ -23,6 +23,7 @@ import {
   fetchThresholdsData,
   fetchLeadSnpsData,
   fetchPeakComparisonData,
+  fetchMultilocusResultsData,
   fetchCandidateGenesData,
 } from "../api/gwasApi";
 
@@ -53,6 +54,7 @@ export default function GwasResultsPanel({ jobId }) {
   const [ldDecayData, setLdDecayData] = useState(null);
   const [modelRecData, setModelRecData] = useState(null);
   const [peakData, setPeakData] = useState(null);
+  const [multilocusSummary, setMultilocusSummary] = useState(null);
   const [annotationData, setAnnotationData] = useState(null);
 
   // Fetch all supplementary pipeline stage data
@@ -70,6 +72,7 @@ export default function GwasResultsPanel({ jobId }) {
     fetchLdDecayData(jobId, sig).then(setLdDecayData).catch(() => {});
     fetchModelRecommendationData(jobId, sig).then(setModelRecData).catch(() => {});
     fetchPeakComparisonData(jobId, sig).then(setPeakData).catch(() => {});
+    fetchMultilocusResultsData(jobId, sig).then(setMultilocusSummary).catch(() => {});
     fetchCandidateGenesData(jobId, sig).then(setAnnotationData).catch(() => {});
 
     return () => controller.abort();
@@ -242,7 +245,11 @@ export default function GwasResultsPanel({ jobId }) {
           </div>
 
           <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0" }}>
-            <LeadSnpTable leadSnps={leadSnpsList} />
+            <LeadSnpTable
+              leadSnps={leadSnpsList}
+              activeThreshold={computedThreshold}
+              activeThresholdMethod={activeThresholdMethod.toUpperCase()}
+            />
           </div>
         </div>
       )}
@@ -293,7 +300,7 @@ export default function GwasResultsPanel({ jobId }) {
               <h3 style={{ margin: "0 0 14px", fontSize: 15, fontWeight: 700, color: "#0f172a" }}>
                 Inspeksi Data Fenotipe & Konsistensi ID (Fase 1)
               </h3>
-              <DataInspectionPanel report={inspectionData} />
+              <DataInspectionPanel report={inspectionData} jobId={jobId} />
             </div>
           ) : (
             <div style={{ padding: 20, background: "#f8fafc", borderRadius: 8, color: "#64748b" }}>
@@ -319,8 +326,9 @@ export default function GwasResultsPanel({ jobId }) {
       {/* TAB 5: MULTI-LOCUS GWAS */}
       {activeTab === "multilocus" && (
         <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0" }}>
-          {peakData && peakData.status !== "skipped" ? (
-            <PeakComparisonTable comparison={peakData} />
+          {((peakData && peakData.status !== "skipped" && peakData.status !== "not_available") ||
+            (multilocusSummary && multilocusSummary.status !== "skipped" && multilocusSummary.status !== "not_available")) ? (
+            <PeakComparisonTable comparison={peakData} multilocusSummary={multilocusSummary} />
           ) : (
             <div
               style={{
@@ -334,7 +342,7 @@ export default function GwasResultsPanel({ jobId }) {
             >
               <div style={{ fontSize: 24, marginBottom: 8 }}>🔬</div>
               <div style={{ fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                Analisis Multi-Locus GWAS (FarmCPU, BLINK, MLMM) Dilewati
+                Analisis Multi-Locus GWAS (FarmCPU, BLINK, MLMM) Dilewati atau Belum Tersedia
               </div>
               <p style={{ margin: 0, fontSize: 13, maxWidth: 500, marginInline: "auto" }}>
                 Opsi multi-locus tidak diaktifkan pada konfigurasi pipeline job ini, atau runtime R

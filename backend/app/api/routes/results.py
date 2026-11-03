@@ -26,8 +26,8 @@ def _load_job_json_result(
     job_id: uuid.UUID | str,
     db: Session,
     result_type: ResultType,
-    subfolder: str,
-    filename: str,
+    subfolder: str | list[str],
+    filename: str | list[str],
 ) -> dict[str, Any]:
     """Helper untuk memuat hasil analisis JSON dari database Result atau filesystem."""
     try:
@@ -50,26 +50,32 @@ def _load_job_json_result(
             except Exception:
                 pass
 
+    subfolders = [subfolder] if isinstance(subfolder, str) else list(subfolder)
+    filenames = [filename] if isinstance(filename, str) else list(filename)
+
     # 2. Cek direktori fisik job
-    base_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / subfolder
-    target = base_dir / filename
-    if target.is_file():
-        try:
-            return json.loads(target.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
+    for folder in subfolders:
+        base_dir = job_root / folder
+        for fn in filenames:
+            target = base_dir / fn
+            if target.is_file():
+                try:
+                    return json.loads(target.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
 
-    # 3. Cek skipped.json jika tahap dilewati
-    skipped_file = base_dir / "skipped.json"
-    if skipped_file.is_file():
-        try:
-            data = json.loads(skipped_file.read_text(encoding="utf-8"))
-            data.setdefault("status", "skipped")
-            return data
-        except Exception:
-            pass
+        # 3. Cek skipped.json jika tahap dilewati
+        skipped_file = base_dir / "skipped.json"
+        if skipped_file.is_file():
+            try:
+                data = json.loads(skipped_file.read_text(encoding="utf-8"))
+                data.setdefault("status", "skipped")
+                return data
+            except Exception:
+                pass
 
-    return {"status": "not_available", "job_id": str(job_id), "stage": subfolder}
+    return {"status": "not_available", "job_id": str(job_id), "stage": subfolders[0]}
 
 
 @router.get(
@@ -143,28 +149,28 @@ def get_manhattan_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> Manh
 @router.get("/{job_id}/inspection", summary="Data inspeksi & rekonsiliasi fenotipe (Fase 1)")
 def get_inspection_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
     return _load_job_json_result(
-        job_id, db, ResultType.INSPECTION_REPORT, "inspection", "inspection.json"
+        job_id, db, ResultType.INSPECTION_REPORT, "inspection", ["inspection_report.json", "inspection.json"]
     )
 
 
 @router.get("/{job_id}/qc-comparison", summary="Data perbandingan QC sebelum/sesudah (Fase 2)")
 def get_qc_comparison_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
     return _load_job_json_result(
-        job_id, db, ResultType.QC_COMPARISON, "qc", "qc_comparison.json"
+        job_id, db, ResultType.QC_COMPARISON, "qc", ["qc_comparison.json", "qc_summary.json"]
     )
 
 
 @router.get("/{job_id}/pca", summary="Data dekomposisi PCA & Scree plot (Fase 3)")
 def get_pca_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
     return _load_job_json_result(
-        job_id, db, ResultType.PCA_DATA, "structure", "pca_data.json"
+        job_id, db, ResultType.PCA_DATA, "structure", ["pca.json", "pca_data.json"]
     )
 
 
 @router.get("/{job_id}/kinship", summary="Data matriks kekerabatan Kinship & KING (Fase 3)")
 def get_kinship_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
     return _load_job_json_result(
-        job_id, db, ResultType.KINSHIP_DATA, "structure", "kinship_matrix.json"
+        job_id, db, ResultType.KINSHIP_DATA, "structure", ["kinship.json", "kinship_matrix.json"]
     )
 
 
@@ -178,7 +184,7 @@ def get_ld_decay_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[
 @router.get("/{job_id}/model-recommendation", summary="Rekomendasi model GWAS GLM vs LMM (Fase 3)")
 def get_model_recommendation_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
     return _load_job_json_result(
-        job_id, db, ResultType.MODEL_RECOMMENDATION, "structure", "model_recommendation.json"
+        job_id, db, ResultType.MODEL_RECOMMENDATION, "structure", ["model_recommendation.json", "model_rec.json"]
     )
 
 
@@ -199,7 +205,7 @@ def get_lead_snps_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict
 @router.get("/{job_id}/peak-comparison", summary="Perbandingan puncak Single vs Multi-Locus GWAS (Fase 4H)")
 def get_peak_comparison_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
     return _load_job_json_result(
-        job_id, db, ResultType.PEAK_COMPARISON, "multilocus", "peak_comparison.json"
+        job_id, db, ResultType.PEAK_COMPARISON, ["multilocus", "postgwas"], "peak_comparison.json"
     )
 
 

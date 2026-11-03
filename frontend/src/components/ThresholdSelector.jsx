@@ -1,11 +1,24 @@
 import React from "react";
 
+function formatThreshold(val) {
+  if (val === null || val === undefined) return "-";
+  const num = Number(val);
+  if (isNaN(num)) return String(val);
+  return num.toExponential(2);
+}
+
 export function ThresholdSelector({
   thresholds,
   activeMethod = "bonferroni",
   onChangeMethod,
 }) {
-  if (!thresholds) return null;
+  if (!thresholds || thresholds.status === "not_available" || thresholds.status === "skipped") {
+    return (
+      <div style={{ padding: 12, background: "#f8fafc", borderRadius: 8, color: "#64748b", fontSize: 13 }}>
+        Data ambang batas signifikansi belum tersedia untuk job ini.
+      </div>
+    );
+  }
 
   const {
     bonferroni = 5e-8,
@@ -18,14 +31,14 @@ export function ThresholdSelector({
     warning = null,
   } = thresholds;
 
-  const current = activeMethod || selected_method;
+  const currentMethod = (activeMethod || selected_method || "bonferroni").toLowerCase();
 
   const methods = [
     {
       id: "bonferroni",
       name: "Bonferroni",
       value: bonferroni,
-      desc: `0.05 / ${n_tests.toLocaleString("id-ID")}`,
+      desc: n_tests > 0 ? `0.05 / ${n_tests.toLocaleString("id-ID")} varian` : "0.05 / N varian",
       color: "#dc2626",
     },
     {
@@ -41,14 +54,15 @@ export function ThresholdSelector({
       value: fdr,
       desc: fdr ? "Benjamini-Hochberg q < 0.05" : "Tidak ada SNP lolos",
       color: "#2563eb",
-      disabled: fdr === null,
+      disabled: fdr === null || fdr === undefined,
     },
     {
       id: "lod",
-      name: `LOD ${lod_score}`,
+      name: `LOD ${lod_score || 5.6}`,
       value: lod_p,
-      desc: `p < 10^-${lod_score}`,
+      desc: `p < 10^-${lod_score || 5.6}`,
       color: "#7c3aed",
+      disabled: lod_p === null || lod_p === undefined,
     },
   ];
 
@@ -77,7 +91,7 @@ export function ThresholdSelector({
         }}
       >
         {methods.map((m) => {
-          const isSelected = current.toLowerCase() === m.id;
+          const isSelected = currentMethod === m.id;
           return (
             <div
               key={m.id}
@@ -106,7 +120,7 @@ export function ThresholdSelector({
                 )}
               </div>
               <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a", margin: "4px 0" }}>
-                {m.value ? m.value.toExponential(2) : "-"}
+                {formatThreshold(m.value)}
               </div>
               <div style={{ fontSize: 11, color: "#64748b" }}>{m.desc}</div>
             </div>
