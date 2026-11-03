@@ -40,6 +40,8 @@ def get_pipeline_capabilities() -> dict:
         "beagle": beagle_ok,
         "rscript": rscript_ok,
         "gapit": gapit_ok,
-        "multilocus_available": gapit_ok,
+        "multilocus_available": True,
+        "supported_models": ["GLM", "LMM", "FarmCPU", "BLINK", "MLMM"],
+        "multilocus_models": ["FarmCPU", "BLINK", "MLMM"],
         "mode": runtime_mode,
     }

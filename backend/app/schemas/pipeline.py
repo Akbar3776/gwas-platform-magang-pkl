@@ -88,10 +88,10 @@ class StructureConfig(BaseModel):
 
 class GWASPipelineConfig(BaseModel):
     phenotype_path: str | None = Field(default=None)
-    model: Literal["auto", "glm", "lmm", "lm"] = "auto"
+    model: Literal["auto", "glm", "lmm", "lm", "farmcpu", "blink", "mlmm"] = "auto"
     n_pc_covariates: int = Field(default=3, ge=0, le=20)
     enable_multilocus: bool = False
-    multilocus_methods: list[Literal["FarmCPU", "BLINK"]] = ["FarmCPU", "BLINK"]
+    multilocus_methods: list[Literal["FarmCPU", "BLINK", "MLMM"]] = ["FarmCPU", "BLINK", "MLMM"]
 
 
 class ThresholdConfig(BaseModel):

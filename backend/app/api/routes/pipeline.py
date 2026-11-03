@@ -80,6 +80,17 @@ def start_pipeline_endpoint(
     db.commit()
     db.refresh(job)
 
+    is_multilocus_model = str(payload.gwas.model).lower() in {"farmcpu", "blink", "mlmm"}
+    methods = list(payload.gwas.multilocus_methods)
+    if is_multilocus_model:
+        model_name = {"farmcpu": "FarmCPU", "blink": "BLINK", "mlmm": "MLMM"}[str(payload.gwas.model).lower()]
+        if model_name not in methods:
+            methods.append(model_name)
+    multilocus_config = {
+        "enabled": payload.gwas.enable_multilocus or is_multilocus_model,
+        "methods": methods,
+    }
+
     try:
         celery_task_id = trigger_full_pipeline(
             job_id=str(job.id),
@@ -92,10 +103,7 @@ def start_pipeline_endpoint(
             gwas_params=payload.gwas.model_dump(),
             threshold_params=payload.threshold.model_dump(),
             clump_params=payload.clump.model_dump(),
-            multilocus_params={
-                "enabled": payload.gwas.enable_multilocus,
-                "methods": payload.gwas.multilocus_methods,
-            },
+            multilocus_params=multilocus_config,
             annotation_params=payload.annotation.model_dump(),
         )
     except Exception as exc:

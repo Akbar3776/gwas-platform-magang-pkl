@@ -202,6 +202,25 @@ def run_postgwas_analysis(
             except (SubprocessFailed, CLIExecutionError) as exc:
                 logger.warning("PLINK2 Clump gagal, beralih ke greedy fallback: %s", exc)
 
+        if ran_plink_clump and lead_snps and Path(norm_assoc_path).is_file():
+            lead_ids = {s["snp"] for s in lead_snps if s.get("snp")}
+            stats_lookup: dict[str, dict[str, Any]] = {}
+            with Path(norm_assoc_path).open("r", encoding="utf-8") as nf:
+                for row in csv.DictReader(nf, delimiter="\t"):
+                    rs_id = row.get("rs")
+                    if rs_id in lead_ids:
+                        stats_lookup[rs_id] = row
+            for s in lead_snps:
+                info = stats_lookup.get(s["snp"])
+                if info:
+                    s["a1"] = info.get("a1", "A")
+                    s["a0"] = info.get("a0", "G")
+                    try:
+                        s["beta"] = float(info.get("beta") or 0.0)
+                        s["se"] = float(info.get("se") or 0.0)
+                    except (ValueError, TypeError):
+                        pass
+
         if not ran_plink_clump:
             lead_snps = run_greedy_clumping(
                 assoc_file=norm_assoc_path,

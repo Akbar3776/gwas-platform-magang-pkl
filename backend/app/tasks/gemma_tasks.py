@@ -538,25 +538,34 @@ def run_gemma_gwas(
             raise ValueError("Hasil imputasi tidak memiliki output_vcf")
         output_dir = params.get("output_dir")
 
-        resolved_model = str(model or "lmm").lower()
+        orig_model = str(model or "lmm").lower()
+        resolved_model = orig_model
+        is_multilocus = resolved_model in {"farmcpu", "blink", "mlmm"}
         if resolved_model == "auto":
             resolved_model = str(imputation_result.get("recommended_model") or "lmm").lower()
         if resolved_model == "glm":
             resolved_model = "lm"
+        elif is_multilocus:
+            resolved_model = "lmm"
         if resolved_model not in {"lmm", "lm"}:
-            raise ValueError("model harus bernilai 'lmm', 'lm', 'glm', atau 'auto'")
+            raise ValueError("model harus bernilai 'lmm', 'lm', 'glm', 'farmcpu', 'blink', 'mlmm', atau 'auto'")
         model = resolved_model
 
         work_dir = Path(output_dir or Path(settings.STORAGE_ROOT) / "jobs" / job_id / "gwas")
         log_file = work_dir / "gemma.log"
         work_dir.mkdir(parents=True, exist_ok=True)
 
+        model_desc = (
+            f"Baseline LMM untuk {orig_model.upper()} (Multi-Locus berlanjut di Tahap 7)"
+            if is_multilocus
+            else ("Linear Mixed Model + Kinship Matrix" if model == "lmm" else "General Linear Model / LM")
+        )
         _append_log(
             log_file,
             f"=== TAHAP 6: ANALISIS ASOSIASI GWAS (GEMMA / GLM) ===\n"
             f"Waktu mulai    : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
             f"Input Genotipe : {genotype_path}\n"
-            f"Model Statistik: {model.upper()} ({'Linear Mixed Model + Kinship Matrix' if model == 'lmm' else 'General Linear Model / LM'})\n"
+            f"Model Statistik: {orig_model.upper()} ({model_desc})\n"
             f"File Fenotipe  : {phenotype_path or imputation_result.get('pheno_path') or '(otomatis dari dataset)'}",
         )
 

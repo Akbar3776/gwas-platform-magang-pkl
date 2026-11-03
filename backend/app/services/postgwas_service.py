@@ -126,7 +126,8 @@ def run_greedy_clumping(
     - Mengurutkan varian berdasarkan p-value naik.
     - Untuk varian dengan p <= selected_p:
       Bila belum ter-clump oleh lead SNP sebelumnya, jadikan Lead SNP baru.
-      Kelompokkan varian lain dalam jarak +/- clump_kb pada kromosom yang sama.
+      Kelompokkan varian lain dalam jendela fisik +/- clump_kb pada kromosom yang sama
+      (fallback berbasis jarak fisik ketika evaluasi matriks LD PLINK biner tidak aktif).
     """
     from bisect import bisect_left, bisect_right
 
