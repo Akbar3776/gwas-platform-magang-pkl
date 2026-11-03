@@ -52,24 +52,28 @@ def _beagle_command(
     params: dict[str, Any],
 ):
     nthreads = int(params.get("nthreads", 2))
+    beagle_jar = which_tool("beagle_jar") or BEAGLE_JAR_PATH
+    java_bin = which_tool("java") or "java"
     memory_flag = str(params.get("beagle_max_memory") or BEAGLE_MAX_MEMORY).strip()
     if memory_flag:
         heap_mb = _memory_to_mb(memory_flag)
         command = [
-            "java",
+            java_bin,
             memory_flag,
             f"-Xms{min(heap_mb, 1024)}m",
             "-XX:+ExitOnOutOfMemoryError",
             "-jar",
-            BEAGLE_JAR_PATH,
+            beagle_jar,
         ]
         rlimit = resolve_rlimit_as_bytes(heap_mb)
     else:
         command, rlimit = build_java_command(
-            BEAGLE_JAR_PATH,
+            beagle_jar,
             [],
             container_mem_limit_mb=params.get("container_mem_limit_mb"),
         )
+        if command and command[0] == "java" and java_bin != "java":
+            command[0] = java_bin
     command.extend([
         f"gt={qc_vcf_path}",
         f"out={output_prefix}",
@@ -158,9 +162,10 @@ def run_imputation(
             }
 
         # Mode reference atau reference_free
+        beagle_jar_path = which_tool("beagle_jar") or BEAGLE_JAR_PATH
         can_run_beagle = (
             bool(which_tool("java"))
-            and Path(BEAGLE_JAR_PATH).is_file()
+            and Path(beagle_jar_path).is_file()
             and (mode != "reference" or (bool(ref_vcf) and Path(ref_vcf).is_file()))
         )
 
@@ -191,22 +196,53 @@ def run_imputation(
         )
 
         if can_run_beagle:
-            run_cli_command(
-                command,
-                cwd=workspace,
-                log_file=log_file,
-                timeout=IMPUTATION_TIMEOUT_SECONDS,
-                preexec_fn=make_memory_limited_preexec_fn(rlimit_bytes) if os.name != "nt" else None,
-            )
+            try:
+                run_cli_command(
+                    command,
+                    cwd=workspace,
+                    log_file=log_file,
+                    timeout=IMPUTATION_TIMEOUT_SECONDS,
+                    preexec_fn=make_memory_limited_preexec_fn(rlimit_bytes) if os.name != "nt" else None,
+                )
+            except CLIExecutionError as exc:
+                err_text = " ".join(exc.last_lines)
+                if "exceeds the maximum integer value" in err_text or "PositionMap.basePos" in err_text:
+                    append_log(
+                        log_file,
+                        "\n[WARNING] Beagle 5 mengalami integer overflow (koordinat genom > 2.14 Gb melebihi limit 32-bit signed integer Java).\n"
+                        "Beagle tidak mendukung kromosom dengan skala koordinat sebesar ini.\n"
+                        f"Secara otomatis melanjutkan pipeline menggunakan data genotipe hasil QC ({qc_vcf_path}).\n"
+                    )
+                    write_json(workspace / "skipped.json", {
+                        "status": "skipped",
+                        "reason": "Beagle integer overflow (koordinat genom melebihi batas 2.14 Gb)",
+                    })
+                    mark_job(
+                        db,
+                        job,
+                        overall_status=JobStatus.RUNNING_STRUCTURE,
+                        current_step=PipelineStep.STRUCTURE,
+                    )
+                    return {
+                        **ctx,
+                        "status": "skipped",
+                        "imputation_skipped": True,
+                        "output_vcf": str(qc_vcf_path),
+                        "genotype_vcf_path": str(qc_vcf_path),
+                        "genotype_bfile_prefix": str(qc_bfile_prefix) if qc_bfile_prefix else None,
+                        "log_file": str(log_file),
+                    }
+                raise
 
             output_vcf = Path(f"{output_prefix}.vcf.gz")
             if not output_vcf.is_file():
                 raise RuntimeError(f"Beagle selesai tetapi output tidak ditemukan: {output_vcf}")
 
             # Konversi balik ke PLINK biner bila plink2 tersedia
-            if which_tool("plink2"):
+            plink2_bin = which_tool("plink2") or which_tool("plink")
+            if plink2_bin:
                 conv_cmd = [
-                    "plink2",
+                    plink2_bin,
                     "--vcf", str(output_vcf),
                     "--double-id",
                     "--allow-extra-chr",
