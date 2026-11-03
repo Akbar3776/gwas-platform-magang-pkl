@@ -44,7 +44,7 @@ DELETE_NORMALIZED_VCF = False
 
 # File pendamping PLINK & Beagle yang aman dihapus setelah tahap masing-masing selesai.
 PLINK_INTERMEDIATE_SUFFIXES = [".bed", ".bim", ".fam", ".log", ".hh", ".nosex"]
-BEAGLE_INTERMEDIATE_SUFFIXES = [".vcf.gz", ".vcf.gz.tbi", ".log"]
+BEAGLE_INTERMEDIATE_SUFFIXES = [".vcf.gz", ".vcf.gz.tbi", ".vcf.gz.csi", ".log"]
 
 
 def _remove_file(path_str: str | None) -> int:

@@ -71,6 +71,42 @@ def _fallback_normalize_vcf(input_path: Path, output_path: Path, log_path: Path)
         log.write(f"[FALLBACK] bcftools tidak ditemukan di PATH; validasi header & kompresi selesai: {output_path}\n")
 
 
+def _index_normalized_vcf(bcftools_bin: str, output_path: Path, workspace: Path, log_path: Path) -> None:
+    """Index VCF using TBI, with automatic fallback to CSI for large chromosomes (>512Mb)."""
+    try:
+        run_cli_command(
+            [bcftools_bin, "index", "-t", str(output_path)],
+            cwd=workspace,
+            log_file=log_path,
+            timeout=600,
+        )
+    except Exception as tbi_exc:
+        logger.warning(
+            "Index TBI gagal (%s), beralih membuat index CSI (mendukung koordinat >512Mb)...",
+            tbi_exc,
+        )
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(
+                f"[INFO] Index TBI gagal ({tbi_exc}); beralih membuat index CSI (koordinat >512Mb)...\n"
+            )
+        try:
+            run_cli_command(
+                [bcftools_bin, "index", "-c", str(output_path)],
+                cwd=workspace,
+                log_file=log_path,
+                timeout=600,
+            )
+        except Exception as csi_exc:
+            logger.warning(
+                "Index CSI juga gagal (%s); melanjutkan pipeline tanpa index.",
+                csi_exc,
+            )
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(
+                    f"[WARNING] Pembuatan index VCF gagal ({csi_exc}); melanjutkan pipeline tanpa index.\n"
+                )
+
+
 @celery_app.task(
     bind=True,
     name="app.tasks.normalization_tasks.run_vcf_normalization",
@@ -168,13 +204,6 @@ def run_vcf_normalization(
                     sorted_path.unlink(missing_ok=True)
                 else:
                     sorted_path.replace(output_path)
-
-                run_cli_command(
-                    [bcftools_bin, "index", "-t", str(output_path)],
-                    cwd=workspace,
-                    log_file=log_path,
-                    timeout=600,
-                )
             except Exception as cli_exc:
                 logger.warning(
                     "bcftools gagal memproses VCF (%s); beralih ke Python fallback...",
@@ -185,6 +214,9 @@ def run_vcf_normalization(
                         f"[FALLBACK] bcftools gagal dieksekusi ({cli_exc}); menjalankan normalisasi Python...\n"
                     )
                 _fallback_normalize_vcf(input_path, output_path, log_path)
+
+            if output_path.is_file():
+                _index_normalized_vcf(bcftools_bin, output_path, workspace, log_path)
         else:
             _fallback_normalize_vcf(input_path, output_path, log_path)
 
