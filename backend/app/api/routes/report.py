@@ -6,6 +6,7 @@ Men-generate dan mengirim PDF ringkasan hasil GWAS.
 """
 
 from pathlib import Path
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -31,11 +32,11 @@ def _is_admin(user) -> bool:
 
 @router.get("/{job_id}/report")
 def download_summary_report(
-    job_id: str,
+    job_id: uuid.UUID,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
+    job = db.get(AnalysisJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job tidak ditemukan")
 

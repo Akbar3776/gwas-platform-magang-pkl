@@ -191,6 +191,7 @@ def discover_resume_state(
             (job_root / "qc" / "plink_qc.bed").is_file()
             and (job_root / "qc" / "plink_qc.vcf.gz").is_file(),
             {
+                "qc_vcf_path": str((job_root / "qc" / "plink_qc.vcf.gz").resolve()),
                 "genotype_vcf_path": str((job_root / "qc" / "plink_qc.vcf.gz").resolve()),
                 "output_vcf": str((job_root / "qc" / "plink_qc.vcf.gz").resolve()),
                 "qc_bfile_prefix": str((job_root / "qc" / "plink_qc").resolve()),

@@ -18,10 +18,10 @@ TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 
 # Kolom p-value berbeda nama antar tool: PLINK --assoc pakai "P", GEMMA pakai "p_wald".
 COLUMN_ALIASES = {
-    "chr": ["CHR", "chr"],
-    "snp": ["SNP", "rs"],
-    "bp": ["BP", "ps"],
-    "p_value": ["P", "p_wald", "p_lrt", "p_score"],
+    "chr": ["CHR", "chr", "#CHROM", "Chromosome"],
+    "snp": ["SNP", "rs", "ID", "rsid"],
+    "bp": ["BP", "ps", "pos", "POS", "Position"],
+    "p_value": ["P", "p", "p_wald", "p_lrt", "p_score", "P.value"],
 }
 
 

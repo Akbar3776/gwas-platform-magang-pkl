@@ -37,6 +37,11 @@ class StepLogEntry(BaseModel):
 
 class JobStatusResponse(BaseModel):
     job_id: uuid.UUID
+    dataset_id: uuid.UUID | None = None
+    dataset_filename: str | None = None
+    phenotype_filename: str | None = None
+    trait: str | None = None
+    model: str | None = None
     pipeline_type: str
     current_step: str
     overall_status: str

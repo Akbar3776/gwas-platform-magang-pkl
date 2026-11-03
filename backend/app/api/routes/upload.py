@@ -65,6 +65,9 @@ def list_uploaded_datasets(
         pheno_info = meta.get("phenotype", {})
         has_pheno = bool(ds.phenotype_file_path and Path(ds.phenotype_file_path).is_file())
         has_anno = bool(ds.annotation_file_path and Path(ds.annotation_file_path).is_file())
+        anno_info = meta.get("annotation", {})
+        pheno_name = pheno_info.get("filename") or (Path(ds.phenotype_file_path).name if has_pheno else None)
+        anno_name = anno_info.get("filename") or (Path(ds.annotation_file_path).name if has_anno else None)
         items.append(
             {
                 "file_id": str(ds.id),
@@ -76,11 +79,11 @@ def list_uploaded_datasets(
                 "uploaded_at": ds.uploaded_at.isoformat() if ds.uploaded_at else None,
                 "file_exists": file_exists,
                 "has_phenotype": has_pheno,
-                "phenotype_filename": Path(ds.phenotype_file_path).name if has_pheno else None,
+                "phenotype_filename": pheno_name,
                 "phenotype_columns": pheno_info.get("columns", []),
                 "numeric_traits": pheno_info.get("numeric_columns", []),
                 "has_annotation": has_anno,
-                "annotation_filename": Path(ds.annotation_file_path).name if has_anno else None,
+                "annotation_filename": anno_name,
             }
         )
     return items

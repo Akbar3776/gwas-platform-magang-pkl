@@ -110,7 +110,7 @@ def run_imputation(
         if job is None:
             raise ValueError(f"AnalysisJob {job_id} tidak ditemukan")
 
-        qc_vcf_path = ctx.get("qc_vcf_path")
+        qc_vcf_path = ctx.get("qc_vcf_path") or ctx.get("output_vcf") or ctx.get("genotype_vcf_path")
         qc_bfile_prefix = ctx.get("qc_bfile_prefix") or ctx.get("output_prefix")
         if not qc_vcf_path or not Path(qc_vcf_path).is_file():
             raise FileNotFoundError(f"VCF hasil QC tidak ditemukan: {qc_vcf_path}")

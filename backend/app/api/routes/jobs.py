@@ -38,7 +38,7 @@ _STEP_DEFINITIONS = [
     ("imputation", "Imputasi Genotipe", "Beagle 5.4"),
     ("structure", "Struktur Populasi & LD", "PCA / Centered Kinship"),
     ("gwas", "Analisis Asosiasi GWAS", "GEMMA / GLM"),
-    ("multilocus", "Multi-Locus GWAS", "FarmCPU / BLINK"),
+    ("multilocus", "Multi-Locus GWAS", "FarmCPU / BLINK / MLMM"),
     ("postgwas", "Pasca-GWAS & Clumping", "Dynamic Thresholds"),
     ("visualization", "Visualisasi & Cache Plot", "Parquet Engine"),
     ("annotation", "Anotasi Gen Kandidat", "GFF3 Parser"),
@@ -52,7 +52,7 @@ _STAGE_LABELS = {
     "imputation": "Tahap 4: Imputasi (Beagle)",
     "structure": "Tahap 5: Struktur Populasi, Kinship & LD Decay",
     "gwas": "Tahap 6: Analisis Asosiasi GWAS (GEMMA/PLINK2)",
-    "multilocus": "Tahap 7: Multi-Locus GWAS (FarmCPU/BLINK)",
+    "multilocus": "Tahap 7: Multi-Locus GWAS (FarmCPU/BLINK/MLMM)",
     "postgwas": "Tahap 8: Pasca-GWAS & Clumping",
     "visualization": "Tahap 9: Visualisasi & Plot Cache",
     "annotation": "Tahap 10: Anotasi Gen Kandidat GFF3",
@@ -489,8 +489,21 @@ def get_job_status(
     step_logs, last_log_line = _collect_step_logs(job)
     elapsed_seconds = _compute_elapsed_seconds(job)
 
+    dataset = db.get(Dataset, job.dataset_id) if job.dataset_id else None
+    dataset_fn = dataset.original_filename if dataset else None
+    pheno_path = job.phenotype_file_path or (dataset.phenotype_file_path if dataset else None)
+    pheno_fn = Path(pheno_path).name if pheno_path else None
+    params = job.parameters or {}
+    trait_val = params.get("phenotype", {}).get("trait")
+    model_val = params.get("gwas", {}).get("model")
+
     return JobStatusResponse(
         job_id=job.id,
+        dataset_id=job.dataset_id,
+        dataset_filename=dataset_fn,
+        phenotype_filename=pheno_fn,
+        trait=trait_val,
+        model=model_val,
         pipeline_type=job.pipeline_type,
         current_step=job.current_step.value,
         overall_status=job.overall_status.value,

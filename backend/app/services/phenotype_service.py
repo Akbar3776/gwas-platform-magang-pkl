@@ -93,7 +93,7 @@ def inspect_phenotype(
     """Inspect and reconcile VCF sample IDs and phenotype data according to Phase 1 specs."""
     if missing_tokens is None:
         missing_tokens = ["", ".", "NA", "-9", "nan", "null"]
-    missing_set = set(t.upper() for t in missing_tokens)
+    missing_set = set(t.upper() for t in missing_tokens) | {"NAN", "NONE", "NULL"}
 
     warnings: list[str] = []
     blocking_errors: list[str] = []
@@ -201,6 +201,9 @@ def inspect_phenotype(
                 continue
             try:
                 num_val = float(raw_val)
+                if np.isnan(num_val) or np.isinf(num_val):
+                    missing_count += 1
+                    continue
                 # Keep first occurrence if duplicate
                 if iid and iid not in valid_numeric_map:
                     valid_numeric_map[iid] = num_val
@@ -241,6 +244,9 @@ def inspect_phenotype(
 
     if matched_vals:
         arr = np.array(matched_vals, dtype=np.float64)
+        arr = arr[np.isfinite(arr)]
+        if len(arr) == 0:
+            arr = np.array([0.0], dtype=np.float64)
         mean_val = float(np.mean(arr))
         median_val = float(np.median(arr))
         sd_val = float(np.std(arr, ddof=1)) if len(arr) > 1 else 0.0
