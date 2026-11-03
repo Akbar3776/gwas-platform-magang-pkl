@@ -218,7 +218,7 @@ def generate_manhattan_cache(
             .str.replace("^chr", "", case=False, regex=True)
             .replace({"X": "23", "Y": "24", "MT": "25", "M": "25"})
         )
-        chr_vals = pd.to_numeric(chr_series, errors="coerce").fillna(1).astype("uint8").to_numpy()
+        chr_vals = pd.to_numeric(chr_series, errors="coerce").fillna(1).astype("uint32").to_numpy()
         bp_vals = pd.to_numeric(chunk[ps_col], errors="coerce").fillna(0).astype("uint32").to_numpy()
         snp_vals = chunk[rs_col].astype(str).to_numpy()
 

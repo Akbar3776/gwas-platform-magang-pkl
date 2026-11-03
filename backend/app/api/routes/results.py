@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 import uuid
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -42,13 +43,13 @@ def _load_job_json_result(
             .filter(Result.job_id == parsed_id, Result.result_type == result_type)
             .first()
         )
-        if res and res.summary_stats:
-            return res.summary_stats
         if res and res.file_path and Path(res.file_path).is_file():
             try:
                 return json.loads(Path(res.file_path).read_text(encoding="utf-8"))
             except Exception:
                 pass
+        if res and res.summary_stats:
+            return res.summary_stats
 
     subfolders = [subfolder] if isinstance(subfolder, str) else list(subfolder)
     filenames = [filename] if isinstance(filename, str) else list(filename)
@@ -139,10 +140,10 @@ def get_manhattan_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> Manh
     return ManhattanDataResponse(
         job_id=str(job_id),
         total_points=len(df),
-        chr=[int(v) for v in df["CHR"].tolist()],
-        bp=[int(v) for v in df["BP"].tolist()],
+        chr=[int(float(v)) if pd.notna(v) and str(v).replace(".", "", 1).isdigit() else 1 for v in df["CHR"].tolist()],
+        bp=[int(float(v)) if pd.notna(v) and str(v).replace(".", "", 1).isdigit() else 0 for v in df["BP"].tolist()],
         snp=[str(v) for v in df["SNP"].tolist()],
-        log10_p=[round(float(v), 4) for v in df["LOG10_P"].tolist()],
+        log10_p=[round(float(v), 4) if pd.notna(v) else 0.0 for v in df["LOG10_P"].tolist()],
     )
 
 
@@ -205,7 +206,7 @@ def get_lead_snps_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict
 @router.get("/{job_id}/peak-comparison", summary="Perbandingan puncak Single vs Multi-Locus GWAS (Fase 4H)")
 def get_peak_comparison_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
     return _load_job_json_result(
-        job_id, db, ResultType.PEAK_COMPARISON, ["multilocus", "postgwas"], "peak_comparison.json"
+        job_id, db, ResultType.PEAK_COMPARISON, ["postgwas", "multilocus"], "peak_comparison.json"
     )
 
 

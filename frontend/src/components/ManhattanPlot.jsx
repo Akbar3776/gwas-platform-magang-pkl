@@ -3,6 +3,7 @@ import {
   buildManhattanLayout,
   GENOME_WIDE_SIGNIFICANCE,
   log10ToPValue,
+  toLog10Threshold,
 } from "../utils/manhattan";
 
 const COLOR_ODD = "#2563eb";
@@ -30,23 +31,33 @@ export default function ManhattanPlot({
 }) {
   const canvasRef = useRef(null);
   const [selectedChr, setSelectedChr] = useState("ALL");
-  const [threshold, setThreshold] = useState(significanceThreshold);
+  const [threshold, setThreshold] = useState(() => toLog10Threshold(significanceThreshold));
   const [hoveredPoint, setHoveredPoint] = useState(null);
 
+  // Sinkronkan threshold ketika nilai ambang pasca-GWAS dari parent berubah
+  useEffect(() => {
+    setThreshold(toLog10Threshold(significanceThreshold));
+  }, [significanceThreshold]);
+
   const availableChromosomes = useMemo(() => {
-    return Array.from(new Set(data?.chr || [])).sort((a, b) => a - b);
+    return Array.from(new Set(data?.chr || [])).sort((a, b) => {
+      const numA = Number(a);
+      const numB = Number(b);
+      if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+      return String(a).localeCompare(String(b), undefined, { numeric: true });
+    });
   }, [data?.chr]);
 
   const filteredData = useMemo(() => {
     if (!data?.chr) return { chr: [], bp: [], snp: [], log10_p: [] };
     if (selectedChr === "ALL") return data;
-    const targetChr = Number(selectedChr);
+    const targetStr = String(selectedChr);
     const chr = [];
     const bp = [];
     const snp = [];
     const log10_p = [];
     for (let i = 0; i < data.chr.length; i += 1) {
-      if (data.chr[i] === targetChr) {
+      if (String(data.chr[i]) === targetStr) {
         chr.push(data.chr[i]);
         bp.push(data.bp[i]);
         snp.push(data.snp[i]);
@@ -167,11 +178,17 @@ export default function ManhattanPlot({
     ctx.stroke();
     ctx.restore();
 
-    // X-axis chromosome ticks
+    // X-axis chromosome ticks (sampling jika terlalu banyak untuk menghindari teks tumpang tindih)
     ctx.textAlign = "center";
     ctx.fillStyle = "#475569";
     ctx.font = "10px system-ui, -apple-system, sans-serif";
-    for (const tick of layout.chromosomeTicks) {
+    const ticksToDraw =
+      layout.chromosomeTicks.length <= 30
+        ? layout.chromosomeTicks
+        : layout.chromosomeTicks.filter(
+            (_, idx) => idx % Math.ceil(layout.chromosomeTicks.length / 25) === 0
+          );
+    for (const tick of ticksToDraw) {
       ctx.fillText(String(tick.chr), toX(tick.x), PAD_TOP + PLOT_H + 18);
     }
 
@@ -280,11 +297,16 @@ export default function ManhattanPlot({
         </label>
 
         <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-          <strong>Ambang -log10(p): {Number(threshold).toFixed(1)}</strong>
+          <strong>
+            Ambang -log10(p): {Number(threshold).toFixed(2)}{" "}
+            <span style={{ fontWeight: 400, color: "#64748b" }}>
+              (p ≈ {Math.pow(10, -threshold) < 0.001 ? Math.pow(10, -threshold).toExponential(2) : Math.pow(10, -threshold).toFixed(3)})
+            </span>
+          </strong>
           <input
             type="range"
-            min="3"
-            max="10"
+            min="2"
+            max="15"
             step="0.1"
             value={threshold}
             onChange={(e) => setThreshold(Number(e.target.value))}

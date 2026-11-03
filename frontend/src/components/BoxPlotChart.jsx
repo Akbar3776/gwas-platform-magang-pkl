@@ -13,14 +13,22 @@ export function BoxPlotChart({
   const canvasRef = useRef(null);
   const [hoveredOutlier, setHoveredOutlier] = useState(null);
 
-  const {
-    q1 = 0,
-    median = 0,
-    q3 = 0,
-    whisker_low = 0,
-    whisker_high = 0,
-    outliers = [],
-  } = data || {};
+  const safeWhiskerLow = Number(data?.whisker_low ?? data?.min ?? 0);
+  const safeQ1 = Number(data?.q1 ?? 0);
+  const safeMedian = Number(data?.median ?? 0);
+  const safeQ3 = Number(data?.q3 ?? 0);
+  const safeWhiskerHigh = Number(data?.whisker_high ?? data?.max ?? 0);
+
+  const rawOutliers = Array.isArray(data?.outliers) ? data.outliers : [];
+  const safeOutliers = rawOutliers
+    .map((o) => {
+      if (typeof o === "number" && !isNaN(o)) return { iid: "", value: o };
+      if (typeof o === "object" && o !== null && !isNaN(Number(o.value))) {
+        return { iid: String(o.iid || ""), value: Number(o.value) };
+      }
+      return null;
+    })
+    .filter(Boolean);
 
   const plotWidth = width - MARGIN.left - MARGIN.right;
   const plotHeight = height - MARGIN.top - MARGIN.bottom;
@@ -29,11 +37,13 @@ export function BoxPlotChart({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const allVals = [whisker_low, q1, median, q3, whisker_high, ...outliers.map((o) => o.value)];
+    const coreVals = [safeWhiskerLow, safeQ1, safeMedian, safeQ3, safeWhiskerHigh].filter((v) => !isNaN(v) && isFinite(v));
+    const outlierVals = safeOutliers.map((o) => o.value);
+    const allVals = [...coreVals, ...outlierVals];
     if (allVals.length === 0) return;
     const minVal = Math.min(...allVals);
     const maxVal = Math.max(...allVals);
-    if (isNaN(minVal)) return;
+    if (isNaN(minVal) || isNaN(maxVal) || !isFinite(minVal) || !isFinite(maxVal)) return;
 
     const ctx = setupHiDpiCanvas(canvas, width, height);
 
@@ -74,24 +84,24 @@ export function BoxPlotChart({
     ctx.strokeStyle = "#334155";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(xScale(whisker_low), centerY);
-    ctx.lineTo(xScale(q1), centerY);
-    ctx.moveTo(xScale(q3), centerY);
-    ctx.lineTo(xScale(whisker_high), centerY);
+    ctx.moveTo(xScale(safeWhiskerLow), centerY);
+    ctx.lineTo(xScale(safeQ1), centerY);
+    ctx.moveTo(xScale(safeQ3), centerY);
+    ctx.lineTo(xScale(safeWhiskerHigh), centerY);
     ctx.stroke();
 
     // Whisker end caps
     const capH = 16;
     ctx.beginPath();
-    ctx.moveTo(xScale(whisker_low), centerY - capH / 2);
-    ctx.lineTo(xScale(whisker_low), centerY + capH / 2);
-    ctx.moveTo(xScale(whisker_high), centerY - capH / 2);
-    ctx.lineTo(xScale(whisker_high), centerY + capH / 2);
+    ctx.moveTo(xScale(safeWhiskerLow), centerY - capH / 2);
+    ctx.lineTo(xScale(safeWhiskerLow), centerY + capH / 2);
+    ctx.moveTo(xScale(safeWhiskerHigh), centerY - capH / 2);
+    ctx.lineTo(xScale(safeWhiskerHigh), centerY + capH / 2);
     ctx.stroke();
 
     // Box (IQR from Q1 to Q3)
-    const xQ1 = xScale(q1);
-    const xQ3 = xScale(q3);
+    const xQ1 = xScale(safeQ1);
+    const xQ3 = xScale(safeQ3);
     const boxW = Math.max(xQ3 - xQ1, 2);
 
     ctx.fillStyle = "#e0f2fe";
@@ -101,7 +111,7 @@ export function BoxPlotChart({
     ctx.strokeRect(xQ1, topY, boxW, boxHeight);
 
     // Median vertical line
-    const xMedian = xScale(median);
+    const xMedian = xScale(safeMedian);
     ctx.strokeStyle = "#0369a1";
     ctx.lineWidth = 3;
     ctx.beginPath();
@@ -110,7 +120,7 @@ export function BoxPlotChart({
     ctx.stroke();
 
     // Draw Outliers
-    outliers.forEach((outlier, idx) => {
+    safeOutliers.forEach((outlier, idx) => {
       const ox = xScale(outlier.value);
       const isHovered = hoveredOutlier === idx;
       ctx.beginPath();
@@ -139,20 +149,22 @@ export function BoxPlotChart({
     hoveredOutlier,
     title,
     xLabel,
-    median,
-    q1,
-    q3,
-    whisker_high,
-    whisker_low,
-    outliers,
+    safeMedian,
+    safeQ1,
+    safeQ3,
+    safeWhiskerHigh,
+    safeWhiskerLow,
+    safeOutliers,
     plotHeight,
     plotWidth,
   ]);
 
   const handleMouseMove = (e) => {
     const canvas = canvasRef.current;
-    if (!canvas || outliers.length === 0) return;
-    const allVals = [whisker_low, q1, median, q3, whisker_high, ...outliers.map((o) => o.value)];
+    if (!canvas || safeOutliers.length === 0) return;
+    const coreVals = [safeWhiskerLow, safeQ1, safeMedian, safeQ3, safeWhiskerHigh].filter((v) => !isNaN(v) && isFinite(v));
+    const outlierVals = safeOutliers.map((o) => o.value);
+    const allVals = [...coreVals, ...outlierVals];
     const minVal = Math.min(...allVals);
     const maxVal = Math.max(...allVals);
 
@@ -167,8 +179,8 @@ export function BoxPlotChart({
     const centerY = MARGIN.top + plotHeight / 2;
 
     let matchedIdx = null;
-    for (let i = 0; i < outliers.length; i++) {
-      const ox = xScale(outliers[i].value);
+    for (let i = 0; i < safeOutliers.length; i++) {
+      const ox = xScale(safeOutliers[i].value);
       const dist = Math.hypot(mx - ox, my - centerY);
       if (dist <= 8) {
         matchedIdx = i;

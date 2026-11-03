@@ -513,6 +513,7 @@ def run_multilocus_gwas(
             "models_evaluated": active_methods,
             "results": methods_results,
             "n_lead_snps": len(multi_lead_snps),
+            "lead_snps": multi_lead_snps,
         }
         write_json(workspace / "multilocus_summary.json", summary_payload)
         upsert_result(
@@ -575,6 +576,7 @@ def run_multilocus_gwas(
             "status": "completed",
             "multilocus_skipped": False,
             "multilocus_results": methods_results,
+            "multilocus_lead_snps": multi_lead_snps,
             "peak_comparison": comparison_res,
             "log_file": str(log_file),
         }

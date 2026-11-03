@@ -48,9 +48,9 @@ export function DataInspectionPanel({ report, fileId, jobId }) {
     }
   };
 
-  const hasStats = stats && typeof stats === "object" && Number(stats.N) > 0;
+  const hasStats = stats && typeof stats === "object" && (Number(stats.N) > 0 || stats.mean !== undefined);
   const hasHist = histogram && Array.isArray(histogram.edges) && histogram.edges.length > 1;
-  const hasBox = boxplot && typeof boxplot === "object" && (boxplot.median !== undefined || boxplot.q1 !== undefined);
+  const hasBox = boxplot && typeof boxplot === "object" && (boxplot.median !== undefined || boxplot.q1 !== undefined || boxplot.whisker_low !== undefined);
 
   return (
     <div style={{ display: "grid", gap: 16 }}>

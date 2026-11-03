@@ -586,7 +586,16 @@ def get_job_file_content(
 
     dataset = db.get(Dataset, job.dataset_id)
     raw_files = _discover_job_files(job, dataset)
-    matched = next((item for item in raw_files if item["file_key"] == file_key), None)
+    matched = next(
+        (
+            item
+            for item in raw_files
+            if item["file_key"] == file_key
+            or item["filename"].lower() == file_key.lower()
+            or item["file_key"].lower().endswith(file_key.lower())
+        ),
+        None,
+    )
     if matched is None:
         raise HTTPException(status_code=404, detail="File tidak ditemukan pada job ini.")
 

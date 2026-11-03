@@ -270,6 +270,15 @@ def run_postgwas_analysis(
         peak_csv = workspace / "Ringkasan_Puncak_GWAS.csv"
         peak_json = workspace / "peak_comparison.json"
         multi_leads = ctx.get("multilocus_lead_snps") or []
+        if not multi_leads:
+            ml_summary_f = workspace.parent / "multilocus" / "multilocus_summary.json"
+            if ml_summary_f.is_file():
+                try:
+                    ml_data = json.loads(ml_summary_f.read_text(encoding="utf-8"))
+                    multi_leads = ml_data.get("lead_snps") or []
+                except Exception:
+                    multi_leads = []
+
         peak_data = generate_peak_comparison(
             single_lead_snps=lead_snps,
             multi_lead_snps=multi_leads,
@@ -278,10 +287,18 @@ def run_postgwas_analysis(
             window_kb=int(clump_kb),
         )
 
+        # Sinkronkan juga ke direktori multilocus bila folder tersedia
+        ml_dir = workspace.parent / "multilocus"
+        if ml_dir.is_dir():
+            try:
+                shutil.copyfile(peak_json, ml_dir / "peak_comparison.json")
+            except Exception:
+                pass
+
         # 6. Upsert Results ke database
         upsert_result(db, job_id, ResultType.THRESHOLDS, str(thresholds_file), thresholds)
         upsert_result(db, job_id, ResultType.LEAD_SNPS, str(lead_snps_file), {"count": len(lead_snps), "snps": lead_snps})
-        upsert_result(db, job_id, ResultType.PEAK_COMPARISON, str(peak_json), peak_data.get("summary"))
+        upsert_result(db, job_id, ResultType.PEAK_COMPARISON, str(peak_json), peak_data)
 
         # Update parameter job & transisi ke tahap Visualisasi
         job.parameters = {

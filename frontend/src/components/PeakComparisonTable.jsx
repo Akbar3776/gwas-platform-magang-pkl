@@ -24,12 +24,26 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
   } = comparison || {};
 
   const allRows = useMemo(() => {
-    return [
+    const list = [
       ...(Array.isArray(consistent) ? consistent : []).map((r) => ({ ...r, category: "consistent" })),
       ...(Array.isArray(multi_only) ? multi_only : []).map((r) => ({ ...r, category: "multi_only" })),
       ...(Array.isArray(single_only) ? single_only : []).map((r) => ({ ...r, category: "single_only" })),
     ];
-  }, [consistent, multi_only, single_only]);
+    if (list.length === 0 && Array.isArray(multilocusSummary?.lead_snps) && multilocusSummary.lead_snps.length > 0) {
+      return multilocusSummary.lead_snps.map((s) => ({
+        snp: s.snp,
+        chr: s.chr,
+        pos: s.pos,
+        p_single: null,
+        p_multi: s.p,
+        method: s.method || "Multi-Locus",
+        status: "Hanya Multi-Locus",
+        keterangan: `Puncak asosiasi teridentifikasi dari evaluasi model ${s.method || "Multi-Locus"}.`,
+        category: "multi_only",
+      }));
+    }
+    return list;
+  }, [consistent, multi_only, single_only, multilocusSummary?.lead_snps]);
 
   const displayedRows = useMemo(() => {
     const q = searchText.toLowerCase().trim();

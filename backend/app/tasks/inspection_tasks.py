@@ -171,7 +171,7 @@ def run_inspection(
             job_id=job.id,
             result_type=ResultType.INSPECTION_REPORT,
             file_path=str(report_json_file),
-            summary_stats=report["stats"],
+            summary_stats=report,
         )
         job.overall_status = JobStatus.RUNNING_NORMALIZATION
         job.current_step = PipelineStep.NORMALIZATION
