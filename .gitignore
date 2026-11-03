@@ -84,7 +84,7 @@ graphify-out
 .ua
 
 # Generated slides
-slides
+/slides/
 
 # Generated
-tasks
+/tasks/
