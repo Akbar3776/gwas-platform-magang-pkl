@@ -78,15 +78,32 @@ export default function GwasResultsPanel({ jobId }) {
     return () => controller.abort();
   }, [jobId]);
 
+  // Sinkronkan metode ambang aktif dengan rekomendasi/output pipeline
+  useEffect(() => {
+    if (thresholdsData?.selected_method) {
+      setActiveThresholdMethod(thresholdsData.selected_method.toLowerCase());
+    }
+  }, [thresholdsData]);
+
   // Compute active significance threshold from user selection
   const computedThreshold = useMemo(() => {
     if (!thresholdsData) return 5e-8;
-    if (activeThresholdMethod === "bonferroni") return thresholdsData.bonferroni || 5e-8;
-    if (activeThresholdMethod === "suggestive") return thresholdsData.suggestive || 1e-5;
-    if (activeThresholdMethod === "fdr") return thresholdsData.fdr || 5e-8;
-    if (activeThresholdMethod === "lod") return thresholdsData.lod_p || 2.5e-6;
+    const m = (activeThresholdMethod || "bonferroni").toLowerCase();
+    if (m === "bonferroni") return thresholdsData.bonferroni || 5e-8;
+    if (m === "suggestive") return thresholdsData.suggestive || 1e-5;
+    if (m === "fdr") return thresholdsData.fdr || thresholdsData.bonferroni || 5e-8;
+    if (m === "lod") return thresholdsData.lod_p || Math.pow(10, -Number(thresholdsData.lod_score || 5.6));
     return 5e-8;
   }, [thresholdsData, activeThresholdMethod]);
+
+  const activeThresholdLabel = useMemo(() => {
+    const m = (activeThresholdMethod || "bonferroni").toLowerCase();
+    if (m === "bonferroni") return "Bonferroni";
+    if (m === "suggestive") return "Suggestive";
+    if (m === "fdr") return "FDR";
+    if (m === "lod") return `LOD ${thresholdsData?.lod_score || 5.6}`;
+    return m.toUpperCase();
+  }, [activeThresholdMethod, thresholdsData?.lod_score]);
 
   const leadSnpsList = useMemo(() => {
     if (!leadSnpsData) return [];
@@ -248,7 +265,8 @@ export default function GwasResultsPanel({ jobId }) {
             <LeadSnpTable
               leadSnps={leadSnpsList}
               activeThreshold={computedThreshold}
-              activeThresholdMethod={activeThresholdMethod.toUpperCase()}
+              activeThresholdMethod={activeThresholdLabel}
+              jobId={jobId}
             />
           </div>
         </div>

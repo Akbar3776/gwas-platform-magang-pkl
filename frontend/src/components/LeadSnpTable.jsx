@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from "react";
+import { downloadJobFile } from "../api/jobsApi";
 
 function formatBeta(b) {
   if (b === null || b === undefined) return "-";
@@ -28,26 +29,51 @@ export function LeadSnpTable({
   leadSnps = [],
   activeThreshold = null,
   activeThresholdMethod = "Bonferroni",
+  jobId = null,
 }) {
   const [filterText, setFilterText] = useState("");
   const [onlySignificant, setOnlySignificant] = useState(false);
   const [expandedSnp, setExpandedSnp] = useState(null);
+  const [sortField, setSortField] = useState("p");
+  const [sortAsc, setSortAsc] = useState(true);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const safeLeadSnps = useMemo(() => {
-    if (!Array.isArray(leadSnps)) return [];
-    return leadSnps.filter((s) => s && typeof s === "object");
+    let rawList = leadSnps;
+    if (leadSnps && typeof leadSnps === "object" && !Array.isArray(leadSnps)) {
+      if (Array.isArray(leadSnps.snps)) {
+        rawList = leadSnps.snps;
+      } else {
+        return [];
+      }
+    }
+    if (!Array.isArray(rawList)) return [];
+    return rawList.filter((s) => s && typeof s === "object");
   }, [leadSnps]);
 
   const numPassThreshold = useMemo(() => {
     if (!activeThreshold || typeof activeThreshold !== "number") return safeLeadSnps.length;
-    return safeLeadSnps.filter((s) => typeof s.p === "number" && s.p <= activeThreshold).length;
+    return safeLeadSnps.filter((s) => {
+      const pNum = Number(s.p);
+      return !isNaN(pNum) && pNum <= activeThreshold;
+    }).length;
   }, [safeLeadSnps, activeThreshold]);
+
+  const handleSort = (field) => {
+    if (sortField === field) {
+      setSortAsc(!sortAsc);
+    } else {
+      setSortField(field);
+      setSortAsc(field === "p" ? true : false);
+    }
+  };
 
   const filtered = useMemo(() => {
     const q = filterText.toLowerCase().trim();
     return safeLeadSnps.filter((s) => {
-      if (onlySignificant && activeThreshold && typeof s.p === "number") {
-        if (s.p > activeThreshold) return false;
+      const pNum = Number(s.p);
+      if (onlySignificant && activeThreshold && !isNaN(pNum)) {
+        if (pNum > activeThreshold) return false;
       }
       if (!q) return true;
       const snpStr = String(s.snp || "").toLowerCase();
@@ -56,6 +82,41 @@ export function LeadSnpTable({
       return snpStr.includes(q) || chrStr.includes(q) || posStr.includes(q);
     });
   }, [safeLeadSnps, filterText, onlySignificant, activeThreshold]);
+
+  const sortedRows = useMemo(() => {
+    return [...filtered].sort((a, b) => {
+      let valA = a[sortField];
+      let valB = b[sortField];
+      if (sortField === "p" || sortField === "pos" || sortField === "beta" || sortField === "se") {
+        valA = Number(valA) || 0;
+        valB = Number(valB) || 0;
+        return sortAsc ? valA - valB : valB - valA;
+      }
+      if (sortField === "chr") {
+        const numA = Number(valA);
+        const numB = Number(valB);
+        if (!isNaN(numA) && !isNaN(numB)) return sortAsc ? numA - numB : numB - numA;
+        return sortAsc
+          ? String(valA || "").localeCompare(String(valB || ""))
+          : String(valB || "").localeCompare(String(valA || ""));
+      }
+      return sortAsc
+        ? String(valA || "").localeCompare(String(valB || ""))
+        : String(valB || "").localeCompare(String(valA || ""));
+    });
+  }, [filtered, sortField, sortAsc]);
+
+  const handleDownloadTsv = async () => {
+    if (!jobId) return;
+    setIsDownloading(true);
+    try {
+      await downloadJobFile(jobId, "lead_snps.tsv", "lead_snps.tsv");
+    } catch (err) {
+      alert(`Gagal mengunduh file lead_snps.tsv: ${err.message}`);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
@@ -76,6 +137,29 @@ export function LeadSnpTable({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          {jobId && safeLeadSnps.length > 0 && (
+            <button
+              type="button"
+              onClick={handleDownloadTsv}
+              disabled={isDownloading}
+              style={{
+                padding: "5px 12px",
+                fontSize: 12,
+                borderRadius: 6,
+                border: "1px solid #cbd5e1",
+                background: "#fff",
+                cursor: isDownloading ? "not-allowed" : "pointer",
+                fontWeight: 600,
+                color: "#1e293b",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              📥 {isDownloading ? "Mengunduh..." : "Unduh TSV"}
+            </button>
+          )}
+
           {activeThreshold && (
             <label
               style={{
@@ -119,7 +203,7 @@ export function LeadSnpTable({
       </div>
 
       {/* Empty States */}
-      {filtered.length === 0 ? (
+      {sortedRows.length === 0 ? (
         <div style={{ padding: 24, textAlign: "center", background: "#f8fafc", borderRadius: 8, color: "#64748b", fontSize: 13 }}>
           {safeLeadSnps.length === 0 ? (
             <div>
@@ -160,24 +244,62 @@ export function LeadSnpTable({
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, textAlign: "left" }}>
             <thead>
               <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
-                <th style={{ padding: "8px 12px" }}>Lead SNP</th>
-                <th style={{ padding: "8px 12px" }}>Chr</th>
-                <th style={{ padding: "8px 12px" }}>Posisi (bp)</th>
+                <th
+                  onClick={() => handleSort("snp")}
+                  style={{ padding: "8px 12px", cursor: "pointer", userSelect: "none" }}
+                >
+                  Lead SNP {sortField === "snp" ? (sortAsc ? "▲" : "▼") : ""}
+                </th>
+                <th
+                  onClick={() => handleSort("chr")}
+                  style={{ padding: "8px 12px", cursor: "pointer", userSelect: "none" }}
+                >
+                  Chr {sortField === "chr" ? (sortAsc ? "▲" : "▼") : ""}
+                </th>
+                <th
+                  onClick={() => handleSort("pos")}
+                  style={{ padding: "8px 12px", cursor: "pointer", userSelect: "none" }}
+                >
+                  Posisi (bp) {sortField === "pos" ? (sortAsc ? "▲" : "▼") : ""}
+                </th>
                 <th style={{ padding: "8px 12px" }}>Alel</th>
-                <th style={{ padding: "8px 12px" }}>P-value</th>
-                <th style={{ padding: "8px 12px" }}>Beta (SE)</th>
+                <th
+                  onClick={() => handleSort("p")}
+                  style={{ padding: "8px 12px", cursor: "pointer", userSelect: "none" }}
+                >
+                  P-value {sortField === "p" ? (sortAsc ? "▲" : "▼") : ""}
+                </th>
+                <th
+                  onClick={() => handleSort("beta")}
+                  style={{ padding: "8px 12px", cursor: "pointer", userSelect: "none" }}
+                >
+                  Beta (SE) {sortField === "beta" ? (sortAsc ? "▲" : "▼") : ""}
+                </th>
                 <th style={{ padding: "8px 12px" }}>Status Ambang</th>
                 <th style={{ padding: "8px 12px" }}>Varian Ter-clump</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((s, idx) => {
+              {sortedRows.map((s, idx) => {
                 const isExpanded = expandedSnp === s.snp;
-                const isSig = activeThreshold && typeof s.p === "number" && s.p <= activeThreshold;
-                const clumpedList = Array.isArray(s.clumped_snps)
-                  ? s.clumped_snps.filter((c) => c && c !== "." && c !== s.snp)
-                  : [];
+                const pNum = Number(s.p);
+                const isValidP = !isNaN(pNum) && pNum > 0;
+                const isSig = activeThreshold && isValidP && pNum <= activeThreshold;
+
+                let clumpedList = [];
+                if (Array.isArray(s.clumped_snps)) {
+                  clumpedList = s.clumped_snps.filter((c) => c && c !== "." && c !== s.snp);
+                } else if (typeof s.clumped_snps === "string" && s.clumped_snps.trim() && s.clumped_snps !== ".") {
+                  clumpedList = s.clumped_snps
+                    .split(",")
+                    .map((c) => c.trim())
+                    .filter((c) => c && c !== "." && c !== s.snp);
+                }
                 const nClumped = typeof s.n_clumped === "number" ? s.n_clumped : clumpedList.length;
+
+                const a1 = s.a1 || s.alt || s.A1 || "-";
+                const a0 = s.a0 || s.ref || s.A2 || s.A0 || "-";
+                const alleleStr = a1 === "-" && a0 === "-" ? "-" : `${a1}/${a0}`;
 
                 return (
                   <React.Fragment key={s.snp || idx}>
@@ -193,7 +315,7 @@ export function LeadSnpTable({
                       <td style={{ padding: "8px 12px" }}>{s.chr ?? "-"}</td>
                       <td style={{ padding: "8px 12px" }}>{formatPos(s.pos)}</td>
                       <td style={{ padding: "8px 12px" }}>
-                        <span style={{ fontWeight: 600 }}>{s.a1 || "-"}</span>/{s.a0 || "-"}
+                        <span style={{ fontWeight: 600 }}>{alleleStr}</span>
                       </td>
                       <td style={{ padding: "8px 12px", fontWeight: 700, color: isSig ? "#dc2626" : "#475569" }}>
                         {formatP(s.p)}

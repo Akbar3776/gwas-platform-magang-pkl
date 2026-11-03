@@ -33,36 +33,45 @@ export function ThresholdSelector({
 
   const currentMethod = (activeMethod || selected_method || "bonferroni").toLowerCase();
 
+  // Hitung fallback lod_p jika backend belum menyertakannya
+  const effectiveLodP = lod_p !== null && lod_p !== undefined
+    ? Number(lod_p)
+    : Math.pow(10, -Number(lod_score || 5.6));
+
   const methods = [
     {
       id: "bonferroni",
       name: "Bonferroni",
       value: bonferroni,
-      desc: n_tests > 0 ? `0.05 / ${n_tests.toLocaleString("id-ID")} varian` : "0.05 / N varian",
+      log10: bonferroni > 0 ? -Math.log10(bonferroni) : 7.3,
+      desc: n_tests > 0 ? `0.05 / ${Number(n_tests).toLocaleString("id-ID")} varian` : "0.05 / N varian",
       color: "#dc2626",
     },
     {
       id: "suggestive",
       name: "Suggestive",
       value: suggestive,
-      desc: "Ambang batas sugestif (1e-5)",
+      log10: suggestive > 0 ? -Math.log10(suggestive) : 5.0,
+      desc: "Ambang sugestif eksploratif (1e-5)",
       color: "#f59e0b",
     },
     {
       id: "fdr",
       name: "FDR (BH)",
       value: fdr,
+      log10: fdr > 0 ? -Math.log10(fdr) : null,
       desc: fdr ? "Benjamini-Hochberg q < 0.05" : "Tidak ada SNP lolos",
       color: "#2563eb",
-      disabled: fdr === null || fdr === undefined,
+      disabled: fdr === null || fdr === undefined || isNaN(Number(fdr)),
     },
     {
       id: "lod",
       name: `LOD ${lod_score || 5.6}`,
-      value: lod_p,
-      desc: `p < 10^-${lod_score || 5.6}`,
+      value: effectiveLodP,
+      log10: Number(lod_score || 5.6),
+      desc: `Ambang log-of-odds (LOD ${lod_score || 5.6})`,
       color: "#7c3aed",
-      disabled: lod_p === null || lod_p === undefined,
+      disabled: effectiveLodP === null || effectiveLodP === undefined || isNaN(Number(effectiveLodP)),
     },
   ];
 
@@ -114,7 +123,16 @@ export function ThresholdSelector({
                   {m.name}
                 </span>
                 {isSelected && (
-                  <span style={{ fontSize: 10, fontWeight: 800, color: m.color }}>
+                  <span
+                    style={{
+                      fontSize: 9,
+                      fontWeight: 800,
+                      background: m.color,
+                      color: "#fff",
+                      padding: "1px 5px",
+                      borderRadius: 4,
+                    }}
+                  >
                     AKTIF
                   </span>
                 )}
@@ -122,7 +140,14 @@ export function ThresholdSelector({
               <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a", margin: "4px 0" }}>
                 {formatThreshold(m.value)}
               </div>
-              <div style={{ fontSize: 11, color: "#64748b" }}>{m.desc}</div>
+              <div style={{ fontSize: 11, color: "#64748b" }}>
+                {m.log10 !== null && (
+                  <span style={{ fontWeight: 600, color: "#334155" }}>
+                    -log10: {m.log10.toFixed(2)} ·{" "}
+                  </span>
+                )}
+                {m.desc}
+              </div>
             </div>
           );
         })}
