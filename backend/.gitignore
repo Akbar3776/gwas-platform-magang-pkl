@@ -33,3 +33,9 @@ data/
 
 # Generated Python artifacts in migration tooling
 alembic/__pycache__/
+
+# Third-party local tools and large binaries
+plink2_win64_*/
+/gemma/gemma
+/beagle-lib/
+/tools/
