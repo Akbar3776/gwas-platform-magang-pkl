@@ -67,3 +67,24 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Codegraph files
+.codegraph/
+
+# Generated files
+graphify-out
+
+# Agents
+.agents
+
+# Playwright files
+.playwright-mcp
+
+# User agent files
+.ua
+
+# Generated slides
+slides
+
+# Generated
+tasks
