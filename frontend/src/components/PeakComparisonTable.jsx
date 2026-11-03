@@ -23,6 +23,10 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
     summary = {},
   } = comparison || {};
 
+  const nConsistent = summary.n_consistent !== undefined ? summary.n_consistent : (Array.isArray(consistent) ? consistent.length : 0);
+  const nMultiOnly = summary.n_multi_only !== undefined ? summary.n_multi_only : (Array.isArray(multi_only) ? multi_only.length : 0);
+  const nSingleOnly = summary.n_single_only !== undefined ? summary.n_single_only : (Array.isArray(single_only) ? single_only.length : 0);
+
   const allRows = useMemo(() => {
     const list = [
       ...(Array.isArray(consistent) ? consistent : []).map((r) => ({ ...r, category: "consistent" })),
@@ -130,7 +134,7 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
             Konsisten (Terkonfirmasi)
           </div>
           <div style={{ fontSize: 22, fontWeight: 800, color: "#15803d", marginTop: 2 }}>
-            {summary.n_consistent || (Array.isArray(consistent) ? consistent.length : 0)}
+            {nConsistent}
           </div>
           <div style={{ fontSize: 10, color: "#166534" }}>Ditemukan di kedua model</div>
         </div>
@@ -151,7 +155,7 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
             Hanya Multi-Locus
           </div>
           <div style={{ fontSize: 22, fontWeight: 800, color: "#1d4ed8", marginTop: 2 }}>
-            {summary.n_multi_only || (Array.isArray(multi_only) ? multi_only.length : 0)}
+            {nMultiOnly}
           </div>
           <div style={{ fontSize: 10, color: "#1e40af" }}>Varian efek minor / BLINK</div>
         </div>
@@ -172,7 +176,7 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
             Hanya Single-Locus
           </div>
           <div style={{ fontSize: 22, fontWeight: 800, color: "#b45309", marginTop: 2 }}>
-            {summary.n_single_only || (Array.isArray(single_only) ? single_only.length : 0)}
+            {nSingleOnly}
           </div>
           <div style={{ fontSize: 10, color: "#92400e" }}>Model GEMMA / Univariat</div>
         </div>

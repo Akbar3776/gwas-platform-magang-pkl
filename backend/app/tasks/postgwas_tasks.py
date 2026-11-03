@@ -156,6 +156,15 @@ def run_postgwas_analysis(
         # 4. Clumping untuk identifikasi Lead SNPs
         append_log(log_file, "Menjalankan Clumping untuk memetakan Lead SNPs independen...")
         selected_p = float(thresholds["selected_p"])
+        suggestive_p = float(thresholds.get("suggestive", 1e-5))
+        min_p = float(thresholds.get("min_p") or (min(p_values) if p_values else 1.0))
+        clump_p2_val = float(clump_cfg.p2)
+
+        # Gunakan ambang clumping terluas dari selected, suggestive, dan clump_p2
+        # agar varian yang lolos Suggestive/LOD/FDR tetap teridentifikasi sebagai lead SNP
+        effective_clump_p1 = max(selected_p, suggestive_p, clump_p2_val, 1e-4)
+        if min_p > effective_clump_p1 and min_p < 0.05:
+            effective_clump_p1 = min(0.01, min_p * 2.0)
 
         # Gunakan PLINK 2 --clump jika plink2 tersedia, atau greedy fallback
         bfile_prefix = ctx.get("genotype_bfile_prefix") or ctx.get("qc_bfile_prefix")
@@ -171,7 +180,7 @@ def run_postgwas_analysis(
                 "--clump", norm_assoc_path,
                 "--clump-id-field", "rs",
                 "--clump-p-field", "p",
-                "--clump-p1", str(selected_p),
+                "--clump-p1", str(effective_clump_p1),
                 "--clump-p2", str(clump_cfg.p2),
                 "--clump-r2", str(clump_cfg.r2),
                 "--clump-kb", str(clump_kb),
@@ -182,24 +191,32 @@ def run_postgwas_analysis(
                 run_cli_command(clump_cmd, cwd=workspace, log_file=log_file, timeout=1800)
                 clumps_output = workspace / "clumped.clumps"
                 if clumps_output.is_file():
-                    ran_plink_clump = True
-                    # Parse .clumps file
+                    # Parse .clumps file (kompatibel PLINK 2 & PLINK 1.9)
                     with clumps_output.open("r", encoding="utf-8") as cf:
                         creader = csv.DictReader(cf, delimiter="\t")
                         for crow in creader:
                             try:
+                                s_id = crow.get("ID") or crow.get("SNP")
+                                s_chr = crow.get("#CHROM") or crow.get("CHR")
+                                s_pos = crow.get("POS") or crow.get("BP")
+                                s_p = crow.get("P")
+                                if not s_id or s_chr is None or s_pos is None or s_p is None:
+                                    continue
                                 lead_snps.append({
-                                    "snp": crow["ID"],
-                                    "chr": str(crow["#CHROM"]).lstrip("chrCHR"),
-                                    "pos": int(crow["POS"]),
-                                    "p": float(crow["P"]),
+                                    "snp": str(s_id),
+                                    "chr": str(s_chr).lstrip("chrCHR"),
+                                    "pos": int(s_pos),
+                                    "p": float(s_p),
                                     "beta": 0.0,
                                     "se": 0.0,
                                     "n_clumped": int(crow.get("TOTAL", 0)),
-                                    "clumped_snps": crow.get("SP2", "").split(","),
+                                    "clumped_snps": [x.strip() for x in str(crow.get("SP2", "")).split(",") if x.strip()],
+                                    "is_candidate": float(s_p) > selected_p,
                                 })
                             except (ValueError, KeyError):
                                 continue
+                    if lead_snps:
+                        ran_plink_clump = True
             except Exception as exc:
                 logger.warning("PLINK2 Clump gagal, beralih ke greedy fallback: %s", exc)
                 append_log(log_file, f"[FALLBACK] PLINK2 Clump gagal ({exc}), menjalankan greedy clumping internal.")
@@ -223,7 +240,7 @@ def run_postgwas_analysis(
                     except (ValueError, TypeError):
                         pass
 
-        if not ran_plink_clump:
+        if not ran_plink_clump or len(lead_snps) == 0:
             lead_snps = run_greedy_clumping(
                 assoc_file=norm_assoc_path,
                 selected_p=selected_p,
@@ -253,9 +270,10 @@ def run_postgwas_analysis(
                     s.get("n_clumped", 0),
                 ])
 
+        n_sig_lead = sum(1 for s in lead_snps if float(s.get("p", 1.0)) <= selected_p)
         append_log(
             log_file,
-            f"Clumping selesai: {len(lead_snps)} Lead SNP signifikan teridentifikasi.\n"
+            f"Clumping selesai: {len(lead_snps)} Lead SNP teridentifikasi ({n_sig_lead} signifikan pada ambang terpilih).\n"
         )
         if len(lead_snps) == 0:
             append_log(
@@ -279,6 +297,42 @@ def run_postgwas_analysis(
                 except Exception:
                     multi_leads = []
 
+        if not multi_leads:
+            ml_peak_f = workspace.parent / "multilocus" / "peak_comparison.json"
+            if ml_peak_f.is_file():
+                try:
+                    prev_peak = json.loads(ml_peak_f.read_text(encoding="utf-8"))
+                    for mo in prev_peak.get("multi_only", []):
+                        multi_leads.append({
+                            "snp": mo.get("snp"),
+                            "chr": mo.get("chr"),
+                            "pos": mo.get("pos"),
+                            "p": mo.get("p_multi"),
+                            "method": mo.get("method"),
+                        })
+                except Exception:
+                    pass
+
+        if not multi_leads:
+            ml_dir = workspace.parent / "multilocus"
+            for method_name in ["farmcpu", "blink", "mlmm"]:
+                m_tsv = ml_dir / f"{method_name}_results.tsv"
+                if m_tsv.is_file():
+                    try:
+                        with m_tsv.open("r", encoding="utf-8") as tf:
+                            t_reader = csv.DictReader(tf, delimiter="\t")
+                            rows = sorted(t_reader, key=lambda x: float(x.get("p", 1.0)))[:5]
+                            for r in rows:
+                                multi_leads.append({
+                                    "snp": r.get("rs"),
+                                    "chr": str(r.get("chr", "")).lstrip("chrCHR"),
+                                    "pos": int(r.get("pos", 0)),
+                                    "p": float(r.get("p", 1.0)),
+                                    "method": method_name.upper(),
+                                })
+                    except Exception:
+                        pass
+
         peak_data = generate_peak_comparison(
             single_lead_snps=lead_snps,
             multi_lead_snps=multi_leads,
@@ -287,7 +341,15 @@ def run_postgwas_analysis(
             window_kb=int(clump_kb),
         )
 
-        # Sinkronkan juga ke direktori multilocus bila folder tersedia
+        # Sinkronkan juga ke direktori multilocus bila folder tersedia dan peak_data valid
+        ml_dir = workspace.parent / "multilocus"
+        if ml_dir.is_dir():
+            ml_peak_target = ml_dir / "peak_comparison.json"
+            if not ml_peak_target.is_file() or peak_data.get("summary", {}).get("total_peaks", 0) > 0:
+                try:
+                    shutil.copyfile(peak_json, ml_peak_target)
+                except Exception:
+                    pass
         ml_dir = workspace.parent / "multilocus"
         if ml_dir.is_dir():
             try:

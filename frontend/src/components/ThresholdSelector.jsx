@@ -28,6 +28,7 @@ export function ThresholdSelector({
     suggestive = 1e-5,
     selected_method = "bonferroni",
     n_tests = 0,
+    min_p = null,
     warning = null,
   } = thresholds;
 
@@ -89,6 +90,13 @@ export function ThresholdSelector({
           }}
         >
           ℹ️ {warning}
+        </div>
+      )}
+
+      {min_p && typeof min_p === "number" && min_p > 0 && (
+        <div style={{ fontSize: 12, color: "#475569", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, background: "#f8fafc", padding: "6px 12px", borderRadius: 6, border: "1px solid #e2e8f0" }}>
+          <span>Total Pengujian: <strong>{Number(n_tests || 0).toLocaleString("id-ID")} varian</strong></span>
+          <span>P-value Terendah Teramati: <strong style={{ color: "#0f172a" }}>{formatThreshold(min_p)}</strong> (-log10: {(-Math.log10(min_p)).toFixed(2)})</span>
         </div>
       )}
 

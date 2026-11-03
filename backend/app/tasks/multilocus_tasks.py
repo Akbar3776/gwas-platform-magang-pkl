@@ -507,6 +507,27 @@ def run_multilocus_gwas(
                     normalize_association_results(gapit_csv_candidates[0], tsv_target)
                     methods_results[m] = {"status": "completed", "tsv_file": str(tsv_target)}
 
+        # Pastikan multi_lead_snps terisi dari TSV model bila sebelumnya kosong
+        if not multi_lead_snps:
+            for m in active_methods:
+                m_lower = m.lower()
+                tsv_target = workspace / f"{m_lower}_results.tsv"
+                if tsv_target.is_file():
+                    try:
+                        with tsv_target.open("r", encoding="utf-8") as tf:
+                            t_reader = csv.DictReader(tf, delimiter="\t")
+                            rows = sorted(t_reader, key=lambda x: float(x.get("p", 1.0)))[:5]
+                            for r in rows:
+                                multi_lead_snps.append({
+                                    "snp": r.get("rs"),
+                                    "chr": str(r.get("chr", "")).lstrip("chrCHR"),
+                                    "pos": int(r.get("pos", 0)),
+                                    "p": float(r.get("p", 1.0)),
+                                    "method": m.upper(),
+                                })
+                    except Exception:
+                        pass
+
         # Simpan ringkasan multi-locus JSON
         summary_payload = {
             "status": "completed",

@@ -124,14 +124,20 @@ export function LeadSnpTable({
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <div>
           <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#0f172a" }}>
-            Tabel Lead SNPs Independen ({safeLeadSnps.length} Lokus Ditemukan)
+            Tabel Lead SNPs Independen ({safeLeadSnps.length} Lokus Teridentifikasi)
           </h4>
           <p style={{ margin: "3px 0 0", fontSize: 12, color: "#64748b" }}>
             Hasil pengelompokan varian (*clumping*) berdasarkan Linkage Disequilibrium.
             {activeThreshold && typeof activeThreshold === "number" && (
-              <span style={{ marginLeft: 6, fontWeight: 600, color: "#1d4ed8" }}>
-                ({numPassThreshold} lokus signifikan pada ambang {activeThresholdMethod} ≤ {activeThreshold.toExponential(2)})
-              </span>
+              numPassThreshold > 0 ? (
+                <span style={{ marginLeft: 6, fontWeight: 600, color: "#15803d" }}>
+                  ({numPassThreshold} lokus signifikan pada ambang {activeThresholdMethod} ≤ {activeThreshold.toExponential(2)})
+                </span>
+              ) : (
+                <span style={{ marginLeft: 6, fontWeight: 600, color: "#b45309" }}>
+                  (0 lokus mencapai ambang {activeThresholdMethod} ≤ {activeThreshold.toExponential(2)}; menampilkan {safeLeadSnps.length} kandidat puncak teratas untuk eksplorasi)
+                </span>
+              )
             )}
           </p>
         </div>
@@ -205,17 +211,41 @@ export function LeadSnpTable({
       {/* Empty States */}
       {sortedRows.length === 0 ? (
         <div style={{ padding: 24, textAlign: "center", background: "#f8fafc", borderRadius: 8, color: "#64748b", fontSize: 13 }}>
-          {safeLeadSnps.length === 0 ? (
+          {onlySignificant && numPassThreshold === 0 ? (
+            <div>
+              <div style={{ fontSize: 20, marginBottom: 6 }}>ℹ️</div>
+              <strong>Tidak ada lokus yang mencapai ambang signifikan {activeThresholdMethod} (≤ {activeThreshold?.toExponential(2)}).</strong>
+              <p style={{ margin: "6px 0 10px", fontSize: 12 }}>
+                Terdapat {safeLeadSnps.length} kandidat puncak teratas yang dapat dieksplorasi.
+              </p>
+              <button
+                type="button"
+                onClick={() => setOnlySignificant(false)}
+                style={{
+                  padding: "4px 12px",
+                  fontSize: 12,
+                  borderRadius: 6,
+                  border: "1px solid #93c5fd",
+                  background: "#eff6ff",
+                  color: "#1e40af",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Lihat Seluruh Kandidat Puncak
+              </button>
+            </div>
+          ) : safeLeadSnps.length === 0 ? (
             <div>
               <div style={{ fontSize: 20, marginBottom: 6 }}>🎯</div>
               <strong>Tidak ada Lead SNPs terdeteksi.</strong>
               <p style={{ margin: "4px 0 0", fontSize: 12 }}>
-                Tidak ada varian yang mencapai ambang batas signifikansi clumping pada parameter yang digunakan.
+                Tidak ada varian yang mencapai kriteria clumping pada dataset ini.
               </p>
             </div>
           ) : (
             <div>
-              Tidak ada SNP yang cocok dengan filter atau kata kunci pencarian.
+              Tidak ada SNP yang cocok dengan kata kunci pencarian.
               <button
                 type="button"
                 onClick={() => {
@@ -331,11 +361,12 @@ export function LeadSnpTable({
                               borderRadius: 4,
                               fontSize: 10,
                               fontWeight: 700,
-                              background: isSig ? "#fef2f2" : "#f1f5f9",
-                              color: isSig ? "#b91c1c" : "#64748b",
+                              background: isSig ? "#f0fdf4" : "#eff6ff",
+                              color: isSig ? "#15803d" : "#1d4ed8",
+                              border: `1px solid ${isSig ? "#bbf7d0" : "#bfdbfe"}`,
                             }}
                           >
-                            {isSig ? `Signifikan (≤ ${activeThresholdMethod})` : "Di bawah ambang"}
+                            {isSig ? `Signifikan (${activeThresholdMethod})` : "Kandidat Puncak"}
                           </span>
                         ) : (
                           <span style={{ color: "#94a3b8" }}>-</span>

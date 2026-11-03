@@ -73,6 +73,7 @@ def determine_thresholds(
     p_arr = np.sort(np.array(p_values, dtype=float))
     valid_p = p_arr[(p_arr > 0) & (p_arr <= 1.0) & ~np.isnan(p_arr)]
     n_valid = len(valid_p)
+    min_p_val = float(valid_p[0]) if n_valid > 0 else 1.0
 
     if n_valid > 0:
         # Cari i terbesar di mana p_(i) <= (i / m) * alpha
@@ -108,6 +109,7 @@ def determine_thresholds(
         "suggestive": suggestive_p,
         "selected_method": selected_method,
         "selected_p": selected_p,
+        "min_p": min_p_val,
         "warning": warning,
     }
 
@@ -119,15 +121,16 @@ def run_greedy_clumping(
     clump_kb: int = 100,
     clump_r2: float = 0.2,
     genotype_bfile: str | None = None,
+    max_lead_snps: int = 50,
 ) -> list[dict[str, Any]]:
     """
     Greedy clumping untuk mengidentifikasi lead SNPs independen:
     - Membaca baris dari file asosiasi kanonik.
     - Mengurutkan varian berdasarkan p-value naik.
-    - Untuk varian dengan p <= selected_p:
-      Bila belum ter-clump oleh lead SNP sebelumnya, jadikan Lead SNP baru.
-      Kelompokkan varian lain dalam jendela fisik +/- clump_kb pada kromosom yang sama
-      (fallback berbasis jarak fisik ketika evaluasi matriks LD PLINK biner tidak aktif).
+    - Mengelompokkan varian dalam jendela fisik +/- clump_kb pada kromosom yang sama.
+    - Jika ada varian dengan p <= selected_p, prioritaskan varian signifikan tersebut.
+    - Jika tidak ada varian yang mencapai selected_p, petakan hingga 20 kandidat puncak teratas
+      (p < 0.05) untuk analisis eksploratif daripada mengembalikan daftar kosong.
     """
     from bisect import bisect_left, bisect_right
 
@@ -135,15 +138,19 @@ def run_greedy_clumping(
     if not assoc_path.is_file():
         return []
 
-    max_keep_p = max(float(selected_p), float(clump_p2))
+    # Ambang filter awal: tampung varian dengan p <= max(selected_p, clump_p2, 0.005)
+    max_keep_p = max(float(selected_p), float(clump_p2), 0.005)
 
-    # Baca hanya varian yang berpotensi menjadi lead SNP atau ter-clump (p <= max(selected_p, clump_p2))
     variants: list[dict[str, Any]] = []
+    min_observed_p = 1.0
+
     with assoc_path.open("r", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter="\t")
         for row in reader:
             try:
                 p_val = float(row["p"])
+                if 0 < p_val < min_observed_p:
+                    min_observed_p = p_val
                 if p_val > max_keep_p:
                     continue
                 pos = int(row["pos"])
@@ -164,6 +171,32 @@ def run_greedy_clumping(
             except (ValueError, KeyError):
                 continue
 
+    # Bila tidak ada varian yang lolos max_keep_p namun ada varian teramati dengan p < 0.05
+    if not variants and min_observed_p < 0.05:
+        retry_keep_p = min(0.05, min_observed_p * 10.0)
+        with assoc_path.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            for row in reader:
+                try:
+                    p_val = float(row["p"])
+                    if p_val > retry_keep_p:
+                        continue
+                    variants.append({
+                        "chr": str(row["chr"]).lstrip("chrCHR"),
+                        "pos": int(row["pos"]),
+                        "rs": str(row["rs"]),
+                        "p": p_val,
+                        "beta": float(row.get("beta") or 0.0),
+                        "se": float(row.get("se") or 0.0),
+                        "a1": row.get("a1", "A"),
+                        "a0": row.get("a0", "G"),
+                    })
+                except (ValueError, KeyError):
+                    continue
+
+    if not variants:
+        return []
+
     # Urutkan berdasarkan p-value terkecil untuk urutan prioritas Lead SNP
     variants.sort(key=lambda x: x["p"])
 
@@ -180,11 +213,17 @@ def run_greedy_clumping(
     clumped_ids: set[str] = set()
     window_bp = int(clump_kb) * 1000
 
+    has_significant = any(v["p"] <= selected_p for v in variants)
+    effective_candidate_p = float(selected_p) if has_significant else max(float(selected_p), 0.05)
+    max_count = max_lead_snps if has_significant else min(max_lead_snps, 20)
+
     for candidate in variants:
-        if candidate["p"] > selected_p:
+        if candidate["p"] > effective_candidate_p:
             break
         if candidate["rs"] in clumped_ids:
             continue
+        if len(lead_snps) >= max_count:
+            break
 
         lead_id = candidate["rs"]
         clumped_ids.add(lead_id)
@@ -202,7 +241,7 @@ def run_greedy_clumping(
             oid = other["rs"]
             if oid == lead_id or oid in clumped_ids:
                 continue
-            if other["p"] <= clump_p2:
+            if other["p"] <= max(clump_p2, candidate["p"] * 2.0):
                 clumped_ids.add(oid)
                 absorbed_snps.append(oid)
 
@@ -216,7 +255,8 @@ def run_greedy_clumping(
             "beta": candidate["beta"],
             "se": candidate["se"],
             "n_clumped": len(absorbed_snps),
-            "clumped_snps": absorbed_snps[:30],  # simpan hingga 30 id
+            "clumped_snps": absorbed_snps[:30],
+            "is_candidate": candidate["p"] > selected_p,
         })
 
     return lead_snps

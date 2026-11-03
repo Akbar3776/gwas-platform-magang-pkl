@@ -83,3 +83,31 @@ def test_run_greedy_clumping(tmp_path):
 
     assert lead_snps[1]["snp"] == "rs_lead1"
     assert lead_snps[1]["n_clumped"] == 2
+
+
+def test_run_greedy_clumping_candidate_peaks(tmp_path):
+    assoc_file = tmp_path / "gwas_results.normalized.tsv"
+    # When no variants meet conservative bonferroni (e.g. 5e-8),
+    # greedy clumping should return exploratory candidate peaks
+    rows = [
+        "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn",
+        "1\t1000\trs_cand1\tA\tG\t0.3\t0.5\t0.08\t0.00015\t100",
+        "1\t1050\trs_cand1_near\tA\tG\t0.3\t0.4\t0.08\t0.0003\t100",
+        "2\t500000\trs_cand2\tC\tG\t0.4\t-0.6\t0.09\t0.00045\t100",
+        "3\t900000\trs_cand3\tA\tT\t0.5\t0.01\t0.05\t0.0012\t100",
+    ]
+    assoc_file.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    lead_snps = run_greedy_clumping(
+        assoc_file=assoc_file,
+        selected_p=5e-8,
+        clump_p2=1e-3,
+        clump_kb=100,
+    )
+
+    assert len(lead_snps) == 3
+    assert lead_snps[0]["snp"] == "rs_cand1"
+    assert lead_snps[0]["is_candidate"] is True
+    assert lead_snps[0]["n_clumped"] == 1
+    assert lead_snps[1]["snp"] == "rs_cand2"
+    assert lead_snps[2]["snp"] == "rs_cand3"

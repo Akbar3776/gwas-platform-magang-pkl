@@ -198,23 +198,100 @@ def get_thresholds_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dic
 
 @router.get("/{job_id}/lead-snps", summary="Daftar Lead SNPs independen hasil clumping (Fase 4F)")
 def get_lead_snps_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return _load_job_json_result(
+    data = _load_job_json_result(
         job_id, db, ResultType.LEAD_SNPS, "postgwas", "lead_snps.json"
     )
+    # Bila lead snps kosong atau tidak ditemukan tapi file asosiasi normalisasi ada di gwas/postgwas
+    raw_snps = data if isinstance(data, list) else data.get("snps", [])
+    if not raw_snps or len(raw_snps) == 0:
+        job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
+        norm_assoc = job_root / "gwas" / "gwas_results.normalized.tsv"
+        if not norm_assoc.is_file():
+            norm_assoc = job_root / "postgwas" / "gwas_results.normalized.tsv"
+        if norm_assoc.is_file():
+            from app.services.postgwas_service import run_greedy_clumping
+            thresh_data = _load_job_json_result(job_id, db, ResultType.THRESHOLDS, "postgwas", "thresholds.json")
+            sel_p = float(thresh_data.get("selected_p") or 5e-8) if isinstance(thresh_data, dict) else 5e-8
+            regenerated = run_greedy_clumping(assoc_file=norm_assoc, selected_p=sel_p)
+            if regenerated:
+                postgwas_dir = job_root / "postgwas"
+                if postgwas_dir.is_dir():
+                    try:
+                        lead_f = postgwas_dir / "lead_snps.json"
+                        lead_f.write_text(json.dumps(regenerated, indent=2), encoding="utf-8")
+                    except Exception:
+                        pass
+                return {"count": len(regenerated), "snps": regenerated}
+    return data
 
 
 @router.get("/{job_id}/peak-comparison", summary="Perbandingan puncak Single vs Multi-Locus GWAS (Fase 4H)")
 def get_peak_comparison_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return _load_job_json_result(
+    data = _load_job_json_result(
         job_id, db, ResultType.PEAK_COMPARISON, ["postgwas", "multilocus"], "peak_comparison.json"
     )
+    # Jika data kosong (total_peaks == 0), periksa apakah ada lead_snps single atau multi-locus yang dapat dibandingkan
+    tot_peaks = 0
+    if isinstance(data, dict):
+        summary_dict = data.get("summary") or {}
+        tot_peaks = int(summary_dict.get("total_peaks") or 0)
+        if tot_peaks == 0:
+            tot_peaks = len(data.get("consistent", [])) + len(data.get("multi_only", [])) + len(data.get("single_only", []))
+
+    if tot_peaks == 0:
+        lead_data = get_lead_snps_data(job_id, db)
+        single_leads = lead_data if isinstance(lead_data, list) else lead_data.get("snps", [])
+        ml_data = get_multilocus_results_data(job_id, db)
+        multi_leads = ml_data.get("lead_snps", []) if isinstance(ml_data, dict) else []
+
+        if single_leads or multi_leads:
+            from app.tasks.multilocus_tasks import generate_peak_comparison
+            job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
+            out_csv = job_root / "postgwas" / "Ringkasan_Puncak_GWAS.csv"
+            out_json = job_root / "postgwas" / "peak_comparison.json"
+            recomp = generate_peak_comparison(
+                single_lead_snps=single_leads,
+                multi_lead_snps=multi_leads,
+                output_csv=out_csv,
+                output_json=out_json,
+            )
+            return recomp
+    return data
 
 
 @router.get("/{job_id}/multilocus-results", summary="Hasil detail analisis Multi-Locus GWAS (FarmCPU, BLINK, MLMM) (Fase 4C)")
 def get_multilocus_results_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return _load_job_json_result(
+    data = _load_job_json_result(
         job_id, db, ResultType.MULTILOCUS_RESULTS, "multilocus", "multilocus_summary.json"
     )
+    if isinstance(data, dict):
+        leads = data.get("lead_snps") or []
+        if not leads:
+            job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "multilocus"
+            if job_root.is_dir():
+                import csv
+                extracted_leads: list[dict[str, Any]] = []
+                for m_name in ["farmcpu", "blink", "mlmm"]:
+                    tsv_f = job_root / f"{m_name}_results.tsv"
+                    if tsv_f.is_file():
+                        try:
+                            with tsv_f.open("r", encoding="utf-8") as tf:
+                                reader = csv.DictReader(tf, delimiter="\t")
+                                rows = sorted(reader, key=lambda x: float(x.get("p", 1.0)))[:5]
+                                for r in rows:
+                                    extracted_leads.append({
+                                        "snp": r.get("rs"),
+                                        "chr": str(r.get("chr", "")).lstrip("chrCHR"),
+                                        "pos": int(r.get("pos", 0)),
+                                        "p": float(r.get("p", 1.0)),
+                                        "method": m_name.upper(),
+                                    })
+                        except Exception:
+                            pass
+                if extracted_leads:
+                    data["lead_snps"] = extracted_leads
+                    data["n_lead_snps"] = len(extracted_leads)
+    return data
 
 
 @router.get("/{job_id}/candidate-genes", summary="Pemetaan anotasi gen kandidat GFF3 & GO (Fase 5)")
