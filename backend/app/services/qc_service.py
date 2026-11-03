@@ -39,6 +39,63 @@ class PlinkExecutionError(RuntimeError):
         self.log_tail = log_tail
 
 
+def resolve_pheno_flags(
+    pheno_path: str | Path | None,
+    trait: str | None = None,
+    is_plink2: bool = True,
+) -> list[str]:
+    """
+    Menyusun flag PLINK (--pheno, --pheno-name, dan --d bila perlu) untuk memuat fenotipe.
+
+    Menangani kasus khusus:
+    1. Trait dengan tanda minus/strip (mis. 'clove-weight', 'plant-height').
+       Pada PLINK 2, karakter '-' adalah pemisah rentang (range delimiter) default.
+       Jika trait mengandung '-', PLINK 2 menganggapnya sebagai rentang (contoh: 'clove' ke 'weight')
+       dan memicu error "Error: --pheno-name: 'clove' does not appear in header line".
+       Solusinya: tambahkan '--d ~' (atau '^') sebelum '--pheno-name'.
+    2. File fenotipe 3 kolom (FID, IID, Trait) seperti 'pheno_plink.txt':
+       Jika trait tidak cocok persis (mis. perbedaan huruf besar/kecil atau alias),
+       kolom ke-3 otomatis digunakan sebagai trait efektif.
+    """
+    if not pheno_path:
+        return []
+
+    p = Path(pheno_path)
+    flags: list[str] = ["--pheno", str(p)]
+
+    effective_trait = trait.strip() if (trait and isinstance(trait, str)) else None
+
+    if p.is_file():
+        try:
+            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    s = line.strip()
+                    if not s or s.startswith("#"):
+                        continue
+                    cols = s.split("\t") if "\t" in s else (s.split(",") if "," in s else s.split())
+                    cols = [c.strip() for c in cols if c.strip()]
+                    if len(cols) == 3:
+                        if not effective_trait or effective_trait.lower() == cols[2].lower() or effective_trait not in cols:
+                            effective_trait = cols[2]
+                    elif len(cols) > 3 and effective_trait:
+                        for c in cols[2:]:
+                            if c.lower() == effective_trait.lower():
+                                effective_trait = c
+                                break
+                    break
+        except Exception:
+            pass
+
+    if effective_trait:
+        if is_plink2 and "-" in effective_trait:
+            delim = "^" if "~" in effective_trait else "~"
+            flags.extend(["--d", delim, "--pheno-name", effective_trait])
+        else:
+            flags.extend(["--pheno-name", effective_trait])
+
+    return flags
+
+
 def build_plink_qc_command(
     input_vcf_path: str,
     output_prefix: str,
@@ -109,8 +166,7 @@ def build_plink2_qc_commands(
         cmd1.extend(["--max-alleles", "2"])
     if cfg.set_missing_var_ids:
         cmd1.extend(["--set-all-var-ids", "@:#"])
-    if pheno_path and trait:
-        cmd1.extend(["--pheno", str(pheno_path), "--pheno-name", str(trait)])
+    cmd1.extend(resolve_pheno_flags(pheno_path, trait, is_plink2=True))
 
     cmd1.extend(["--maf", str(cfg.maf), "--geno", str(cfg.geno)])
 
@@ -197,8 +253,7 @@ def build_plink19_qc_commands(
         cmd_main.extend(["--biallelic-only", "strict"])
     if cfg.set_missing_var_ids:
         cmd_main.extend(["--set-missing-var-ids", "@:#"])
-    if pheno_path and trait:
-        cmd_main.extend(["--pheno", str(pheno_path), "--pheno-name", str(trait)])
+    cmd_main.extend(resolve_pheno_flags(pheno_path, trait, is_plink2=False))
 
     cmd_main.extend(["--maf", str(cfg.maf), "--geno", str(cfg.geno), "--mind", str(cfg.mind)])
     if cfg.population_type == PopulationType.OUTCROSS and cfg.hwe is not None:
@@ -284,16 +339,26 @@ def run_python_fallback_qc(
 
     # 2. Baca fenotipe mapping bila ada
     pheno_map: dict[str, str] = {}
-    if pheno_path and Path(pheno_path).is_file() and trait:
+    if pheno_path and Path(pheno_path).is_file():
         try:
             lines = Path(pheno_path).read_text(encoding="utf-8").splitlines()
             if lines:
-                header = lines[0].strip().split()
-                if trait in header:
-                    t_idx = header.index(trait)
+                header = lines[0].strip().split("\t") if "\t" in lines[0] else lines[0].strip().split()
+                header = [c.strip() for c in header if c.strip()]
+                target_trait = trait.strip() if (trait and isinstance(trait, str)) else None
+                if len(header) == 3 and (not target_trait or target_trait not in header):
+                    target_trait = header[2]
+                elif target_trait:
+                    for h in header[2:]:
+                        if h.lower() == target_trait.lower():
+                            target_trait = h
+                            break
+                if target_trait and target_trait in header:
+                    t_idx = header.index(target_trait)
                     iid_idx = header.index("IID") if "IID" in header else 1
                     for l in lines[1:]:
-                        cols = l.strip().split()
+                        cols = l.strip().split("\t") if "\t" in l else l.strip().split()
+                        cols = [c.strip() for c in cols if c.strip()]
                         if len(cols) > max(iid_idx, t_idx):
                             pheno_map[cols[iid_idx]] = cols[t_idx]
         except Exception:

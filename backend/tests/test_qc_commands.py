@@ -7,6 +7,7 @@ from app.services.qc_service import (
     build_plink19_qc_commands,
     build_plink2_qc_commands,
     encode_plink_bed_row,
+    resolve_pheno_flags,
     run_python_fallback_qc,
 )
 
@@ -83,6 +84,49 @@ def test_build_plink19_qc_commands():
     assert "--biallelic-only" in cmd_main
     assert "--set-missing-var-ids" in cmd_main
     assert "--hwe" not in cmd_main
+
+
+def test_resolve_pheno_flags_hyphenated_trait():
+    target_path = str(Path("/data/pheno.txt"))
+    flags_plink2 = resolve_pheno_flags("/data/pheno.txt", trait="clove-weight", is_plink2=True)
+    assert flags_plink2 == ["--pheno", target_path, "--d", "~", "--pheno-name", "clove-weight"]
+
+    flags_plink19 = resolve_pheno_flags("/data/pheno.txt", trait="clove-weight", is_plink2=False)
+    assert flags_plink19 == ["--pheno", target_path, "--pheno-name", "clove-weight"]
+
+
+def test_resolve_pheno_flags_with_real_file(tmp_path):
+    pheno_file = tmp_path / "pheno_plink.txt"
+    pheno_file.write_text("FID\tIID\tclove-weight\nS1\tS1\t3.45\nS2\tS2\t5.78\n", encoding="utf-8")
+
+    # Mismatch trait parameter (e.g. 'clove') resolves to actual column 'clove-weight'
+    flags1 = resolve_pheno_flags(pheno_file, trait="clove", is_plink2=True)
+    assert flags1 == ["--pheno", str(pheno_file), "--d", "~", "--pheno-name", "clove-weight"]
+
+    # None trait parameter resolves to actual column 'clove-weight'
+    flags2 = resolve_pheno_flags(pheno_file, trait=None, is_plink2=True)
+    assert flags2 == ["--pheno", str(pheno_file), "--d", "~", "--pheno-name", "clove-weight"]
+
+
+def test_build_plink2_qc_commands_hyphenated_trait(tmp_path):
+    pheno_file = tmp_path / "pheno_plink.txt"
+    pheno_file.write_text("FID\tIID\tclove-weight\nS1\tS1\t3.45\n", encoding="utf-8")
+
+    cfg = QCPipelineConfig(population_type=PopulationType.INBRED)
+    cmds = build_plink2_qc_commands(
+        cfg=cfg,
+        input_vcf="/data/in.vcf.gz",
+        output_dir=Path("/data/qc"),
+        pheno_path=str(pheno_file),
+        trait="clove-weight",
+    )
+    cmd1 = cmds[1]
+    assert "--pheno" in cmd1
+    assert "--d" in cmd1
+    d_idx = cmd1.index("--d")
+    assert cmd1[d_idx + 1] == "~"
+    assert cmd1[d_idx + 2] == "--pheno-name"
+    assert cmd1[d_idx + 3] == "clove-weight"
 
 
 def test_encode_plink_bed_row():
