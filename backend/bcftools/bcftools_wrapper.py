@@ -14,19 +14,28 @@ import sys
 
 def win_to_wsl_path(path_str: str) -> str:
     """Convert Windows path to WSL path."""
-    norm = path_str.replace("\\", "/")
+    if not path_str or path_str.startswith("-"):
+        return path_str
+
+    norm = re.sub(r"[/\\]+", "/", path_str)
     match = re.match(r"^([a-zA-Z]):/(.*)$", norm)
     if match:
         drive = match.group(1).lower()
-        rest = match.group(2)
+        rest = match.group(2).lstrip("/")
         return f"/mnt/{drive}/{rest}"
+
     try:
         p = Path(path_str)
-        if p.exists() or p.parent.exists():
+        if p.exists() or (
+            ("/" in norm)
+            and p.parent != Path(".")
+            and p.parent.exists()
+        ):
             resolved = p.resolve()
-            match_res = re.match(r"^([a-zA-Z]):/(.*)$", str(resolved).replace("\\", "/"))
+            norm_res = re.sub(r"[/\\]+", "/", str(resolved))
+            match_res = re.match(r"^([a-zA-Z]):/(.*)$", norm_res)
             if match_res:
-                return f"/mnt/{match_res.group(1).lower()}/{match_res.group(2)}"
+                return f"/mnt/{match_res.group(1).lower()}/{match_res.group(2).lstrip('/')}"
     except Exception:
         pass
     return path_str

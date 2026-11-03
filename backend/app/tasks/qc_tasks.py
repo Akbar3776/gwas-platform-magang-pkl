@@ -173,7 +173,7 @@ def run_qc_pipeline(
                     ensure_not_cancelled(job_id, db)
                     append_log(log_file, f"Menjalankan: {' '.join(cmd)}")
                     run_cli_command(cmd, cwd=workspace, log_file=log_file, timeout=QC_TIMEOUT_SECONDS)
-            except (SubprocessFailed, CLIExecutionError) as exc:
+            except (SubprocessFailed, CLIExecutionError, OSError) as exc:
                 logger.warning("PLINK2 gagal atau varian terfilter habis, beralih ke fallback Python: %s", exc)
                 fallback_used = True
         elif has_plink and plink_bin:
@@ -191,7 +191,7 @@ def run_qc_pipeline(
                     ensure_not_cancelled(job_id, db)
                     append_log(log_file, f"Menjalankan: {' '.join(cmd)}")
                     run_cli_command(cmd, cwd=workspace, log_file=log_file, timeout=QC_TIMEOUT_SECONDS)
-            except (SubprocessFailed, CLIExecutionError) as exc:
+            except (SubprocessFailed, CLIExecutionError, OSError) as exc:
                 logger.warning("PLINK 1.9 gagal, beralih ke fallback Python: %s", exc)
                 fallback_used = True
         else:
