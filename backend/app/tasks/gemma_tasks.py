@@ -16,46 +16,14 @@ from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, Result, ResultType
 from app.services.manhattan_parser import compute_assoc_summary_stats, generate_manhattan_cache
+from app.tasks._common import which_tool
 from app.tasks.celery_app import celery_app, get_task_logger
 from app.utils.process import CLIExecutionError, SubprocessFailed, run_cli_command
 
 logger = get_task_logger(__name__)
 
-
-def _resolve_gemma_binary() -> str:
-    env_bin = os.getenv("GEMMA_BINARY_PATH")
-    if env_bin and (shutil.which(env_bin) or Path(env_bin).is_file()):
-        return env_bin
-    backend_root = Path(__file__).resolve().parent.parent.parent
-    for cand in [
-        backend_root / "gemma" / "gemma.cmd",
-        backend_root / "gemma" / "gemma.bat",
-        backend_root / "gemma" / "gemma",
-        Path("/usr/local/bin/gemma"),
-    ]:
-        if cand.is_file():
-            return str(cand)
-    return env_bin or "gemma"
-
-
-def _resolve_plink_binary() -> str:
-    env_bin = os.getenv("PLINK_BINARY_PATH")
-    if env_bin and (shutil.which(env_bin) or Path(env_bin).is_file()):
-        return env_bin
-    backend_root = Path(__file__).resolve().parent.parent.parent
-    for cand in [
-        backend_root / "plink2_win64_20261012" / "plink2.exe",
-        backend_root / "bin" / "plink.exe",
-        backend_root / "bin" / "plink",
-        Path("/usr/local/bin/plink"),
-    ]:
-        if cand.is_file():
-            return str(cand)
-    return env_bin or "plink"
-
-
-GEMMA_BINARY = _resolve_gemma_binary()
-PLINK_BINARY = _resolve_plink_binary()
+GEMMA_BINARY = which_tool("gemma") or "gemma"
+PLINK_BINARY = which_tool("plink2") or which_tool("plink") or "plink"
 GEMMA_TIMEOUT_SECONDS = int(os.getenv("GEMMA_TIMEOUT_SECONDS", str(6 * 60 * 60)))
 
 
@@ -617,8 +585,8 @@ def run_gemma_gwas(
         kinship_path = output_dir_gemma / "kinship.cXX.txt"
 
         has_gemma_binaries = (
-            shutil.which(GEMMA_BINARY) is not None
-            and shutil.which(PLINK_BINARY) is not None
+            (Path(GEMMA_BINARY).is_file() or shutil.which(GEMMA_BINARY) is not None)
+            and (Path(PLINK_BINARY).is_file() or shutil.which(PLINK_BINARY) is not None)
         )
 
         candidate_bfile = (

@@ -181,6 +181,14 @@ def which_tool(name: str, default: str | None = None) -> str | None:
         env_keys.extend(["PLINK2_BINARY_PATH", "PLINK_BINARY_PATH"])
     elif norm_upper == "BCFTOOLS":
         env_keys.extend(["BCFTOOLS_BINARY_PATH", "BCFTOOLS_PATH"])
+    elif norm_upper == "GEMMA":
+        env_keys.extend(["GEMMA_BINARY_PATH", "GEMMA_PATH"])
+    elif norm_upper == "BEAGLE_JAR":
+        env_keys.extend(["BEAGLE_JAR_PATH", "IMPUTATION_JAR_PATH"])
+    elif norm_upper in {"BEAGLE", "IMPUTATION"}:
+        env_keys.extend(["IMPUTATION_BINARY_PATH", "BEAGLE_JAR_PATH", "BEAGLE_BINARY_PATH"])
+    elif norm_upper in {"RSCRIPT", "R"}:
+        env_keys.extend(["R_BINARY_PATH", "RSCRIPT_BINARY_PATH"])
 
     for k in env_keys:
         val = os.getenv(k, "").strip()
@@ -206,8 +214,6 @@ def which_tool(name: str, default: str | None = None) -> str | None:
         local_candidates.extend([
             backend_root / "bcftools" / "bcftools.cmd",
             backend_root / "bcftools" / "bcftools.bat",
-            backend_root / "tools" / "bcftools" / "bcftools.cmd",
-            backend_root / "tools" / "bcftools" / "bcftools.bat",
             backend_root / "bin" / "bcftools",
         ])
     elif norm_upper == "GEMMA":
@@ -215,6 +221,25 @@ def which_tool(name: str, default: str | None = None) -> str | None:
             backend_root / "gemma" / "gemma.cmd",
             backend_root / "gemma" / "gemma.bat",
             backend_root / "gemma" / "gemma",
+        ])
+    elif norm_upper == "BEAGLE_JAR":
+        local_candidates.extend([
+            backend_root / "tools" / "beagle" / "beagle.jar",
+            backend_root / "beagle" / "beagle.jar",
+            Path("/opt/tools/beagle.jar"),
+        ])
+    elif norm_upper in {"BEAGLE", "IMPUTATION"}:
+        local_candidates.extend([
+            backend_root / "tools" / "beagle" / "beagle.cmd",
+            backend_root / "tools" / "beagle" / "beagle.bat",
+            backend_root / "tools" / "beagle" / "beagle.jar",
+            backend_root / "beagle" / "beagle.jar",
+            Path("/opt/tools/beagle.jar"),
+        ])
+    elif norm_upper in {"RSCRIPT", "R"}:
+        local_candidates.extend([
+            backend_root / "tools" / "rscript.cmd",
+            backend_root / "tools" / "rscript.bat",
         ])
 
     for cand in local_candidates:
