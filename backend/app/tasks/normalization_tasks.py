@@ -12,6 +12,7 @@ from typing import Any
 from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep
+from app.tasks._common import which_tool
 from app.tasks.celery_app import celery_app, get_task_logger
 from app.utils.process import CLIExecutionError, run_cli_command
 
@@ -137,41 +138,53 @@ def run_vcf_normalization(
                 f"Input VCF   : {input_path.name} ({input_path.stat().st_size} bytes)\n"
                 f"Target      : {output_path}\n"
             )
-        if shutil.which("bcftools"):
-            # Header-only read validates that bcftools recognizes the input as VCF/BCF.
-            run_cli_command(
-                ["bcftools", "view", "--no-version", "-h", str(input_path)],
-                cwd=workspace,
-                log_file=log_path,
-                timeout=NORMALIZATION_TIMEOUT_SECONDS,
-            )
-
-            reference_fasta = params.get("reference_fasta")
-            sorted_path = workspace / "sorted.vcf.gz"
-            run_cli_command(
-                ["bcftools", "sort", "-Oz", "-o", str(sorted_path), str(input_path)],
-                cwd=workspace,
-                log_file=log_path,
-                timeout=NORMALIZATION_TIMEOUT_SECONDS,
-            )
-
-            if reference_fasta:
+        bcftools_bin = which_tool("bcftools")
+        if bcftools_bin:
+            try:
+                # Header-only read validates that bcftools recognizes the input as VCF/BCF.
                 run_cli_command(
-                    ["bcftools", "norm", "-f", str(reference_fasta), "-Oz", "-o", str(output_path), str(sorted_path)],
+                    [bcftools_bin, "view", "--no-version", "-h", str(input_path)],
                     cwd=workspace,
                     log_file=log_path,
                     timeout=NORMALIZATION_TIMEOUT_SECONDS,
                 )
-                sorted_path.unlink(missing_ok=True)
-            else:
-                sorted_path.replace(output_path)
 
-            run_cli_command(
-                ["bcftools", "index", "-t", str(output_path)],
-                cwd=workspace,
-                log_file=log_path,
-                timeout=600,
-            )
+                reference_fasta = params.get("reference_fasta")
+                sorted_path = workspace / "sorted.vcf.gz"
+                run_cli_command(
+                    [bcftools_bin, "sort", "-Oz", "-o", str(sorted_path), str(input_path)],
+                    cwd=workspace,
+                    log_file=log_path,
+                    timeout=NORMALIZATION_TIMEOUT_SECONDS,
+                )
+
+                if reference_fasta:
+                    run_cli_command(
+                        [bcftools_bin, "norm", "-f", str(reference_fasta), "-Oz", "-o", str(output_path), str(sorted_path)],
+                        cwd=workspace,
+                        log_file=log_path,
+                        timeout=NORMALIZATION_TIMEOUT_SECONDS,
+                    )
+                    sorted_path.unlink(missing_ok=True)
+                else:
+                    sorted_path.replace(output_path)
+
+                run_cli_command(
+                    [bcftools_bin, "index", "-t", str(output_path)],
+                    cwd=workspace,
+                    log_file=log_path,
+                    timeout=600,
+                )
+            except Exception as cli_exc:
+                logger.warning(
+                    "bcftools gagal memproses VCF (%s); beralih ke Python fallback...",
+                    cli_exc,
+                )
+                with log_path.open("a", encoding="utf-8") as log:
+                    log.write(
+                        f"[FALLBACK] bcftools gagal dieksekusi ({cli_exc}); menjalankan normalisasi Python...\n"
+                    )
+                _fallback_normalize_vcf(input_path, output_path, log_path)
         else:
             _fallback_normalize_vcf(input_path, output_path, log_path)
 

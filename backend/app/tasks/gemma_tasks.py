@@ -20,8 +20,42 @@ from app.tasks.celery_app import celery_app, get_task_logger
 from app.utils.process import CLIExecutionError, SubprocessFailed, run_cli_command
 
 logger = get_task_logger(__name__)
-GEMMA_BINARY = os.getenv("GEMMA_BINARY_PATH", "gemma")
-PLINK_BINARY = os.getenv("PLINK_BINARY_PATH", "plink")
+
+
+def _resolve_gemma_binary() -> str:
+    env_bin = os.getenv("GEMMA_BINARY_PATH")
+    if env_bin and (shutil.which(env_bin) or Path(env_bin).is_file()):
+        return env_bin
+    backend_root = Path(__file__).resolve().parent.parent.parent
+    for cand in [
+        backend_root / "gemma" / "gemma.cmd",
+        backend_root / "gemma" / "gemma.bat",
+        backend_root / "gemma" / "gemma",
+        Path("/usr/local/bin/gemma"),
+    ]:
+        if cand.is_file():
+            return str(cand)
+    return env_bin or "gemma"
+
+
+def _resolve_plink_binary() -> str:
+    env_bin = os.getenv("PLINK_BINARY_PATH")
+    if env_bin and (shutil.which(env_bin) or Path(env_bin).is_file()):
+        return env_bin
+    backend_root = Path(__file__).resolve().parent.parent.parent
+    for cand in [
+        backend_root / "plink2_win64_20261012" / "plink2.exe",
+        backend_root / "bin" / "plink.exe",
+        backend_root / "bin" / "plink",
+        Path("/usr/local/bin/plink"),
+    ]:
+        if cand.is_file():
+            return str(cand)
+    return env_bin or "plink"
+
+
+GEMMA_BINARY = _resolve_gemma_binary()
+PLINK_BINARY = _resolve_plink_binary()
 GEMMA_TIMEOUT_SECONDS = int(os.getenv("GEMMA_TIMEOUT_SECONDS", str(6 * 60 * 60)))
 
 

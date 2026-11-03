@@ -46,9 +46,33 @@ from app.utils.process import SubprocessFailed, run_subprocess
 
 logger = logging.getLogger(__name__)
 
-PLINK_BINARY = os.getenv("PLINK_BINARY_PATH", "plink")
-IMPUTATION_BINARY = os.getenv("IMPUTATION_BINARY_PATH", "beagle")
-GEMMA_BINARY = os.getenv("GEMMA_BINARY_PATH", "gemma")
+def _resolve_tool_binary(env_var: str, candidates_rel: list[str], default: str) -> str:
+    env_bin = os.getenv(env_var)
+    if env_bin and (shutil.which(env_bin) or Path(env_bin).is_file()):
+        return env_bin
+    backend_root = Path(__file__).resolve().parent.parent.parent
+    for rel in candidates_rel:
+        cand = backend_root / rel
+        if cand.is_file():
+            return str(cand)
+    return env_bin or default
+
+
+PLINK_BINARY = _resolve_tool_binary(
+    "PLINK_BINARY_PATH",
+    ["plink2_win64_20261012/plink2.exe", "bin/plink.exe", "bin/plink"],
+    "plink",
+)
+IMPUTATION_BINARY = _resolve_tool_binary(
+    "IMPUTATION_BINARY_PATH",
+    ["tools/beagle/beagle.cmd", "tools/beagle/beagle.bat", "bin/beagle"],
+    "beagle",
+)
+GEMMA_BINARY = _resolve_tool_binary(
+    "GEMMA_BINARY_PATH",
+    ["gemma/gemma.cmd", "gemma/gemma.bat", "gemma/gemma"],
+    "gemma",
+)
 
 TASK_TIME_LIMIT = 60 * 60 * 6  # 6 jam batas keras per task
 TASK_SOFT_TIME_LIMIT = TASK_TIME_LIMIT - 300

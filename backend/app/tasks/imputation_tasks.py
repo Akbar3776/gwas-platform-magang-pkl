@@ -30,7 +30,24 @@ from app.tasks.celery_app import celery_app, get_task_logger
 from app.utils.process import CLIExecutionError, run_cli_command
 
 logger = get_task_logger(__name__)
-BEAGLE_JAR_PATH = os.getenv("BEAGLE_JAR_PATH", "/opt/tools/beagle.jar")
+
+
+def _resolve_beagle_jar() -> str:
+    env_jar = os.getenv("BEAGLE_JAR_PATH")
+    if env_jar and Path(env_jar).is_file():
+        return env_jar
+    backend_root = Path(__file__).resolve().parent.parent.parent
+    for cand in [
+        backend_root / "tools" / "beagle" / "beagle.jar",
+        backend_root / "beagle" / "beagle.jar",
+        Path("/opt/tools/beagle.jar"),
+    ]:
+        if cand.is_file():
+            return str(cand)
+    return env_jar or "/opt/tools/beagle.jar"
+
+
+BEAGLE_JAR_PATH = _resolve_beagle_jar()
 IMPUTATION_TIMEOUT_SECONDS = int(os.getenv("IMPUTATION_TIMEOUT_SECONDS", str(6 * 60 * 60)))
 BEAGLE_MAX_MEMORY = os.getenv("BEAGLE_MAX_MEMORY", "")
 

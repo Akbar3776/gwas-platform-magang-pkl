@@ -162,9 +162,10 @@ def run_postgwas_analysis(
         ran_plink_clump = False
         lead_snps: list[dict[str, Any]] = []
 
-        if which_tool("plink2") and bfile_prefix and Path(f"{bfile_prefix}.bed").is_file():
+        plink2_bin = which_tool("plink2")
+        if plink2_bin and bfile_prefix and Path(f"{bfile_prefix}.bed").is_file():
             clump_cmd = [
-                "plink2",
+                plink2_bin,
                 "--bfile", bfile_prefix,
                 "--allow-extra-chr",
                 "--clump", norm_assoc_path,
@@ -199,8 +200,9 @@ def run_postgwas_analysis(
                                 })
                             except (ValueError, KeyError):
                                 continue
-            except (SubprocessFailed, CLIExecutionError) as exc:
+            except Exception as exc:
                 logger.warning("PLINK2 Clump gagal, beralih ke greedy fallback: %s", exc)
+                append_log(log_file, f"[FALLBACK] PLINK2 Clump gagal ({exc}), menjalankan greedy clumping internal.")
 
         if ran_plink_clump and lead_snps and Path(norm_assoc_path).is_file():
             lead_ids = {s["snp"] for s in lead_snps if s.get("snp")}

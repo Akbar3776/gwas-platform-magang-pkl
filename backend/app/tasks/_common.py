@@ -171,18 +171,61 @@ def upsert_result(
 
 
 def which_tool(name: str, default: str | None = None) -> str | None:
-    """Resolve CLI executable path from environment variable or system PATH."""
-    raw = (
-        os.getenv(name)
-        or os.getenv(f"{name.upper()}_BINARY_PATH")
-        or (default if default is not None else name)
-    )
-    val = raw.strip() if isinstance(raw, str) else ""
-    if not val:
-        return None
-    if Path(val).is_file() and os.access(val, os.X_OK):
-        return val
-    return shutil.which(val)
+    """Resolve CLI executable path from environment variable, local backend folders, or system PATH."""
+    clean_name = name.strip()
+    norm_upper = clean_name.upper()
+
+    # 1. Direct environment variable lookup
+    env_keys = [clean_name, f"{norm_upper}_BINARY_PATH"]
+    if norm_upper in {"PLINK2", "PLINK"}:
+        env_keys.extend(["PLINK2_BINARY_PATH", "PLINK_BINARY_PATH"])
+    elif norm_upper == "BCFTOOLS":
+        env_keys.extend(["BCFTOOLS_BINARY_PATH", "BCFTOOLS_PATH"])
+
+    for k in env_keys:
+        val = os.getenv(k, "").strip()
+        if val:
+            if Path(val).is_file():
+                return str(Path(val).resolve())
+            w = shutil.which(val)
+            if w:
+                return w
+
+    # 2. Local backend directories lookup
+    backend_root = Path(__file__).resolve().parent.parent.parent
+    local_candidates: list[Path] = []
+    if norm_upper in {"PLINK2", "PLINK"}:
+        local_candidates.extend([
+            backend_root / "plink2_win64_20261012" / "plink2.exe",
+            backend_root / "plink" / "plink2.exe",
+            backend_root / "plink" / "plink.exe",
+            backend_root / "bin" / "plink2.exe",
+            backend_root / "bin" / "plink.exe",
+        ])
+    elif norm_upper == "BCFTOOLS":
+        local_candidates.extend([
+            backend_root / "bcftools" / "bcftools.cmd",
+            backend_root / "bcftools" / "bcftools.bat",
+            backend_root / "tools" / "bcftools" / "bcftools.cmd",
+            backend_root / "tools" / "bcftools" / "bcftools.bat",
+            backend_root / "bin" / "bcftools",
+        ])
+    elif norm_upper == "GEMMA":
+        local_candidates.extend([
+            backend_root / "gemma" / "gemma.cmd",
+            backend_root / "gemma" / "gemma.bat",
+            backend_root / "gemma" / "gemma",
+        ])
+
+    for cand in local_candidates:
+        if cand.is_file():
+            return str(cand.resolve())
+
+    # 3. System PATH fallback
+    system_candidate = default if default is not None else clean_name
+    if Path(system_candidate).is_file():
+        return str(Path(system_candidate).resolve())
+    return shutil.which(system_candidate)
 
 
 def write_json(path: Path | str, obj: Any) -> None:

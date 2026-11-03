@@ -19,7 +19,7 @@ except ImportError:
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 _BACKEND_ENV_FILE = _BACKEND_DIR / ".env"
 
-if not _HAS_PYDANTIC_SETTINGS and _BACKEND_ENV_FILE.is_file():
+if _BACKEND_ENV_FILE.is_file():
     for raw_line in _BACKEND_ENV_FILE.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -66,6 +66,17 @@ class Settings(BaseSettings):
     # -- Retention --
     RETENTION_DAYS: int = int(os.getenv("RETENTION_DAYS", "30"))
     RETENTION_HARD_DELETE: bool = os.getenv("RETENTION_HARD_DELETE", "false").lower() == "true"
+
+    # -- Bioinformatics Tools Paths --
+    PLINK_BINARY_PATH: str = os.getenv("PLINK_BINARY_PATH", "")
+    PLINK2_BINARY_PATH: str = os.getenv("PLINK2_BINARY_PATH", "")
+    BCFTOOLS_BINARY_PATH: str = os.getenv("BCFTOOLS_BINARY_PATH", "")
+    GEMMA_BINARY_PATH: str = os.getenv("GEMMA_BINARY_PATH", "")
+    IMPUTATION_BINARY_PATH: str = os.getenv("IMPUTATION_BINARY_PATH", "")
+    BEAGLE_JAR_PATH: str = os.getenv("BEAGLE_JAR_PATH", "")
+    BEAGLE_LIB_DIR: str = os.getenv("BEAGLE_LIB_DIR", "")
+    BEAGLE_LIB_BIN_DIR: str = os.getenv("BEAGLE_LIB_BIN_DIR", "")
+    R_BINARY_PATH: str = os.getenv("R_BINARY_PATH", "")
 
     if _HAS_PYDANTIC_SETTINGS:
         model_config = SettingsConfigDict(

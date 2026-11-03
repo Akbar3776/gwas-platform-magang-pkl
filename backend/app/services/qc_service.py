@@ -71,6 +71,7 @@ def build_plink2_qc_commands(
     keep_ids: str | None = None,
     pheno_path: str | None = None,
     trait: str | None = None,
+    plink2_bin: str = "plink2",
 ) -> list[list[str]]:
     """
     Menyusun urutan perintah PLINK 2 untuk Fase 2 Quality Control:
@@ -84,7 +85,7 @@ def build_plink2_qc_commands(
 
     # Langkah 0: Statistik sebelum QC
     commands.append([
-        "plink2",
+        plink2_bin,
         "--vcf", input_vcf,
         "--allow-extra-chr",
         "--double-id",
@@ -95,7 +96,7 @@ def build_plink2_qc_commands(
 
     # Langkah 1: QC Varian
     cmd1 = [
-        "plink2",
+        plink2_bin,
         "--vcf", input_vcf,
         "--double-id",
         "--allow-extra-chr",
@@ -125,7 +126,7 @@ def build_plink2_qc_commands(
 
     # Langkah 2: QC Sampel lanjutan
     cmd2 = [
-        "plink2",
+        plink2_bin,
         "--bfile", str(output_dir / "qc_step1"),
         "--allow-extra-chr",
         "--mind", str(cfg.mind),
@@ -137,7 +138,7 @@ def build_plink2_qc_commands(
 
     # Langkah 3: Ekspor VCF terstandarisasi untuk imputasi/parser
     cmd3 = [
-        "plink2",
+        plink2_bin,
         "--bfile", str(output_dir / "plink_qc"),
         "--allow-extra-chr",
         "--export", "vcf-4.2", "bgz", "id-paste=iid",
@@ -147,7 +148,7 @@ def build_plink2_qc_commands(
 
     # Langkah 4: Statistik sesudah QC
     cmd4 = [
-        "plink2",
+        plink2_bin,
         "--bfile", str(output_dir / "plink_qc"),
         "--allow-extra-chr",
         "--freq",
@@ -166,13 +167,14 @@ def build_plink19_qc_commands(
     keep_ids: str | None = None,
     pheno_path: str | None = None,
     trait: str | None = None,
+    plink_bin: str = "plink",
 ) -> list[list[str]]:
     """Menyusun perintah PLINK 1.9 ekuivalen bila plink2 tidak terpasang."""
     commands: list[list[str]] = []
 
     # Ringkasan sebelum QC
     commands.append([
-        "plink",
+        plink_bin,
         "--vcf", input_vcf,
         "--allow-extra-chr",
         "--double-id",
@@ -182,7 +184,7 @@ def build_plink19_qc_commands(
     ])
 
     cmd_main = [
-        "plink",
+        plink_bin,
         "--vcf", input_vcf,
         "--double-id",
         "--allow-extra-chr",
@@ -211,7 +213,7 @@ def build_plink19_qc_commands(
 
     # Ringkasan sesudah QC
     commands.append([
-        "plink",
+        plink_bin,
         "--bfile", str(output_dir / "plink_qc"),
         "--allow-extra-chr",
         "--freq",

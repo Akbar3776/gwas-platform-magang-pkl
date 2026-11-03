@@ -149,6 +149,9 @@ def test_full_gwas_pipeline_and_results_end_to_end(monkeypatch, tmp_path: Path):
     uploaded_vcf = dataset_dir / "sampelkecil.vcf"
     uploaded_vcf.write_text(
         "##fileformat=VCFv4.2\n"
+        "##contig=<ID=1>\n"
+        "##contig=<ID=2>\n"
+        "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n"
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPEL_1\tSAMPEL_2\tSAMPEL_3\tSAMPEL_4\n"
         "1\t1000\trs1\tA\tG\t50\tPASS\t.\tGT\t0/0\t0/1\t1/1\t0/1\n"
         "1\t2000\trs2\tC\tT\t50\tPASS\t.\tGT\t1/1\t0/1\t0/0\t0/1\n"

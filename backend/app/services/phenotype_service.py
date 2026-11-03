@@ -19,7 +19,8 @@ def read_vcf_sample_ids(vcf_path: Path | str) -> list[str]:
         raise FileNotFoundError(f"File VCF tidak ditemukan: {vcf_path}")
 
     # Check if bcftools is available
-    bcftools = shutil.which("bcftools")
+    from app.tasks._common import which_tool
+    bcftools = which_tool("bcftools")
     if bcftools:
         try:
             import subprocess

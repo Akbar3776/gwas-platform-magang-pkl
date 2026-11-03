@@ -138,8 +138,10 @@ def run_qc_pipeline(
             },
         )
 
-        has_plink2 = bool(which_tool("plink2"))
-        has_plink = bool(which_tool("plink"))
+        plink2_bin = which_tool("plink2")
+        plink_bin = which_tool("plink")
+        has_plink2 = bool(plink2_bin)
+        has_plink = bool(plink_bin)
 
         tool_name = "PLINK 2" if has_plink2 else ("PLINK 1.9" if has_plink else "Python Fallback")
         append_log(
@@ -156,7 +158,7 @@ def run_qc_pipeline(
         comparison_data: dict[str, Any] = {}
         fallback_used = False
 
-        if has_plink2:
+        if has_plink2 and plink2_bin:
             commands = build_plink2_qc_commands(
                 cfg=cfg,
                 input_vcf=input_vcf_path,
@@ -164,6 +166,7 @@ def run_qc_pipeline(
                 keep_ids=keep_ids_candidate,
                 pheno_path=pheno_candidate,
                 trait=trait_candidate,
+                plink2_bin=plink2_bin,
             )
             try:
                 for cmd in commands:
@@ -173,7 +176,7 @@ def run_qc_pipeline(
             except (SubprocessFailed, CLIExecutionError) as exc:
                 logger.warning("PLINK2 gagal atau varian terfilter habis, beralih ke fallback Python: %s", exc)
                 fallback_used = True
-        elif has_plink:
+        elif has_plink and plink_bin:
             commands = build_plink19_qc_commands(
                 cfg=cfg,
                 input_vcf=input_vcf_path,
@@ -181,6 +184,7 @@ def run_qc_pipeline(
                 keep_ids=keep_ids_candidate,
                 pheno_path=pheno_candidate,
                 trait=trait_candidate,
+                plink_bin=plink_bin,
             )
             try:
                 for cmd in commands:
