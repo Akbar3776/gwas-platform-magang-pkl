@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arsitektur Teknis Platform GWAS — Slide Deck</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #040810;
+      color: #f8fafc;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      user-select: none;
+    }
+    #stage {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      background: #060a12;
+      overflow: hidden;
+    }
+    #canvas {
+      width: 1920px;
+      height: 1080px;
+      background: #090e17;
+      position: absolute;
+      transform-origin: center center;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+      border: 1px solid #1e293b;
+      display: flex;
+      flex-direction: column;
+      padding: 70px 100px;
+    }
+    .slide-page {
+      display: none;
+      width: 100%;
+      height: 100%;
+      flex-direction: column;
+    }
+    .slide-page.active {
+      display: flex;
+    }
+    /* Controls Bar */
+    #controls {
+      height: 56px;
+      background: #0b1322;
+      border-top: 1px solid #1e2e42;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      z-index: 100;
+    }
+    .btn {
+      background: #1e293b;
+      color: #f8fafc;
+      border: 1px solid #334155;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn:hover {
+      background: #334155;
+      border-color: #06b6d4;
+    }
+    .btn-primary {
+      background: #0284c7;
+      border-color: #0ea5e9;
+    }
+    .btn-primary:hover {
+      background: #0369a1;
+    }
+    #notes-drawer {
+      position: fixed;
+      bottom: 56px;
+      left: 0;
+      right: 0;
+      background: #0d1627;
+      border-top: 2px solid #06b6d4;
+      padding: 20px 32px;
+      max-height: 220px;
+      overflow-y: auto;
+      display: none;
+      box-shadow: 0 -10px 25px rgba(0,0,0,0.5);
+      z-index: 90;
+    }
+    #notes-drawer.open {
+      display: block;
+    }
+    .notes-title {
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      color: #06b6d4;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .notes-content {
+      font-size: 16px;
+      line-height: 1.6;
+      color: #cbd5e1;
+    }
+    /* Blueprint Typography & Components */
+    .header-cat {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 18px;
+      font-weight: 700;
+      color: #06b6d4;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+    }
+    .header-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 4px;
+      background: #06b6d4;
+    }
+    .header-title {
+      font-size: 54px;
+      font-weight: 800;
+      margin: 8px 0 6px;
+      line-height: 1.15;
+      color: #ffffff;
+    }
+    .header-sub {
+      font-size: 22px;
+      color: #94a3b8;
+      max-width: 1400px;
+      margin: 0;
+    }
+    .card-grid {
+      display: flex;
+      gap: 24px;
+      flex: 1;
+      margin-top: 36px;
+    }
+    .card {
+      flex: 1;
+      background: #111d2e;
+      border: 1px solid #1e2e42;
+      border-radius: 14px;
+      padding: 28px 30px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .card-badge {
+      align-self: flex-start;
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .card-title {
+      font-size: 26px;
+      font-weight: 800;
+      color: #f8fafc;
+      margin: 0;
+    }
+    .card-desc {
+      font-size: 19px;
+      line-height: 1.5;
+      color: #94a3b8;
+      margin: 0;
+    }
+    .card-list {
+      margin: 0;
+      padding-left: 20px;
+      font-size: 17px;
+      line-height: 1.6;
+      color: #cbd5e1;
+    }
+    .footer {
+      margin-top: auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-top: 1px solid #1e2e42;
+      padding-top: 18px;
+      font-size: 16px;
+      color: #64748b;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="stage">
+    <div id="canvas">
+
+      <!-- SLIDE 1: Cover -->
+      <div class="slide-page active" id="page-1" style="justify-content: center; padding: 0 140px; background: radial-gradient(circle at 80% 30%, #06b6d418 0%, #090e17 70%);">
+        <div style="display: inline-flex; align-items: center; gap: 10px; padding: 6px 16px; border-radius: 30px; background: #06b6d415; border: 1px solid #06b6d440; color: #06b6d4; font-size: 16px; font-weight: 800; letter-spacing: 0.12em; width: fit-content; margin-bottom: 28px;">
+          <span style="width: 8px; height: 8px; border-radius: 4px; background: #06b6d4;"></span>
+          GENOMIC COMPUTING PLATFORM • ARCHITECTURE DEEP-DIVE
+        </div>
+        <h1 style="font-size: 88px; font-weight: 900; line-height: 1.1; margin: 0 0 24px; color: #ffffff; letter-spacing: -0.02em;">
+          Arsitektur Teknis & Engineering<br>
+          <span style="background: linear-gradient(90deg, #06b6d4, #14b8a6, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Platform Analisis GWAS</span>
+        </h1>
+        <p style="font-size: 28px; color: #94a3b8; max-width: 1300px; line-height: 1.5; margin: 0 0 48px;">
+          Pondasi komputasi bioinformatika terintegrasi: FastAPI, Celery Asynchronous Workers, integrasi PLINK 2.0 & GEMMA Wald Test, serta visualisasi data genomik interaktif berkinerja tinggi.
+        </p>
+        <div style="display: flex; gap: 40px; border-top: 1px solid #1e2e42; paddingTop: 32px;">
+          <div>
+            <div style="font-size: 14px; color: #64748b; text-transform: uppercase; letter-spacing: 0.1em;">Spesialisasi Sistem</div>
+            <div style="font-size: 20px; font-weight: 700; color: #f8fafc;">Genome-Wide Association Study</div>
+          </div>
+          <div>
+            <div style="font-size: 14px; color: #64748b; text-transform: uppercase; letter-spacing: 0.1em;">Komputasi Engine</div>
+            <div style="font-size: 20px; font-weight: 700; color: #14b8a6;">PLINK2 • GEMMA • Beagle 5.4</div>
+          </div>
+          <div>
+            <div style="font-size: 14px; color: #64748b; text-transform: uppercase; letter-spacing: 0.1em;">Target Audiens</div>
+            <div style="font-size: 20px; font-weight: 700; color: #f59e0b;">Peneliti, Bioinformatisi & Stakeholder</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SLIDE 2: Topologi Sistem 3-Tier -->
+      <div class="slide-page" id="page-2">
+        <div class="header-cat"><span class="header-dot"></span>Arsitektur Sistem</div>
+        <h2 class="header-title">Topologi Sistem 3-Tier End-to-End</h2>
+        <p class="header-sub">Pemisahan tugas yang tegas antara visualisasi antarmuka pengguna, gateway API terpusat, dan worker komputasi genomik terdistribusi.</p>
+        <div class="card-grid">
+          <div class="card">
+            <div class="card-badge" style="background: #3b82f618; color: #3b82f6; border: 1px solid #3b82f640;">Tier 1: Klien & Visualisasi</div>
+            <h3 class="card-title">Frontend Web (React 18 + Vite)</h3>
+            <p class="card-desc">Single Page Application responsif yang mengutamakan interaktivitas data analitik genetik tanpa hambatan performa.</p>
+            <ul class="card-list">
+              <li>Rendering Manhattan Plot via HTML5 HiDPI Canvas ($10^6$ varian SNP).</li>
+              <li>Interaktivitas Plotly WebGL untuk QQ Plot, Scree Plot, & Matriks Kinship Heatmap.</li>
+              <li>State session terpusat dengan AuthContext, axios interceptor, dan token JWT.</li>
+              <li>Manajemen upload file besar melalui algoritma chunked upload 5MB berulang.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #06b6d418; color: #06b6d4; border: 1px solid #06b6d440;">Tier 2: Layanan API</div>
+            <h3 class="card-title">Backend Gateway (FastAPI)</h3>
+            <p class="card-desc">REST API berkinerja tinggi berbasis ASGI Python dengan validasi skema DTO yang ketat sebelum komputasi dimulai.</p>
+            <ul class="card-list">
+              <li>Endpoints modular: /auth, /upload, /jobs, /results, dan /capabilities.</li>
+              <li>Validasi parameter input otomatis menggunakan model Pydantic v2.</li>
+              <li>SQLAlchemy 2.0 ORM dengan pooling koneksi untuk persistensi metadata.</li>
+              <li>Pemeriksaan kepatuhan file fenotipe dan validasi multialelik VCF sebelum antrean.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #10b98118; color: #10b981; border: 1px solid #10b98140;">Tier 3: Mesin Komputasi</div>
+            <h3 class="card-title">Worker Asinkron (Celery + Redis)</h3>
+            <p class="card-desc">Klaster worker komputasi independen yang mengeksekusi 10 tahapan pipeline analisis genomik secara aman dan terisolasi.</p>
+            <ul class="card-list">
+              <li>Antrean tugas background decoupling via broker Redis in-memory.</li>
+              <li>Orkestrasi wrapper biner CLI native: PLINK2, GEMMA Wald, Beagle 5.4, BCFtools.</li>
+              <li>Tracking progres real-time per tahap dengan persistence atomic ke database.</li>
+              <li>Sandbox penyimpanan data per dataset di direktori storage terenkripsi.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer">
+          <span>GWAS Platform — Technical Architecture & Engineering Deep-Dive</span>
+          <span style="font-family: monospace; font-weight: 700; color: #14b8a6;">02 / 12</span>
+        </div>
+      </div>
+
+      <!-- SLIDE 3: Frontend & Canvas Engine -->
+      <div class="slide-page" id="page-3">
+        <div class="header-cat"><span class="header-dot"></span>Frontend Engineering</div>
+        <h2 class="header-title">Arsitektur Klien & Engine Visualisasi HiDPI</h2>
+        <p class="header-sub">Optimalisasi rendering grafik berkecepatan tinggi untuk mengatasi tantangan visualisasi jutaan titik varian pada dataset genomik.</p>
+        <div class="card-grid">
+          <div style="flex: 1.2; display: flex; flex-direction: column; gap: 18px;">
+            <div class="card">
+              <div style="font-size: 15px; font-weight: 700; color: #06b6d4; margin-bottom: 4px;">HTML5 CANVAS HIDPI RENDERING</div>
+              <h3 style="font-size: 24px; font-weight: 800; color: #f8fafc;">Manhattan Plot Engine (setupHiDpiCanvas)</h3>
+              <p style="font-size: 17px; color: #94a3b8; line-height: 1.5; margin: 4px 0;">
+                Alih-alih merender jutaan node SVG yang membebani DOM, sistem menghitung koordinat layout kromosom di memori dan menggambarnya langsung ke pixel buffer canvas dengan rasio Retina Display.
+              </p>
+              <div style="font-family: monospace; font-size: 15px; color: #14b8a6; background: #070b12; padding: 8px 12px; border-radius: 6px; border: 1px solid #1e2e42;">
+                canvas.width = rect.width * dpr; ctx.scale(dpr, dpr);
+              </div>
+            </div>
+            <div class="card">
+              <div style="font-size: 15px; font-weight: 700; color: #14b8a6; margin-bottom: 4px;">PLOTLY.JS SCIENTIFIC VISUALIZATION</div>
+              <h3 style="font-size: 24px; font-weight: 800; color: #f8fafc;">Plot Interaktif Multidimensi</h3>
+              <p style="font-size: 17px; color: #94a3b8; line-height: 1.5; margin: 4px 0 0;">
+                Digunakan untuk Quantile-Quantile (QQ) plot dengan interval kepercayaan, PCA scatter plot 2D/3D untuk stratifikasi populasi, dan heatmap matriks kinship hubungan kekerabatan sampel genetik.
+              </p>
+            </div>
+          </div>
+          <div class="card" style="flex: 1;">
+            <div class="card-badge" style="background: #f59e0b18; color: #f59e0b; border: 1px solid #f59e0b40;">Manajemen State & Polling</div>
+            <h3 class="card-title">Sinkronisasi Siklus Eksekusi</h3>
+            <ul class="card-list" style="margin-top: 8px;">
+              <li><strong>useJobPolling Hook:</strong> Melakukan polling otomatis ke endpoint status setiap 1.5 detik saat komputasi aktif dan berhenti otomatis saat selesai.</li>
+              <li><strong>Chunked Upload Stream:</strong> Upload file VCF besar dipecah menjadi chunk 5MB dengan mekanisme resume otomatis jika koneksi terputus.</li>
+              <li><strong>Context-Driven Metadata:</strong> Status fenotipe, trait terpilih, dan model GWAS disebarkan ke seluruh view melalui hierarki props yang konsisten.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer">
+          <span>GWAS Platform — Technical Architecture & Engineering Deep-Dive</span>
+          <span style="font-family: monospace; font-weight: 700; color: #14b8a6;">03 / 12</span>
+        </div>
+      </div>
+
+      <!-- SLIDE 4: Backend REST API -->
+      <div class="slide-page" id="page-4">
+        <div class="header-cat"><span class="header-dot"></span>Backend Engineering</div>
+        <h2 class="header-title">Backend Gateway & Kontrak API (FastAPI)</h2>
+        <p class="header-sub">Arsitektur REST API modular dengan penegakan validasi ketat, autentikasi stateless, dan isolasi data multi-peneliti.</p>
+        <div class="card-grid">
+          <div class="card">
+            <div class="card-badge" style="background: #06b6d418; color: #06b6d4; border: 1px solid #06b6d440;">Routing Modular</div>
+            <h3 class="card-title">Struktur Rute API</h3>
+            <p class="card-desc">Pemisahan domain endpoint terdistribusi pada modul backend/app/api/routes:</p>
+            <ul class="card-list">
+              <li>/auth: Registrasi akun peneliti, login, penerbitan token JWT, & refresh sesi.</li>
+              <li>/upload: Upload VCF, chunk merger, upload fenotipe & anotasi GFF3.</li>
+              <li>/jobs: Pendaftaran job baru, pembatalan sinyal, tracking 10 tahap.</li>
+              <li>/results: Pengambilan cache koordinat Manhattan, QQ plot, Lead SNPs, dan unduhan ZIP/PDF.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #14b8a618; color: #14b8a6; border: 1px solid #14b8a640;">Kontrak Data</div>
+            <h3 class="card-title">Skema Validasi Pydantic v2</h3>
+            <p class="card-desc">Memastikan integritas seluruh request DTO sebelum diteruskan ke mesin bioinformatika:</p>
+            <ul class="card-list">
+              <li>FullPipelineRequest: Validasi batas MAF [0.01 - 0.5], GENO [0 - 0.2], MIND [0 - 0.2].</li>
+              <li>Aturan Organisme: Penegakan nonaktifnya filter HWE otomatis untuk tanaman inbred lines.</li>
+              <li>Imputation Mode: Pilihan mode reference-free vs reference-guided dengan validasi path.</li>
+              <li>Model Asosiasi: Seleksi otomatis LMM vs GLM berdasarkan struktur kovariat populasi.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #f59e0b18; color: #f59e0b; border: 1px solid #f59e0b40;">Keamanan & Isolasi</div>
+            <h3 class="card-title">Keamanan & Autentikasi</h3>
+            <p class="card-desc">Proteksi data riset sensitif dan kepatuhan privasi data genomik:</p>
+            <ul class="card-list">
+              <li>Stateless JWT Bearer Token dengan algoritma enkripsi HS256 / RS256.</li>
+              <li>Password hashing menggunakan Bcrypt dengan cost factor adaptif.</li>
+              <li>Isolasi direktori storage fisik per user UUID di backend/data/storage.</li>
+              <li>CORS Middleware terproteksi dengan header whitelist domain terkontrol.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer">
+          <span>GWAS Platform — Technical Architecture & Engineering Deep-Dive</span>
+          <span style="font-family: monospace; font-weight: 700; color: #14b8a6;">04 / 12</span>
+        </div>
+      </div>
+
+      <!-- SLIDE 5: Celery Worker -->
+      <div class="slide-page" id="page-5">
+        <div class="header-cat"><span class="header-dot"></span>Distributed Computing</div>
+        <h2 class="header-title">Asynchronous Worker & Antrean Job (Celery)</h2>
+        <p class="header-sub">Infrastruktur komputasi latar belakang untuk memastikan operasi bioinformatika intensif tidak memblokir antarmuka pengguna.</p>
+        <div class="card-grid">
+          <div class="card" style="flex: 1.3;">
+            <div class="card-badge" style="background: #06b6d418; color: #06b6d4; border: 1px solid #06b6d440;">Model Pemrosesan Latar Belakang</div>
+            <h3 class="card-title">Arsitektur Decoupled Worker</h3>
+            <p class="card-desc">Ketika pengguna mengklik "Mulai Analisis Pipeline", API segera mengembalikan respon <code>202 Accepted</code> dalam &lt; 50ms, sementara payload komputasi dikirimkan ke Redis Queue.</p>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 8px;">
+              <div style="padding: 14px; background: #070b12; border-radius: 8px; border: 1px solid #1e2e42;">
+                <div style="font-weight: 700; color: #14b8a6;">Atomic State Machine</div>
+                <div style="font-size: 14px; color: #94a3b8; margin-top: 4px;">Setiap transisi dari Tahap 1 hingga Tahap 10 dicatat secara transaksional di database.</div>
+              </div>
+              <div style="padding: 14px; background: #070b12; border-radius: 8px; border: 1px solid #1e2e42;">
+                <div style="font-weight: 700; color: #10b981;">Granular Step Logging</div>
+                <div style="font-size: 14px; color: #94a3b8; margin-top: 4px;">Output stdout/stderr dari tools native ditangkap dan dipecah per tahap sehingga mudah diaudit.</div>
+              </div>
+              <div style="padding: 14px; background: #070b12; border-radius: 8px; border: 1px solid #1e2e42;">
+                <div style="font-weight: 700; color: #f59e0b;">Graceful Cancellation</div>
+                <div style="font-size: 14px; color: #94a3b8; margin-top: 4px;">Mekanisme pembatalan tugas melalui sinyal Celery revoke dan pembersihan proses subprocess aman.</div>
+              </div>
+              <div style="padding: 14px; background: #070b12; border-radius: 8px; border: 1px solid #1e2e42;">
+                <div style="font-weight: 700; color: #3b82f6;">Scalable Concurrency</div>
+                <div style="font-size: 14px; color: #94a3b8; margin-top: 4px;">Dapat diskalakan horizontal ke banyak core server atau node komputasi HPC terpisah.</div>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="flex: 1;">
+            <div class="card-badge" style="background: #10b98118; color: #10b981; border: 1px solid #10b98140;">Siklus Hidup Tugas</div>
+            <h3 class="card-title">Status & Transisi</h3>
+            <div style="display: flex; flex-direction: column; gap: 14px; margin-top: 12px;">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="padding: 4px 8px; border-radius: 4px; background: #3b82f620; color: #60a5fa; font-weight: 700;">PENDING</span>
+                <span style="color: #94a3b8;">Job terdaftar di broker antrean Redis</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="padding: 4px 8px; border-radius: 4px; background: #06b6d420; color: #22d3ee; font-weight: 700;">PROCESSING</span>
+                <span style="color: #94a3b8;">Tahap 1–10 dieksekusi bertahap oleh worker</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="padding: 4px 8px; border-radius: 4px; background: #10b98120; color: #34d399; font-weight: 700;">COMPLETED</span>
+                <span style="color: #94a3b8;">Output artefak & cache visualisasi siap diakses</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="padding: 4px 8px; border-radius: 4px; background: #ef444420; color: #f87171; font-weight: 700;">FAILED</span>
+                <span style="color: #94a3b8;">Error ditangkap beserta snapshot stacktrace</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="footer">
+          <span>GWAS Platform — Technical Architecture & Engineering Deep-Dive</span>
+          <span style="font-family: monospace; font-weight: 700; color: #14b8a6;">05 / 12</span>
+        </div>
+      </div>
+
+      <!-- SLIDE 6: Pipeline 1 - 4 -->
+      <div class="slide-page" id="page-6">
+        <div class="header-cat"><span class="header-dot"></span>Bioinformatics Pipeline</div>
+        <h2 class="header-title">Alur Komputasi GWAS (Tahap 1 – 4)</h2>
+        <p class="header-sub">Fase pra-analisis: rekonsiliasi sampel, normalisasi varian, pengendalian kualitas (QC), dan imputasi genotipe.</p>
+        <div class="card-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px;">
+          <div class="card">
+            <div class="card-badge" style="background: #3b82f618; color: #3b82f6; border: 1px solid #3b82f640;">Tahap 1</div>
+            <h3 class="card-title">Inspeksi & Rekonsiliasi</h3>
+            <p class="card-desc">Pencocokan akurat antara ID sampel pada VCF dan fenotipe.</p>
+            <ul class="card-list">
+              <li>Validasi kolom IID (Individual ID).</li>
+              <li>Deteksi sampel hilang pada salah satu sumber data.</li>
+              <li>Inspeksi distribusi nilai trait (kontinu vs biner).</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #06b6d418; color: #06b6d4; border: 1px solid #06b6d440;">Tahap 2</div>
+            <h3 class="card-title">Normalisasi VCF</h3>
+            <p class="card-desc">Standardisasi varian via BCFtools pipeline.</p>
+            <ul class="card-list">
+              <li>Sorting koordinat posisi kromosom.</li>
+              <li>Pemecahan multialelik jadi bi-alelik.</li>
+              <li>Pengindeksan file .tbi/.csi untuk akses acak cepat.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #14b8a618; color: #14b8a6; border: 1px solid #14b8a640;">Tahap 3</div>
+            <h3 class="card-title">Quality Control (QC)</h3>
+            <p class="card-desc">Penyaringan varian berkualitas rendah via PLINK2.</p>
+            <ul class="card-list">
+              <li>Filter MAF &lt; 0.05 untuk varian langka.</li>
+              <li>Filter missingness varian & sampel (GENO & MIND &gt; 5%).</li>
+              <li>Filter HWE outcross (bypass untuk inbred lines).</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #10b98118; color: #10b981; border: 1px solid #10b98140;">Tahap 4</div>
+            <h3 class="card-title">Imputasi Genotipe</h3>
+            <p class="card-desc">Inferensi genotipe hilang via Beagle 5.4.</p>
+            <ul class="card-list">
+              <li>Model Hidden Markov Model berbasis fase LD.</li>
+              <li>Mode Reference-Guided atau Reference-Free.</li>
+              <li>Bypass otomatis jika call rate sudah optimal.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer">
+          <span>GWAS Platform — Technical Architecture & Engineering Deep-Dive</span>
+          <span style="font-family: monospace; font-weight: 700; color: #14b8a6;">06 / 12</span>
+        </div>
+      </div>
+
+      <!-- SLIDE 7: Pipeline 5 - 7 -->
+      <div class="slide-page" id="page-7">
+        <div class="header-cat"><span class="header-dot"></span>Bioinformatics Pipeline</div>
+        <h2 class="header-title">Alur Komputasi GWAS (Tahap 5 – 7)</h2>
+        <p class="header-sub">Analisis struktur stratifikasi populasi, pengujian asosiasi genetik statistik, dan model multi-lokus.</p>
+        <div class="card-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
+          <div class="card">
+            <div class="card-badge" style="background: #06b6d418; color: #06b6d4; border: 1px solid #06b6d440;">Tahap 5</div>
+            <h3 class="card-title">Struktur Populasi & LD</h3>
+            <p class="card-desc">Mengoreksi perancu (confounding) genetik sebelum uji statistik asosiasi.</p>
+            <ul class="card-list">
+              <li>LD Pruning: Menyaring varian berkorelasi tinggi (window 50kb, step 5, r² 0.2).</li>
+              <li>Principal Component Analysis (PCA): Menghitung 10 PC untuk menangkap sub-populasi.</li>
+              <li>Matriks Kinship vanRaden: Menghitung hubungan kekerabatan sampel genotipe.</li>
+              <li>Kurva LD Decay: Menilai laju penurunan korelasi LD per rentang jarak fisik (kb).</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #10b98118; color: #10b981; border: 1px solid #10b98140;">Tahap 6</div>
+            <h3 class="card-title">Analisis Asosiasi GWAS</h3>
+            <p class="card-desc">Pengujian korelasi statistik antara varian genetik dan fenotipe target.</p>
+            <ul class="card-list">
+              <li>Linear Mixed Model (LMM via GEMMA): Model paling akurat yang mengontrol struktur populasi (Fixed Effect: PC1-PC3, Random Effect: Kinship).</li>
+              <li>Generalized Linear Model (GLM via PLINK2): Alternatif berkecepatan tinggi dengan kovariat PC.</li>
+              <li>Mode Rekomendasi Otomatis (AUTO): Sistem mengevaluasi Lambda GC dan Kinship untuk memilih model terbaik.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #f59e0b18; color: #f59e0b; border: 1px solid #f59e0b40;">Tahap 7</div>
+            <h3 class="card-title">Multi-Locus GWAS</h3>
+            <p class="card-desc">Pendekatan iteratif multi-lokus untuk mendeteksi varian dengan efek minor.</p>
+            <ul class="card-list">
+              <li>FarmCPU (Fixed and random model Circulating Probability Unification).</li>
+              <li>BLINK (Bayesian-information and Linkage-disequilibrium Iteratively Nested Keyway).</li>
+              <li>Mengatasi kelemahan Single-Marker Analysis dengan mengontrol pseudo-QTN sebagai kovariat.</li>
+              <li>Integrasi modular melalui wrapper script R/GAPIT jika lingkungan komputasi mendukung.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer">
+          <span>GWAS Platform — Technical Architecture & Engineering Deep-Dive</span>
+          <span style="font-family: monospace; font-weight: 700; color: #14b8a6;">07 / 12</span>
+        </div>
+      </div>
+
+      <!-- SLIDE 8: Pipeline 8 - 10 -->
+      <div class="slide-page" id="page-8">
+        <div class="header-cat"><span class="header-dot"></span>Bioinformatics Pipeline</div>
+        <h2 class="header-title">Alur Komputasi GWAS (Tahap 8 – 10)</h2>
+        <p class="header-sub">Evaluasi ambang signifikansi, pengelompokan varian (clumping), visualisasi cache, dan anotasi fungsional GFF3.</p>
+        <div class="card-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
+          <div class="card">
+            <div class="card-badge" style="background: #14b8a618; color: #14b8a6; border: 1px solid #14b8a640;">Tahap 8</div>
+            <h3 class="card-title">Pasca-GWAS & Clumping</h3>
+            <p class="card-desc">Menentukan batas signifikansi dan mengidentifikasi lokus independen teratas.</p>
+            <ul class="card-list">
+              <li>Ambang Bonferroni: Alpha konservatif disesuaikan dengan jumlah varian ($0.05 / M$).</li>
+              <li>Benjamini-Hochberg FDR: Koreksi False Discovery Rate $q < 0.05$.</li>
+              <li>LOD Score: Ambang batas berbasis LOD (LOD $\ge 5.6$ setara $p < 2.51 \times 10^{-6}$).</li>
+              <li>LD Clumping: Mengelompokkan varian berkorelasi $r^2 \ge 0.2$ di sekitar Lead SNP utama.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #3b82f618; color: #3b82f6; border: 1px solid #3b82f640;">Tahap 9</div>
+            <h3 class="card-title">Visualisasi & Plot Caching</h3>
+            <p class="card-desc">Mempersiapkan data plot siap saji berkecepatan tinggi untuk antarmuka web.</p>
+            <ul class="card-list">
+              <li>Kalkulasi koordinat Manhattan Plot ($-\log_{10} p$ terhadap posisi kromosom).</li>
+              <li>Binning & decimation data untuk mengurangi footprint payload transmisi jaringan.</li>
+              <li>Kalkulasi distribusi kuantil teramati vs teoretis untuk QQ plot.</li>
+              <li>Estimasi faktor inflasi genomik Lambda GC ($\lambda = 1.044$ membuktikan kontrol ideal).</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #10b98118; color: #10b981; border: 1px solid #10b98140;">Tahap 10</div>
+            <h3 class="card-title">Anotasi Gen GFF3</h3>
+            <p class="card-desc">Menghubungkan temuan statistik dengan biologi fungsional gen kandidat.</p>
+            <ul class="card-list">
+              <li>Pemetaan Lead SNP ke interval fitur genom referensi pada file GFF3.</li>
+              <li>Klasifikasi Genik vs Near-Gen berdasarkan jarak ke Transcription Start Site (TSS).</li>
+              <li>Ekstraksi ID gen, simbol gen, dan anotasi ontologi (Gene Ontology / GO terms).</li>
+              <li>Penyusunan tabel gen kandidat yang siap diunduh untuk publikasi riset.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer">
+          <span>GWAS Platform — Technical Architecture & Engineering Deep-Dive</span>
+          <span style="font-family: monospace; font-weight: 700; color: #14b8a6;">08 / 12</span>
+        </div>
+      </div>
+
+      <!-- SLIDE 9: Third-party Tools Integration -->
+      <div class="slide-page" id="page-9">
+        <div class="header-cat"><span class="header-dot"></span>Tooling & Engine</div>
+        <h2 class="header-title">Integrasi Mesin Bioinformatika CLI</h2>
+        <p class="header-sub">Wrapper eksekusi native berkinerja tinggi yang aman, terkontrol, dan terisolasi dari lingkungan sistem operasi.</p>
+        <div class="card-grid">
+          <div class="card" style="flex: 1.2;">
+            <div class="card-badge" style="background: #06b6d418; color: #06b6d4; border: 1px solid #06b6d440;">Spesifikasi Mesin Native</div>
+            <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 4px;">
+              <div style="padding: 12px; background: #070b12; border-radius: 8px; border: 1px solid #1e2e42;">
+                <div style="display: flex; justify-content: space-between;">
+                  <strong style="color: #fff; font-size: 18px;">PLINK 2.0 (v2.00a3LM)</strong>
+                  <span style="color: #14b8a6; font-size: 14px; font-weight: 700;">C++ Multi-threaded</span>
+                </div>
+                <p style="font-size: 15px; color: #94a3b8; margin: 4px 0 0;">Konversi VCF ke PGEN/BED, kalkulasi MAF, HWE, MIND, GENO, LD Pruning, PCA, dan GLM.</p>
+              </div>
+              <div style="padding: 12px; background: #070b12; border-radius: 8px; border: 1px solid #1e2e42;">
+                <div style="display: flex; justify-content: space-between;">
+                  <strong style="color: #fff; font-size: 18px;">GEMMA (v0.98.5)</strong>
+                  <span style="color: #06b6d4; font-size: 14px; font-weight: 700;">C++ / GSL</span>
+                </div>
+                <p style="font-size: 15px; color: #94a3b8; margin: 4px 0 0;">Genome-wide Efficient Mixed Model Association: Mengestimasi varians dan Wald test dengan matriks Kinship.</p>
+              </div>
+              <div style="padding: 12px; background: #070b12; border-radius: 8px; border: 1px solid #1e2e42;">
+                <div style="display: flex; justify-content: space-between;">
+                  <strong style="color: #fff; font-size: 18px;">Beagle 5.4 & BCFtools</strong>
+                  <span style="color: #f59e0b; font-size: 14px; font-weight: 700;">Java 17 & C</span>
+                </div>
+                <p style="font-size: 15px; color: #94a3b8; margin: 4px 0 0;">Imputasi genotipe berbasis populasi berkecepatan tinggi serta manipulasi streaming VCF indeks.</p>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="flex: 1;">
+            <div class="card-badge" style="background: #10b98118; color: #10b981; border: 1px solid #10b98140;">Protokol Eksekusi Aman</div>
+            <h3 class="card-title">Pencegahan Injeksi & Error Handling</h3>
+            <ul class="card-list" style="margin-top: 8px;">
+              <li><strong>Array Arguments:</strong> Semua perintah CLI dilewatkan sebagai list token <code>['plink2', '--bfile', ...]</code> tanpa shell interpolation (mencegah shell injection).</li>
+              <li><strong>Execution Timeout:</strong> Batas waktu eksekusi maksimal pada subprocess untuk mencegah proses zombie atau hanging.</li>
+              <li><strong>Return Code Inspection:</strong> Exit code non-zero memicu exception terstruktur dengan menyertakan isi stderr kesalahan.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer">
+          <span>GWAS Platform — Technical Architecture & Engineering Deep-Dive</span>
+          <span style="font-family: monospace; font-weight: 700; color: #14b8a6;">09 / 12</span>
+        </div>
+      </div>
+
+      <!-- SLIDE 10: Database Schema -->
+      <div class="slide-page" id="page-10">
+        <div class="header-cat"><span class="header-dot"></span>Data Persistence</div>
+        <h2 class="header-title">Skema Database & Relasi Entitas (ORM)</h2>
+        <p class="header-sub">Penyimpanan data transaksional yang bersih menggunakan SQLAlchemy 2.0 dengan dukungan SQLite & PostgreSQL.</p>
+        <div class="card-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px;">
+          <div class="card">
+            <div class="card-badge" style="background: #3b82f618; color: #3b82f6; border: 1px solid #3b82f640;">Tabel 1</div>
+            <h3 class="card-title">User</h3>
+            <p class="card-desc">Entitas akun pengguna dan kredensial akses.</p>
+            <ul class="card-list">
+              <li>id: UUID Primary Key</li>
+              <li>email: String (Unique)</li>
+              <li>hashed_password: String</li>
+              <li>full_name: String</li>
+              <li>created_at, updated_at</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #06b6d418; color: #06b6d4; border: 1px solid #06b6d440;">Tabel 2</div>
+            <h3 class="card-title">Dataset</h3>
+            <p class="card-desc">Metadata file genotipe VCF dan asosiasi.</p>
+            <ul class="card-list">
+              <li>id: UUID Primary Key</li>
+              <li>user_id: ForeignKey(User)</li>
+              <li>filename: String (VCF.GZ)</li>
+              <li>pheno_filename, anno_filename</li>
+              <li>extra_metadata: JSON</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #f59e0b18; color: #f59e0b; border: 1px solid #f59e0b40;">Tabel 3</div>
+            <h3 class="card-title">Job</h3>
+            <p class="card-desc">Pelacakan eksekusi analisis dan status per tahap.</p>
+            <ul class="card-list">
+              <li>id: UUID Primary Key</li>
+              <li>dataset_id: ForeignKey(Dataset)</li>
+              <li>status: PENDING / RUNNING / DONE</li>
+              <li>current_step: Integer (1 - 10)</li>
+              <li>step_logs: JSON (Log 10 tahap)</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #10b98118; color: #10b981; border: 1px solid #10b98140;">Tabel 4</div>
+            <h3 class="card-title">AnalysisResult</h3>
+            <p class="card-desc">Ringkasan statistik dan temuan lokus.</p>
+            <ul class="card-list">
+              <li>id: UUID Primary Key</li>
+              <li>job_id: ForeignKey(Job)</li>
+              <li>total_snps: Integer (1.178)</li>
+              <li>significant_snps: Integer (2)</li>
+              <li>lambda_gc: Float (1.044)</li>
+              <li>lead_snps_data: JSON</li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer">
+          <span>GWAS Platform — Technical Architecture & Engineering Deep-Dive</span>
+          <span style="font-family: monospace; font-weight: 700; color: #14b8a6;">10 / 12</span>
+        </div>
+      </div>
+
+      <!-- SLIDE 11: Benchmark & Evaluation -->
+      <div class="slide-page" id="page-11">
+        <div class="header-cat"><span class="header-dot"></span>Benchmark & Evaluation</div>
+        <h2 class="header-title">Evaluasi Performa & Benchmark Skalabilitas</h2>
+        <p class="header-sub">Kinerja komputasi teruji pada dataset riil dengan efisiensi tinggi dan pengendalian bias populasi yang optimal.</p>
+        <div class="card-grid">
+          <div class="card" style="flex: 1.2;">
+            <div class="card-badge" style="background: #06b6d418; color: #06b6d4; border: 1px solid #06b6d440;">Hasil Pengujian Uji Riil</div>
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 4px;">
+              <div style="padding: 16px; background: #070b12; border-radius: 10px; border: 1px solid #1e2e42; text-align: center;">
+                <div style="font-size: 36px; font-weight: 900; color: #06b6d4;">2.59s</div>
+                <div style="font-size: 14px; color: #94a3b8; margin-top: 4px;">Total Waktu 10 Tahap (1.178 SNP)</div>
+              </div>
+              <div style="padding: 16px; background: #070b12; border-radius: 10px; border: 1px solid #1e2e42; text-align: center;">
+                <div style="font-size: 36px; font-weight: 900; color: #10b981;">1.044</div>
+                <div style="font-size: 14px; color: #94a3b8; margin-top: 4px;">Lambda GC (Inflasi Terkendali)</div>
+              </div>
+              <div style="padding: 16px; background: #070b12; border-radius: 10px; border: 1px solid #1e2e42; text-align: center;">
+                <div style="font-size: 36px; font-weight: 900; color: #14b8a6;">50 File</div>
+                <div style="font-size: 14px; color: #94a3b8; margin-top: 4px;">Artefak Keluaran Terstruktur</div>
+              </div>
+            </div>
+            <div style="margin-top: 8px;">
+              <h4 style="font-size: 20px; font-weight: 800; color: #fff; margin: 0 0 6px;">Estimasi Skalabilitas Data Genomik Skala Besar</h4>
+              <p style="font-size: 16px; color: #94a3b8; line-height: 1.5; margin: 0;">
+                Dengan streaming I/O teroptimasi dan eksekusi multi-core PLINK/GEMMA, dataset $100.000$ SNP diproyeksikan selesai dalam 35–50 detik, dan dataset $10^6$ SNP (1 juta varian) selesai dalam 4–8 menit pada server 8-core standar.
+              </p>
+            </div>
+          </div>
+          <div class="card" style="flex: 1;">
+            <div class="card-badge" style="background: #f59e0b18; color: #f59e0b; border: 1px solid #f59e0b40;">Strategi Efisiensi Memori</div>
+            <ul class="card-list" style="margin-top: 8px;">
+              <li><strong>Chunked Uploading:</strong> Memori server tidak terbebani file VCF ratusan megabyte karena data dikirim dalam chunk 5MB dan digabung streaming di disk.</li>
+              <li><strong>Canvas Decimation:</strong> Manhattan Plot mereduksi titik bertumpuk pada region non-signifikan sehingga browser hanya merender varian yang informatif.</li>
+              <li><strong>Storage Lifecycle Cleanup:</strong> Layanan background membersihkan file sementara secara berkala dan hanya menyimpan file output bernilai analitik tinggi.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer">
+          <span>GWAS Platform — Technical Architecture & Engineering Deep-Dive</span>
+          <span style="font-family: monospace; font-weight: 700; color: #14b8a6;">11 / 12</span>
+        </div>
+      </div>
+
+      <!-- SLIDE 12: Conclusion & Roadmap -->
+      <div class="slide-page" id="page-12">
+        <div class="header-cat"><span class="header-dot"></span>Kesimpulan & Masa Depan</div>
+        <h2 class="header-title">Kesimpulan Rekayasa & Roadmap Pengembangan</h2>
+        <p class="header-sub">Pencapaian platform saat ini dan arah inovasi arsitektur komputasi genomik di masa mendatang.</p>
+        <div class="card-grid">
+          <div class="card">
+            <div class="card-badge" style="background: #10b98118; color: #10b981; border: 1px solid #10b98140;">Pencapaian Arsitektur Saat Ini</div>
+            <ul class="card-list" style="margin-top: 8px;">
+              <li><strong>Pipeline 10 Tahap End-to-End:</strong> Mengintegrasikan seluruh siklus studi GWAS dari file mentah VCF hingga gen kandidat fungsional GFF3.</li>
+              <li><strong>Pemisahan Tugas Bersih:</strong> FastAPI ASGI + Celery Distributed Workers + React 18 Canvas Visualizer.</li>
+              <li><strong>Validasi Ketat:</strong> Perlindungan terhadap inkonsistensi data fenotipe dan otomatisasi pemilihan model statistik terbaik.</li>
+              <li><strong>Transparansi Analitik:</strong> Seluruh 50 file log dan artefak per tahap dapat diunduh dan diverifikasi secara independen.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-badge" style="background: #06b6d418; color: #06b6d4; border: 1px solid #06b6d440;">Rencana Pengembangan Kedepan (Roadmap)</div>
+            <ul class="card-list" style="margin-top: 8px;">
+              <li><strong>Akselerasi GPU untuk LMM:</strong> Implementasi solver matriks berbasis PyTorch/CUDA untuk mempercepat analisis pada populasi &gt; 20.000 sampel.</li>
+              <li><strong>Integrasi IGV.js Tersemat:</strong> Genome browser interaktif langsung di dalam tab hasil untuk inspeksi pembacaan read alignment genetik.</li>
+              <li><strong>Cloud-Native Kubernetes Deployment:</strong> Helm chart untuk deployment klaster otomatis dengan auto-scaling worker Celery berdasarkan beban antrean.</li>
+              <li><strong>Export Laporan Standar Publikasi:</strong> Template generator otomatis naskah manuskrip jurnal ilmiah berformat LaTeX/DOCX.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer">
+          <span>GWAS Platform — Technical Architecture & Engineering Deep-Dive</span>
+          <span style="font-family: monospace; font-weight: 700; color: #14b8a6;">12 / 12</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Speaker Notes Drawer -->
+  <div id="notes-drawer">
+    <div class="notes-title">Catatan Pembicara (Presenter Talk Track)</div>
+    <div class="notes-content" id="notes-text"></div>
+  </div>
+
+  <!-- Controls Bar -->
+  <div id="controls">
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <button class="btn" onclick="prevSlide()">← Prev (Panah Kiri)</button>
+      <button class="btn btn-primary" onclick="nextSlide()">Next (Panah Kanan) →</button>
+      <span style="font-size: 14px; font-weight: 600; color: #94a3b8; margin-left: 8px;" id="slide-indicator">Slide 1 / 12</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <button class="btn" onclick="toggleNotes()">🎤 Catatan Pembicara</button>
+      <button class="btn" onclick="toggleFullscreen()">⛶ Layar Penuh</button>
+    </div>
+  </div>
+
+  <script>
+    const speakerNotes = [
+      "Selamat pagi/siang rekan-rekan peneliti dan akademisi sekalian. Hari ini kami mempresentasikan arsitektur teknis dan rekayasa di balik platform Genome-Wide Association Study (GWAS). Fokus kami adalah bagaimana membangun sistem komputasi bioinformatika yang kokoh, cepat, dan transparan dari data genotipe mentah hingga penemuan gen kandidat.",
+      "Mari kita mulai dari topologi sistem 3-tier. Tier pertama adalah antarmuka klien berbasis React 18 yang dirancang khusus untuk menangani visualisasi data genomik bervolume besar. Tier kedua adalah backend FastAPI yang bertindak sebagai gateway dan validator kontrak data. Tier ketiga adalah asynchronous worker berbasis Celery dan Redis yang menjalankan engine bioinformatika native.",
+      "Salah satu tantangan teknis terbesar pada GWAS adalah merender ratusan ribu hingga jutaan titik varian. Jika menggunakan DOM biasa, browser akan mengalami freezing. Solusinya, kami membangun engine HTML5 Canvas HiDPI yang merender data langsung pada pixel buffer Retina display, dikombinasikan dengan Plotly WebGL untuk evaluasi struktur populasi dan heatmap kinship.",
+      "Pada lapisan backend, kami menggunakan FastAPI dengan penegakan validasi ketat via Pydantic v2. Setiap parameter seperti MAF, HWE, dan missingness divalidasi sebelum pekerjaan dimulai. Yang terpenting, sistem secara cerdas menonaktifkan filter HWE jika organisme terdeteksi sebagai inbred lines, karena frekuensi alel tanaman inbred secara biologis tidak mengikuti kesetimbangan Hardy-Weinberg.",
+      "Untuk menjamin performa server tidak terganggu saat komputasi berlangsung, kami menerapkan worker Celery terdistribusi. Endpoint API mengembalikan respons dalam kurang dari 50 milidetik, sementara komputasi berjalan di latar belakang. State machine melacak 10 tahapan eksekusi secara transaksional dengan logging granular yang dapat diaudit peneliti kapan saja.",
+      "Masuk ke alur pipeline bagian pra-analisis: Tahap 1 melakukan rekonsiliasi sampel antara VCF dan fenotipe. Tahap 2 menormalisasi varian dengan BCFtools. Tahap 3 menjalankan quality control varian dan sampel via PLINK 2.0. Dan Tahap 4 menyediakan opsi imputasi genotipe berbasis Beagle 5.4 untuk melengkapi alel yang hilang.",
+      "Bagian kedua pipeline berfokus pada inferensi statistik: Tahap 5 menghitung Principal Component Analysis (PCA) dan matriks kekerabatan Kinship untuk menangkap stratifikasi populasi. Tahap 6 mengeksekusi uji asosiasi genom—sistem dapat merekomendasikan model terbaik antara Linear Mixed Model GEMMA atau GLM PLINK2. Tahap 7 menyediakan analisis multi-lokus iteratif FarmCPU dan BLINK.",
+      "Bagian akhir pipeline adalah pasca-analisis: Tahap 8 menetapkan ambang signifikansi dinamis seperti Bonferroni dan FDR, serta melakukan LD clumping untuk mengidentifikasi Lead SNP independen. Tahap 9 mengkalkulasi koordinat plot dan faktor inflasi genomik Lambda GC. Tahap 10 memetakan lokus signifikan ke file anotasi genom GFF3 untuk mengidentifikasi gen kandidat fungsional.",
+      "Untuk eksekusi alat bioinformatika pihak ketiga seperti PLINK2, GEMMA, dan Beagle, kami menggunakan wrapper Python subprocess yang sangat aman. Argumen dilewatkan sebagai token terpisah untuk mencegah kerentanan shell injection, dilengkapi batas waktu eksekusi (timeout) dan isolasi proses yang bersih.",
+      "Persistensi data dibangun di atas skema relasional SQLAlchemy 2.0 yang menghubungkan User, Dataset, Job, dan AnalysisResult. Struktur ini menjamin bahwa setiap hasil riset terikat secara permanen pada parameter input dan file dataset asalnya, memastikan reproduksibilitas ilmiah secara mutlak.",
+      "Pada pengujian langsung (live benchmark), dataset 1.178 varian SNP diselesaikan hanya dalam 2.59 detik dengan nilai Lambda GC 1.044. Nilai ini sangat ideal karena mendekati angka 1.0, membuktikan bahwa koreksi kovariat PCA berhasil menghilangkan bias stratifikasi populasi tanpa menyebabkan false positive berlebih.",
+      "Sebagai kesimpulan, platform ini berhasil memadukan performa komputasi native dengan antarmuka web modern yang intuitif. Ke depan, roadmap kami mencakup akselerasi GPU untuk sampel besar di atas 20.000 individu, integrasi browser genom IGV.js interaktif, dan deployment klaster Kubernetes terotomatisasi. Terima kasih."
+    ];
+
+    let currentSlide = 1;
+    const totalSlides = 12;
+
+    function resizeStage() {
+      const stage = document.getElementById('stage');
+      const canvas = document.getElementById('canvas');
+      const stageW = stage.clientWidth;
+      const stageH = stage.clientHeight;
+      const scaleX = stageW / 1920;
+      const scaleY = stageH / 1080;
+      const scale = Math.min(scaleX, scaleY) * 0.96;
+      canvas.style.transform = `scale(${scale})`;
+    }
+
+    function updateSlide() {
+      for (let i = 1; i <= totalSlides; i++) {
+        const el = document.getElementById(`page-${i}`);
+        if (el) el.classList.toggle('active', i === currentSlide);
+      }
+      document.getElementById('slide-indicator').innerText = `Slide ${currentSlide} / ${totalSlides}`;
+      document.getElementById('notes-text').innerText = speakerNotes[currentSlide - 1] || '';
+    }
+
+    function nextSlide() {
+      if (currentSlide < totalSlides) {
+        currentSlide++;
+        updateSlide();
+      }
+    }
+
+    function prevSlide() {
+      if (currentSlide > 1) {
+        currentSlide--;
+        updateSlide();
+      }
+    }
+
+    function toggleNotes() {
+      const drawer = document.getElementById('notes-drawer');
+      drawer.classList.toggle('open');
+    }
+
+    function toggleFullscreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen();
+      } else {
+        if (document.exitFullscreen) {
+          document.exitFullscreen();
+        }
+      }
+    }
+
+    window.addEventListener('resize', resizeStage);
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') {
+        nextSlide();
+      } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+        prevSlide();
+      } else if (e.key === 'n' || e.key === 'N') {
+        toggleNotes();
+      } else if (e.key === 'f' || e.key === 'F') {
+        toggleFullscreen();
+      }
+    });
+
+    resizeStage();
+    updateSlide();
+  </script>
+</body>
+</html>
