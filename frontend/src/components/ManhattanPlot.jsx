@@ -34,10 +34,11 @@ export default function ManhattanPlot({
   const [hoveredPoint, setHoveredPoint] = useState(null);
 
   const availableChromosomes = useMemo(() => {
-    return Array.from(new Set(data.chr)).sort((a, b) => a - b);
-  }, [data.chr]);
+    return Array.from(new Set(data?.chr || [])).sort((a, b) => a - b);
+  }, [data?.chr]);
 
   const filteredData = useMemo(() => {
+    if (!data?.chr) return { chr: [], bp: [], snp: [], log10_p: [] };
     if (selectedChr === "ALL") return data;
     const targetChr = Number(selectedChr);
     const chr = [];

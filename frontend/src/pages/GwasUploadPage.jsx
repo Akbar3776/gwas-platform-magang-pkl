@@ -46,6 +46,7 @@ const INITIAL_FORM = {
   model: "auto",
   n_pc_covariates: "3",
   enable_multilocus: false,
+  multilocus_methods: ["FarmCPU", "BLINK", "MLMM"],
   // Threshold & Clumping
   threshold_method: "bonferroni",
   threshold_alpha: "0.05",
@@ -230,7 +231,7 @@ export function GwasUploadPage() {
           model: form.model,
           n_pc_covariates: Number(form.n_pc_covariates),
           enable_multilocus: Boolean(form.enable_multilocus),
-          multilocus_methods: ["FarmCPU", "BLINK"],
+          multilocus_methods: form.multilocus_methods || ["FarmCPU", "BLINK", "MLMM"],
         },
         threshold: {
           method: form.threshold_method,
@@ -275,59 +276,139 @@ export function GwasUploadPage() {
         </p>
       </header>
 
-      <section style={{ display: "grid", gap: 20 }}>
-        {/* Tahap 1: Dataset Genotipe */}
-        <div style={{ padding: 18, border: "1px solid #e2e8f0", borderRadius: 12, background: "#fff" }}>
-          <h2 style={{ margin: "0 0 12px", fontSize: 17 }}>1. Unggah Data Genotipe Baru (VCF)</h2>
-          <VcfUploader onDatasetReady={handleDatasetReady} />
-          {datasetId && (
-            <p style={{ margin: "12px 0 0", color: "#15803d", fontSize: 13, fontWeight: 600 }}>
-              Dataset terpilih siap diproses (ID: {datasetId}).
-            </p>
-          )}
-        </div>
-
-        {/* Workspace Explorer */}
-        <WorkspaceExplorer
-          activeDatasetId={datasetId}
-          activeJobId={jobId}
-          onSelectDataset={handleSelectExistingDataset}
-          onDeleteDataset={handleDeleteDataset}
-          onSelectJob={handleSelectExistingJob}
-          onDeleteJob={handleDeleteJob}
-          refreshTrigger={refreshCount}
-        />
-
-        {/* Tahap 2: Fenotipe & Anotasi */}
-        {datasetId && !jobId && (
-          <div style={{ display: "grid", gap: 18, padding: 18, border: "1px solid #e2e8f0", borderRadius: 12, background: "#fff" }}>
-            <h2 style={{ margin: 0, fontSize: 17 }}>2. Fenotipe & Anotasi Genom</h2>
-            <p style={{ margin: 0, color: "#64748b", fontSize: 13 }}>
-              Unggah file fenotipe (.txt/.tsv/.csv) untuk analisis asosiasi dan file anotasi referensi (.gff3 opsional) untuk pemetaan gen kandidat.
-            </p>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
-              <PhenotypeUploader
-                datasetId={datasetId}
-                initialPhenotypeFilename={datasetMeta?.phenotype_filename}
-                initialColumns={datasetMeta?.phenotype_columns || []}
-                initialNumericTraits={datasetMeta?.numeric_traits || []}
-                onInspectionReady={handleInspectionReady}
-                onPhenotypeCleared={handlePhenotypeCleared}
-              />
-              <AnnotationUploader
-                datasetId={datasetId}
-                initialAnnotationFilename={datasetMeta?.annotation_filename}
-                onAnnotationChanged={(meta) => setHasAnnotation(Boolean(meta))}
-              />
+      {/* Saat Job Berjalan / Terpilih: Tampilkan Tracker di paling atas dengan layout bersih */}
+      {jobId ? (
+        <section style={{ display: "grid", gap: 20 }}>
+          <div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 12,
+                flexWrap: "wrap",
+                gap: 10,
+              }}
+            >
+              <div>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#2563eb", textTransform: "uppercase" }}>
+                  Status Komputasi GWAS
+                </span>
+                <h2 style={{ margin: "2px 0 0", fontSize: 20 }}>Progress & Eksekusi Pipeline</h2>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => setJobId(null)}
+                  style={{
+                    padding: "7px 14px",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    borderRadius: 7,
+                    border: "1px solid #cbd5e1",
+                    background: "#fff",
+                    color: "#334155",
+                    cursor: "pointer",
+                  }}
+                >
+                  ← Konfigurasi Job / Dataset Lain
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate(`/jobs/${jobId}/results`)}
+                  style={{
+                    padding: "7px 14px",
+                    fontSize: 13,
+                    background: "#10b981",
+                    color: "#fff",
+                    borderRadius: 7,
+                    border: "none",
+                    cursor: "pointer",
+                    fontWeight: 700,
+                  }}
+                >
+                  Lihat Halaman Hasil →
+                </button>
+              </div>
             </div>
 
-            {/* Panel Hasil Inspeksi */}
-            {inspectionReport && (
-              <DataInspectionPanel report={inspectionReport} fileId={datasetId} />
+            <JobStatusTracker
+              jobId={jobId}
+              onComplete={handleJobComplete}
+              onCancelled={() => setRefreshCount((c) => c + 1)}
+              onRetried={() => setRefreshCount((c) => c + 1)}
+            />
+            <JobFilesPanel jobId={jobId} isRunning={true} />
+          </div>
+
+          {/* Workspace Explorer di bagian bawah untuk referensi riwayat job */}
+          <div style={{ marginTop: 10 }}>
+            <h3 style={{ fontSize: 15, margin: "0 0 10px", color: "#64748b" }}>Riwayat Workspace & Job Lainnya</h3>
+            <WorkspaceExplorer
+              activeDatasetId={datasetId}
+              activeJobId={jobId}
+              onSelectDataset={handleSelectExistingDataset}
+              onDeleteDataset={handleDeleteDataset}
+              onSelectJob={handleSelectExistingJob}
+              onDeleteJob={handleDeleteJob}
+              refreshTrigger={refreshCount}
+            />
+          </div>
+        </section>
+      ) : (
+        <section style={{ display: "grid", gap: 20 }}>
+          {/* Tahap 1: Dataset Genotipe */}
+          <div style={{ padding: 18, border: "1px solid #e2e8f0", borderRadius: 12, background: "#fff" }}>
+            <h2 style={{ margin: "0 0 12px", fontSize: 17 }}>1. Unggah Data Genotipe Baru (VCF)</h2>
+            <VcfUploader onDatasetReady={handleDatasetReady} />
+            {datasetId && (
+              <p style={{ margin: "12px 0 0", color: "#15803d", fontSize: 13, fontWeight: 600 }}>
+                Dataset terpilih siap diproses (ID: {datasetId}).
+              </p>
             )}
           </div>
-        )}
+
+          {/* Workspace Explorer */}
+          <WorkspaceExplorer
+            activeDatasetId={datasetId}
+            activeJobId={jobId}
+            onSelectDataset={handleSelectExistingDataset}
+            onDeleteDataset={handleDeleteDataset}
+            onSelectJob={handleSelectExistingJob}
+            onDeleteJob={handleDeleteJob}
+            refreshTrigger={refreshCount}
+          />
+
+          {/* Tahap 2: Fenotipe & Anotasi */}
+          {datasetId && (
+            <div style={{ display: "grid", gap: 18, padding: 18, border: "1px solid #e2e8f0", borderRadius: 12, background: "#fff" }}>
+              <h2 style={{ margin: 0, fontSize: 17 }}>2. Fenotipe & Anotasi Genom</h2>
+              <p style={{ margin: 0, color: "#64748b", fontSize: 13 }}>
+                Unggah file fenotipe (.txt/.tsv/.csv) untuk analisis asosiasi dan file anotasi referensi (.gff3 opsional) untuk pemetaan gen kandidat.
+              </p>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
+                <PhenotypeUploader
+                  datasetId={datasetId}
+                  initialPhenotypeFilename={datasetMeta?.phenotype_filename}
+                  initialColumns={datasetMeta?.phenotype_columns || []}
+                  initialNumericTraits={datasetMeta?.numeric_traits || []}
+                  onInspectionReady={handleInspectionReady}
+                  onPhenotypeCleared={handlePhenotypeCleared}
+                />
+                <AnnotationUploader
+                  datasetId={datasetId}
+                  initialAnnotationFilename={datasetMeta?.annotation_filename}
+                  onAnnotationChanged={(meta) => setHasAnnotation(Boolean(meta))}
+                />
+              </div>
+
+              {/* Panel Hasil Inspeksi */}
+              {inspectionReport && (
+                <DataInspectionPanel report={inspectionReport} fileId={datasetId} />
+              )}
+            </div>
+          )}
 
         {/* Tahap 3: Konfigurasi Pipeline Lengkap */}
         {datasetId && !jobId && (
@@ -580,6 +661,9 @@ export function GwasUploadPage() {
                     <option value="auto">Auto (Rekomendasi Berdasarkan Struktur & Kinship)</option>
                     <option value="lmm">Linear Mixed Model (GEMMA Wald LMM)</option>
                     <option value="glm">Generalized Linear Model (PLINK2 Linear GLM)</option>
+                    <option value="farmcpu">FarmCPU (Fixed and Random Model Iterative)</option>
+                    <option value="blink">BLINK (Bayesian Information & LD Pruned Keyway)</option>
+                    <option value="mlmm">MLMM (Multiple Locus Mixed Model Stepwise)</option>
                   </select>
                 </Field>
                 <Field label="Jumlah PC Kovariat" hint="Jumlah PC yang dimasukkan ke model">
@@ -595,17 +679,56 @@ export function GwasUploadPage() {
                   />
                 </Field>
               </div>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#334155", cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  name="enable_multilocus"
-                  checked={form.enable_multilocus}
-                  onChange={updateField}
-                />
-                <span>
-                  Jalankan juga Multi-Locus GWAS (FarmCPU & BLINK via GAPIT/R, opsional jika lingkungan R tersedia)
-                </span>
-              </label>
+              <div style={{ display: "grid", gap: 8, marginTop: 4 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#334155", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    name="enable_multilocus"
+                    checked={form.enable_multilocus}
+                    onChange={updateField}
+                  />
+                  <span style={{ fontWeight: 600 }}>
+                    Jalankan juga Multi-Locus GWAS (FarmCPU, BLINK & MLMM)
+                  </span>
+                </label>
+                {form.enable_multilocus && (
+                  <div style={{ display: "flex", gap: 16, marginLeft: 24, flexWrap: "wrap", fontSize: 12, color: "#475569" }}>
+                    {["FarmCPU", "BLINK", "MLMM"].map((m) => {
+                      const currentMethods = form.multilocus_methods || ["FarmCPU", "BLINK", "MLMM"];
+                      const isChecked = currentMethods.includes(m);
+                      const isOnlyOne = isChecked && currentMethods.length === 1;
+                      return (
+                        <label
+                          key={m}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            cursor: isOnlyOne ? "not-allowed" : "pointer",
+                            opacity: isOnlyOne ? 0.65 : 1,
+                          }}
+                          title={isOnlyOne ? "Minimal satu metode harus dipilih" : undefined}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            disabled={isOnlyOne}
+                            onChange={(e) => {
+                              const prev = form.multilocus_methods || ["FarmCPU", "BLINK", "MLMM"];
+                              if (e.target.checked) {
+                                setForm((f) => ({ ...f, multilocus_methods: [...prev, m] }));
+                              } else if (prev.length > 1) {
+                                setForm((f) => ({ ...f, multilocus_methods: prev.filter((item) => item !== m) }));
+                              }
+                            }}
+                          />
+                          <span>{m}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </fieldset>
 
             {/* Fieldset E: Post-GWAS Threshold & Clumping */}
@@ -631,9 +754,9 @@ export function GwasUploadPage() {
                     <input
                       name="threshold_alpha"
                       type="number"
-                      min="0.001"
+                      min="0.0001"
                       max="0.2"
-                      step="0.01"
+                      step="any"
                       value={form.threshold_alpha}
                       onChange={updateField}
                       style={inputStyle}
@@ -711,9 +834,28 @@ export function GwasUploadPage() {
             )}
 
             {hasBlockingErrors && (
-              <p style={{ margin: 0, color: "#dc2626", fontSize: 13, fontWeight: 600 }}>
-                ⚠️ Harap unggah file fenotipe dan selesaikan rekonsiliasi data pada Bagian 2 sebelum menjalankan pipeline.
-              </p>
+              <div
+                style={{
+                  padding: "10px 14px",
+                  background: "#fef2f2",
+                  border: "1px solid #fecaca",
+                  borderRadius: 8,
+                  color: "#b91c1c",
+                  fontSize: 13,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span style={{ fontSize: 16 }}>⚠️</span>
+                <span>
+                  {!inspectionReport
+                    ? "File fenotipe belum diunggah atau diinspeksi. Silakan unggah file fenotipe pada Tahap 2 di atas terlebih dahulu."
+                    : !selectedTrait
+                    ? "Silakan pilih salah satu trait fenotipe numerik target pada Tahap 2 di atas."
+                    : `Terdapat error pada fenotipe: ${inspectionReport.blocking_errors.join(", ")}`}
+                </span>
+              </div>
             )}
 
             <button
@@ -735,66 +877,8 @@ export function GwasUploadPage() {
             </button>
           </form>
         )}
-
-        {/* Status Tracker & File Explorer saat job berjalan / terpilih */}
-        {jobId && (
-          <div>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: 10,
-              }}
-            >
-              <h2 style={{ margin: 0, fontSize: 17 }}>4. Progress, Log & File Job</h2>
-              <div style={{ display: "flex", gap: 8 }}>
-                {datasetId && (
-                  <button
-                    type="button"
-                    onClick={() => setJobId(null)}
-                    style={{
-                      padding: "6px 12px",
-                      fontSize: 12,
-                      fontWeight: 600,
-                      borderRadius: 6,
-                      border: "1px solid #cbd5e1",
-                      background: "#fff",
-                      color: "#334155",
-                      cursor: "pointer",
-                    }}
-                  >
-                    Konfigurasi Job Baru
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => navigate(`/jobs/${jobId}/results`)}
-                  style={{
-                    padding: "6px 12px",
-                    fontSize: 12,
-                    background: "#10b981",
-                    color: "#fff",
-                    borderRadius: 6,
-                    border: "none",
-                    cursor: "pointer",
-                    fontWeight: 700,
-                  }}
-                >
-                  Lihat Halaman Hasil →
-                </button>
-              </div>
-            </div>
-            <JobStatusTracker
-              jobId={jobId}
-              onComplete={handleJobComplete}
-              onCancelled={() => setRefreshCount((c) => c + 1)}
-              onRetried={() => setRefreshCount((c) => c + 1)}
-            />
-            <JobFilesPanel jobId={jobId} isRunning={true} />
-          </div>
-        )}
       </section>
-    </main>
-  );
+    )}
+  </main>
+);
 }

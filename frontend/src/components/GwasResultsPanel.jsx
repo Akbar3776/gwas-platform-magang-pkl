@@ -334,7 +334,7 @@ export default function GwasResultsPanel({ jobId }) {
             >
               <div style={{ fontSize: 24, marginBottom: 8 }}>🔬</div>
               <div style={{ fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                Analisis Multi-Locus GWAS (FarmCPU/BLINK) Dilewati
+                Analisis Multi-Locus GWAS (FarmCPU, BLINK, MLMM) Dilewati
               </div>
               <p style={{ margin: 0, fontSize: 13, maxWidth: 500, marginInline: "auto" }}>
                 Opsi multi-locus tidak diaktifkan pada konfigurasi pipeline job ini, atau runtime R

@@ -15,7 +15,10 @@ export function AnnotationUploader({
 
   useEffect(() => {
     setFilename(initialAnnotationFilename || null);
-  }, [initialAnnotationFilename]);
+    if (onAnnotationChanged && initialAnnotationFilename) {
+      onAnnotationChanged({ filename: initialAnnotationFilename });
+    }
+  }, [initialAnnotationFilename, onAnnotationChanged]);
 
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];

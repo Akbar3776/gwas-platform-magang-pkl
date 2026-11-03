@@ -113,6 +113,7 @@ export function PeakComparisonTable({ comparison }) {
               <th style={{ padding: "8px 12px" }}>SNP</th>
               <th style={{ padding: "8px 12px" }}>Chr</th>
               <th style={{ padding: "8px 12px" }}>Posisi (bp)</th>
+              <th style={{ padding: "8px 12px" }}>Metode</th>
               <th style={{ padding: "8px 12px" }}>P Single-Locus</th>
               <th style={{ padding: "8px 12px" }}>P Multi-Locus</th>
               <th style={{ padding: "8px 12px" }}>Status Verifikasi</th>
@@ -144,6 +145,20 @@ export function PeakComparisonTable({ comparison }) {
                   </td>
                   <td style={{ padding: "8px 12px" }}>{r.chr}</td>
                   <td style={{ padding: "8px 12px" }}>{(r.pos || 0).toLocaleString("id-ID")}</td>
+                  <td style={{ padding: "8px 12px" }}>
+                    <span
+                      style={{
+                        padding: "1px 6px",
+                        borderRadius: 4,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        background: "#f1f5f9",
+                        color: "#334155",
+                      }}
+                    >
+                      {r.method || "Multi-Locus"}
+                    </span>
+                  </td>
                   <td style={{ padding: "8px 12px" }}>
                     {r.p_single !== null && r.p_single !== undefined
                       ? Number(r.p_single).toExponential(3)

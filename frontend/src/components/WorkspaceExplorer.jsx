@@ -303,7 +303,9 @@ export function WorkspaceExplorer({
                 >
                   <th style={{ padding: "8px 10px" }}>Nama File</th>
                   <th style={{ padding: "8px 10px" }}>Ukuran</th>
-                  <th style={{ padding: "8px 10px" }}>Status</th>
+                  <th style={{ padding: "8px 10px" }}>Status VCF</th>
+                  <th style={{ padding: "8px 10px" }}>Fenotipe</th>
+                  <th style={{ padding: "8px 10px" }}>Anotasi</th>
                   <th style={{ padding: "8px 10px" }}>Waktu Upload</th>
                   <th style={{ padding: "8px 10px", textAlign: "right" }}>Aksi</th>
                 </tr>
@@ -348,6 +350,68 @@ export function WorkspaceExplorer({
                         >
                           {ds.upload_status.toUpperCase()}
                         </span>
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>
+                        {ds.has_phenotype ? (
+                          <span
+                            title={ds.phenotype_filename}
+                            style={{
+                              padding: "2px 8px",
+                              borderRadius: 6,
+                              fontSize: 11,
+                              fontWeight: 600,
+                              background: "#f0fdf4",
+                              color: "#15803d",
+                              border: "1px solid #bbf7d0",
+                              display: "inline-block",
+                              maxWidth: 130,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            ✓ {ds.phenotype_filename || "Terpasang"}
+                          </span>
+                        ) : (
+                          <span
+                            style={{
+                              padding: "2px 8px",
+                              borderRadius: 6,
+                              fontSize: 11,
+                              fontWeight: 600,
+                              background: "#fffbeb",
+                              color: "#b45309",
+                              border: "1px solid #fde68a",
+                            }}
+                          >
+                            Belum Ada
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>
+                        {ds.has_annotation ? (
+                          <span
+                            title={ds.annotation_filename}
+                            style={{
+                              padding: "2px 8px",
+                              borderRadius: 6,
+                              fontSize: 11,
+                              fontWeight: 600,
+                              background: "#f5f3ff",
+                              color: "#6d28d9",
+                              border: "1px solid #ddd6fe",
+                              display: "inline-block",
+                              maxWidth: 110,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            ✓ GFF3
+                          </span>
+                        ) : (
+                          <span style={{ color: "#94a3b8", fontSize: 11 }}>–</span>
+                        )}
                       </td>
                       <td style={{ padding: "8px 10px", color: "#64748b" }}>
                         {formatDate(ds.uploaded_at)}

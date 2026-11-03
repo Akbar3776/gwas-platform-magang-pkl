@@ -10,7 +10,7 @@ const STEPS = [
   { key: "IMPUTATION", logKey: "imputation", label: "Imputasi Genotipe", detail: "Beagle 5.4 (Opsional)" },
   { key: "STRUCTURE", logKey: "structure", label: "Struktur & LD", detail: "PCA, Kinship & LD Decay" },
   { key: "GWAS", logKey: "gwas", label: "Analisis GWAS", detail: "Uji asosiasi GLM / LMM" },
-  { key: "MULTILOCUS", logKey: "multilocus", label: "Multi-Locus GWAS", detail: "FarmCPU / BLINK (Opsional)" },
+  { key: "MULTILOCUS", logKey: "multilocus", label: "Multi-Locus GWAS", detail: "FarmCPU / BLINK / MLMM (Opsional)" },
   { key: "POSTGWAS", logKey: "postgwas", label: "Pasca-GWAS", detail: "Ambang batas & Clumping" },
   { key: "VISUALIZATION", logKey: "visualization", label: "Visualisasi Plot", detail: "Cache Manhattan & QQ Plot" },
   { key: "ANNOTATION", logKey: "annotation", label: "Anotasi Gen GFF3", detail: "Pemetaan gen & daftar GO" },
@@ -227,12 +227,59 @@ export function JobStatusTracker({ jobId, onComplete, onCancelled, onRetried }) 
         </div>
       </div>
 
+      {/* Context Banner: Genotipe, Fenotipe, Trait & Model */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+          gap: 12,
+          padding: "12px 14px",
+          background: "#f8fafc",
+          border: "1px solid #e2e8f0",
+          borderRadius: 8,
+          marginTop: 14,
+        }}
+      >
+        <div>
+          <span style={{ fontSize: 11, color: "#64748b", fontWeight: 700, letterSpacing: "0.03em" }}>
+            DATASET GENOTIPE (VCF)
+          </span>
+          <p style={{ margin: "2px 0 0", fontSize: 13, fontWeight: 700, color: "#0f172a", fontFamily: "monospace" }}>
+            {jobStatus?.dataset_filename || "Memuat VCF..."}
+          </p>
+        </div>
+        <div>
+          <span style={{ fontSize: 11, color: "#64748b", fontWeight: 700, letterSpacing: "0.03em" }}>
+            STATUS FENOTIPE
+          </span>
+          <p style={{ margin: "2px 0 0", fontSize: 13, fontWeight: 700, color: jobStatus?.phenotype_filename ? "#15803d" : "#b45309" }}>
+            {jobStatus?.phenotype_filename ? `✓ ${jobStatus.phenotype_filename}` : "⚠️ Tidak terpasang"}
+          </p>
+        </div>
+        <div>
+          <span style={{ fontSize: 11, color: "#64748b", fontWeight: 700, letterSpacing: "0.03em" }}>
+            TRAIT TARGET GWAS
+          </span>
+          <p style={{ margin: "2px 0 0", fontSize: 13, fontWeight: 700, color: "#2563eb" }}>
+            {jobStatus?.trait ? `${jobStatus.trait} (Kuantitatif)` : "Auto / Default"}
+          </p>
+        </div>
+        <div>
+          <span style={{ fontSize: 11, color: "#64748b", fontWeight: 700, letterSpacing: "0.03em" }}>
+            MODEL STATISTIK
+          </span>
+          <p style={{ margin: "2px 0 0", fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+            {String(jobStatus?.model || "Auto").toUpperCase()}
+          </p>
+        </div>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
           gap: 10,
-          marginTop: 20,
+          marginTop: 16,
         }}
       >
         {STEPS.map((step, index) => {
@@ -254,15 +301,22 @@ export function JobStatusTracker({ jobId, onComplete, onCancelled, onRetried }) 
               style={{
                 position: "relative",
                 minWidth: 0,
+                minHeight: 116,
                 cursor: "pointer",
                 padding: "10px 8px",
                 borderRadius: 10,
                 border: isSelected ? `2px solid ${colors.accent}` : `1px solid ${colors.border}`,
-                background: colors.background,
+                background: isSelected ? "#fff" : colors.background,
+                boxShadow: isSelected ? "0 2px 6px rgba(37,99,235,0.15)" : "none",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "space-between",
+                alignItems: "center",
+                textAlign: "center",
                 transition: "all 0.15s ease",
               }}
             >
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
+              <div>
                 <div
                   style={{
                     width: 28,
@@ -270,6 +324,7 @@ export function JobStatusTracker({ jobId, onComplete, onCancelled, onRetried }) 
                     borderRadius: "50%",
                     display: "grid",
                     placeItems: "center",
+                    margin: "0 auto",
                     background: "#fff",
                     border: `2px solid ${colors.accent}`,
                     color: colors.accent,
@@ -280,12 +335,16 @@ export function JobStatusTracker({ jobId, onComplete, onCancelled, onRetried }) 
                 >
                   {state === "done" ? "✓" : state === "failed" ? "!" : state === "skipped" ? "–" : index + 1}
                 </div>
-                <span style={{ marginTop: 6, fontSize: 10, fontWeight: 700, color: "#64748b", letterSpacing: "0.04em" }}>
+                <div style={{ marginTop: 6, fontSize: 10, fontWeight: 700, color: "#64748b", letterSpacing: "0.04em" }}>
                   TAHAP {index + 1}
-                </span>
-                <strong style={{ marginTop: 2, color: colors.accent, fontSize: 12 }}>{step.label}</strong>
-                <span style={{ marginTop: 3, color: "#64748b", fontSize: 11, lineHeight: 1.3 }}>{step.detail}</span>
+                </div>
+                <strong style={{ display: "block", marginTop: 2, color: colors.accent, fontSize: 12, lineHeight: 1.25 }}>
+                  {step.label}
+                </strong>
               </div>
+              <span style={{ marginTop: 4, color: "#64748b", fontSize: 11, lineHeight: 1.2 }}>
+                {step.detail}
+              </span>
             </div>
           );
         })}

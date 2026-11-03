@@ -33,6 +33,11 @@ export function PhenotypeUploader({
       }
       if (initialNumericTraits && initialNumericTraits.length > 0) {
         setSelectedTrait((curr) => curr || initialNumericTraits[0]);
+      } else if (initialColumns && initialColumns.length > 0) {
+        const candidate = initialColumns.find((c) => !["FID", "IID", "ID", "FAMILY", "INDIVIDUAL"].includes(c.toUpperCase())) || initialColumns[0];
+        if (candidate) {
+          setSelectedTrait((curr) => curr || candidate);
+        }
       }
     } else {
       setFilename(null);

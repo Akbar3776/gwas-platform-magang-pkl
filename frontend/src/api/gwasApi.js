@@ -137,6 +137,17 @@ export async function fetchPeakComparisonData(jobId, signal) {
 }
 
 /**
+ * Mengambil hasil detail Multi-Locus GWAS (FarmCPU, BLINK, MLMM) (Fase 4C).
+ */
+export async function fetchMultilocusResultsData(jobId, signal) {
+  const response = await apiFetch(`/results/${jobId}/multilocus-results`, {
+    signal,
+    headers: { Accept: "application/json" },
+  });
+  return handleJsonResponse(response, "Gagal mengambil data hasil multi-locus GWAS");
+}
+
+/**
  * Mengambil pemetaan gen kandidat GFF3 dan daftar GO (Fase 5).
  */
 export async function fetchCandidateGenesData(jobId, signal) {
