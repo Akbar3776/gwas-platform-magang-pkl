@@ -136,9 +136,10 @@ body {
 /* Results & Job Status Pages */
 .results-page,
 .job-status-page {
-  max-width: 960px;
+  max-width: 1380px;
+  width: 100%;
   margin: 0 auto;
-  padding: 28px 20px;
+  padding: 28px 24px;
 }
 
 .gwas-results-panel,
