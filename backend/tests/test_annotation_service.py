@@ -58,18 +58,73 @@ def test_map_lead_snps_to_genes(tmp_path):
     # 1. SNP_inside
     assert mapped[0]["category"] == "Genik"
     assert mapped[0]["nearest_gene"] == "GENE_A"
+    assert mapped[0]["closest_gene"]["gene_id"] == "GENE_A"
+    assert mapped[0]["closest_gene"]["gene_name"] == "GeneA"
     assert mapped[0]["distance_bp"] == 0
+    assert mapped[0]["distance_to_closest_gene"] == 0
+    assert mapped[0]["genes_in_window"][0]["gene_id"] == "GENE_A"
+    assert mapped[0]["genes_in_window"][0]["distance"] == 0
 
     # 2. SNP_near
     assert mapped[1]["category"] == "Near-gen"
     assert mapped[1]["nearest_gene"] == "GENE_B"
+    assert mapped[1]["closest_gene"]["gene_id"] == "GENE_B"
     assert mapped[1]["distance_bp"] == 5000
+    assert mapped[1]["distance_to_closest_gene"] == 5000
+    assert mapped[1]["genes_in_window"][0]["gene_id"] == "GENE_B"
+    assert mapped[1]["genes_in_window"][0]["distance"] == 5000
 
     # 3. SNP_inter
     assert mapped[2]["category"] == "Intergenik"
     assert mapped[2]["distance_bp"] > 50000
+    assert mapped[2]["distance_to_closest_gene"] > 50000
 
     # Check counts
     assert counts["Genik"] == 1
     assert counts["Near-gen"] == 1
     assert counts["Intergenik"] == 1
+
+
+def test_normalize_candidate_genes_payload():
+    from app.api.routes.results import _normalize_candidate_genes_payload
+
+    legacy_payload = {
+        "window_bp": 100000,
+        "window_kb": 100,
+        "counts": {"Genik": 1, "Near-gen": 1, "Intergenik": 0},
+        "rows": [
+            {
+                "snp": "Chr2_43381920",
+                "chr": "2",
+                "pos": 43381920,
+                "p": 0.00018,
+                "nearest_gene": "Asa2G01356",
+                "nearest_gene_name": "Asa2G01356",
+                "distance_bp": 0,
+                "category": "Genik",
+                "strand": "-",
+                "description": "",
+                "genes_in_window": [
+                    {
+                        "id": "Asa2G01356",
+                        "name": "Asa2G01356",
+                        "start": 43381845,
+                        "end": 43382210,
+                        "strand": "-",
+                        "desc": "",
+                    }
+                ],
+            }
+        ],
+    }
+
+    normalized = _normalize_candidate_genes_payload(legacy_payload)
+    assert normalized["status"] == "completed"
+    assert normalized["total_lead_snps"] == 1
+    assert len(normalized["mappings"]) == 1
+    assert normalized["candidate_genes_list"] == ["Asa2G01356"]
+    row = normalized["mappings"][0]
+    assert row["closest_gene"]["gene_id"] == "Asa2G01356"
+    assert row["distance_to_closest_gene"] == 0
+    assert row["genes_in_window"][0]["gene_id"] == "Asa2G01356"
+    assert row["genes_in_window"][0]["distance"] == 0

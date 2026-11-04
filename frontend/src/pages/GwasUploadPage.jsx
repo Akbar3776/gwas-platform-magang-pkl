@@ -110,6 +110,7 @@ export function GwasUploadPage() {
     hasRedirectedRef.current = false;
     setDatasetId(readyDatasetId);
     setDatasetMeta(meta || null);
+    setHasAnnotation(Boolean(meta?.has_annotation || meta?.annotation_filename));
     setJobId(null);
     setError(null);
     setInspectionReport(null);
@@ -121,6 +122,7 @@ export function GwasUploadPage() {
     hasRedirectedRef.current = false;
     setDatasetId(selectedDatasetId);
     setDatasetMeta(selectedMeta || null);
+    setHasAnnotation(Boolean(selectedMeta?.has_annotation || selectedMeta?.annotation_filename));
     setJobId(null);
     setError(null);
     setInspectionReport(null);
@@ -243,7 +245,7 @@ export function GwasUploadPage() {
           p2: Number(form.clump_p2),
         },
         annotation: {
-          enabled: Boolean(form.annotation_enabled && hasAnnotation),
+          enabled: Boolean(form.annotation_enabled),
           feature_type: "gene",
         },
       };

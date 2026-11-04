@@ -15,10 +15,12 @@ export function AnnotationUploader({
 
   useEffect(() => {
     setFilename(initialAnnotationFilename || null);
-    if (onAnnotationChanged && initialAnnotationFilename) {
-      onAnnotationChanged({ filename: initialAnnotationFilename });
+    setGeneCount(null);
+    setSeqids([]);
+    if (onAnnotationChanged) {
+      onAnnotationChanged(initialAnnotationFilename ? { filename: initialAnnotationFilename } : null);
     }
-  }, [initialAnnotationFilename, onAnnotationChanged]);
+  }, [datasetId, initialAnnotationFilename]);
 
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];

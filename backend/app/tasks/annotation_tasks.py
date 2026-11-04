@@ -71,9 +71,12 @@ def run_annotation(
         if dataset.annotation_file_path and Path(dataset.annotation_file_path).is_file():
             gff_candidate = Path(dataset.annotation_file_path)
         else:
-            ds_anno = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id) / "annotation.gff3"
-            if ds_anno.is_file():
-                gff_candidate = ds_anno
+            ds_dir = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id)
+            for cand_name in ("annotation.gff3.gz", "annotation.gff3", "annotation.gff.gz", "annotation.gff"):
+                ds_anno = ds_dir / cand_name
+                if ds_anno.is_file():
+                    gff_candidate = ds_anno
+                    break
 
         # Ambil lead SNPs dari context atau file
         lead_snps = ctx.get("lead_snps")
@@ -155,11 +158,27 @@ def run_annotation(
             window_bp=window_bp,
         )
 
+        # Kumpulkan daftar ID gen unik dari kategori Genik & Near-gen serta jendela LD
+        unique_go_genes: set[str] = set()
+        for r in mapped_rows:
+            if r["category"] in {"Genik", "Near-gen"} and r["nearest_gene"] != "-":
+                unique_go_genes.add(r["nearest_gene"])
+            for gw in r.get("genes_in_window", []):
+                gid = gw.get("id") or gw.get("gene_id")
+                if gid:
+                    unique_go_genes.add(gid)
+
+        sorted_go_genes = sorted(unique_go_genes)
+
         candidate_data = {
+            "status": "completed",
             "window_bp": window_bp,
             "window_kb": window_kb,
+            "total_lead_snps": len(mapped_rows),
             "counts": category_counts,
+            "candidate_genes_list": sorted_go_genes,
             "rows": mapped_rows,
+            "mappings": mapped_rows,
         }
         candidate_json_file = workspace / "candidate_genes.json"
         write_json(candidate_json_file, candidate_data)
@@ -170,7 +189,7 @@ def run_annotation(
             writer = csv.writer(ef)
             writer.writerow(["SNP", "Kromosom", "Posisi", "P_Value", "Gen_Terdekat", "Nama_Gen", "Jarak_bp", "Kategori", "Strand", "Deskripsi", "Gen_Dalam_Jendela"])
             for r in mapped_rows:
-                win_ids = ", ".join(g["id"] for g in r.get("genes_in_window", []))
+                win_ids = ", ".join((g.get("id") or g.get("gene_id") or "") for g in r.get("genes_in_window", []))
                 writer.writerow([
                     r["snp"],
                     r["chr"],
@@ -195,15 +214,8 @@ def run_annotation(
                 writer.writerow([cat, count, f"{pct}%"])
 
         # 4. Tulis Daftar_Gen_Untuk_GO.txt (Daftar ID gen unik dari kategori Genik & Near-gen)
-        unique_go_genes: set[str] = set()
-        for r in mapped_rows:
-            if r["category"] in {"Genik", "Near-gen"} and r["nearest_gene"] != "-":
-                unique_go_genes.add(r["nearest_gene"])
-            for gw in r.get("genes_in_window", []):
-                unique_go_genes.add(gw["id"])
-
         go_file = workspace / "Daftar_Gen_Untuk_GO.txt"
-        go_file.write_text("\n".join(sorted(unique_go_genes)) + "\n", encoding="utf-8")
+        go_file.write_text("\n".join(sorted_go_genes) + ("\n" if sorted_go_genes else ""), encoding="utf-8")
 
         append_log(
             log_file,

@@ -135,13 +135,17 @@ def map_lead_snps_to_genes(
                 "chr": raw_chr,
                 "pos": pos,
                 "p": snp.get("p"),
+                "beta": snp.get("beta", 0.0),
                 "nearest_gene": "-",
                 "nearest_gene_name": "-",
+                "closest_gene": None,
                 "distance_bp": -1,
+                "distance_to_closest_gene": None,
                 "category": "Intergenik",
                 "strand": "-",
                 "description": "Tidak ada gen teranotasi pada kromosom ini di GFF3",
                 "genes_in_window": [],
+                "genes_in_window_count": 0,
             })
             category_counts["Intergenik"] += 1
             continue
@@ -195,12 +199,21 @@ def map_lead_snps_to_genes(
             if g["start"] > win_end:
                 break
             if g["end"] >= win_start:
+                if g["start"] <= pos <= g["end"]:
+                    dist_g = 0
+                elif pos < g["start"]:
+                    dist_g = g["start"] - pos
+                else:
+                    dist_g = pos - g["end"]
                 genes_in_window.append({
                     "id": g["gene_id"],
+                    "gene_id": g["gene_id"],
                     "name": g["name"],
+                    "gene_name": g["name"],
                     "start": g["start"],
                     "end": g["end"],
                     "strand": g["strand"],
+                    "distance": int(dist_g),
                     "desc": g["description"][:100] if g["description"] else "",
                 })
 
@@ -212,11 +225,19 @@ def map_lead_snps_to_genes(
             "beta": snp.get("beta", 0.0),
             "nearest_gene": nearest_gene["gene_id"],
             "nearest_gene_name": nearest_gene["name"],
+            "closest_gene": {
+                "gene_id": nearest_gene["gene_id"],
+                "gene_name": nearest_gene["name"],
+                "strand": nearest_gene["strand"],
+                "description": nearest_gene["description"],
+            },
             "distance_bp": dist_int,
+            "distance_to_closest_gene": dist_int,
             "category": category,
             "strand": nearest_gene["strand"],
             "description": nearest_gene["description"],
             "genes_in_window": genes_in_window,
+            "genes_in_window_count": len(genes_in_window),
         })
 
     return mapped_rows, category_counts

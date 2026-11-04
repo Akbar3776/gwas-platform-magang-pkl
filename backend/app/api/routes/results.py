@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.engine.database import get_db
-from app.db.engine.models import AnalysisJob, JobStatus, Result, ResultType
+from app.db.engine.models import AnalysisJob, Dataset, JobStatus, Result, ResultType
 from app.schemas.results import ManhattanDataResponse
 from app.services.manhattan_parser import generate_manhattan_cache, load_manhattan_cache
 
@@ -294,8 +294,176 @@ def get_multilocus_results_data(job_id: uuid.UUID, db: Session = Depends(get_db)
     return data
 
 
+def _normalize_candidate_genes_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """Pastikan struktur candidate_genes kompatibel antara backend lama (`rows`) dan frontend (`mappings`)."""
+    raw_rows = data.get("mappings") or data.get("rows") or []
+    normalized_rows: list[dict[str, Any]] = []
+    unique_genes: set[str] = set(data.get("candidate_genes_list") or [])
+    counts = dict(data.get("counts") or {"Genik": 0, "Near-gen": 0, "Intergenik": 0})
+    recalc_counts = not bool(data.get("counts"))
+
+    for row in raw_rows:
+        r = dict(row)
+        pos = int(r.get("pos") or 0)
+        cat = r.get("category") or "Intergenik"
+        if recalc_counts and cat in counts:
+            counts[cat] += 1
+
+        nearest_id = r.get("nearest_gene") or (r.get("closest_gene") or {}).get("gene_id") or "-"
+        nearest_name = r.get("nearest_gene_name") or (r.get("closest_gene") or {}).get("gene_name") or nearest_id
+        dist_bp = r.get("distance_bp")
+        if dist_bp is None:
+            dist_bp = r.get("distance_to_closest_gene")
+        dist_val = int(dist_bp) if dist_bp is not None and int(dist_bp) >= 0 else None
+
+        r["nearest_gene"] = nearest_id
+        r["nearest_gene_name"] = nearest_name
+        r["distance_bp"] = dist_val if dist_val is not None else -1
+        r["distance_to_closest_gene"] = dist_val
+
+        if "closest_gene" not in r:
+            if nearest_id and nearest_id != "-":
+                r["closest_gene"] = {
+                    "gene_id": nearest_id,
+                    "gene_name": nearest_name,
+                    "strand": r.get("strand", "-"),
+                    "description": r.get("description", ""),
+                }
+            else:
+                r["closest_gene"] = None
+
+        if cat in {"Genik", "Near-gen"} and nearest_id and nearest_id != "-":
+            unique_genes.add(nearest_id)
+
+        win_list: list[dict[str, Any]] = []
+        for gw in r.get("genes_in_window") or []:
+            g = dict(gw)
+            gid = g.get("gene_id") or g.get("id") or ""
+            gname = g.get("gene_name") or g.get("name") or gid
+            g["id"] = gid
+            g["gene_id"] = gid
+            g["name"] = gname
+            g["gene_name"] = gname
+            if "distance" not in g or g["distance"] is None:
+                g_start = int(g.get("start") or 0)
+                g_end = int(g.get("end") or 0)
+                if g_start <= pos <= g_end:
+                    g["distance"] = 0
+                elif pos < g_start:
+                    g["distance"] = g_start - pos
+                else:
+                    g["distance"] = pos - g_end
+            if gid:
+                unique_genes.add(gid)
+            win_list.append(g)
+
+        r["genes_in_window"] = win_list
+        r["genes_in_window_count"] = len(win_list)
+        normalized_rows.append(r)
+
+    win_bp = int(data.get("window_bp") or (int(data.get("window_kb") or 100) * 1000))
+    win_kb = int(data.get("window_kb") or max(1, round(win_bp / 1000)))
+
+    return {
+        **data,
+        "status": "completed",
+        "window_bp": win_bp,
+        "window_kb": win_kb,
+        "total_lead_snps": len(normalized_rows),
+        "counts": counts,
+        "candidate_genes_list": sorted(unique_genes),
+        "rows": normalized_rows,
+        "mappings": normalized_rows,
+    }
+
+
 @router.get("/{job_id}/candidate-genes", summary="Pemetaan anotasi gen kandidat GFF3 & GO (Fase 5)")
 def get_candidate_genes_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return _load_job_json_result(
+    data = _load_job_json_result(
         job_id, db, ResultType.CANDIDATE_GENES, "annotation", "candidate_genes.json"
     )
+    if isinstance(data, dict) and (data.get("rows") or data.get("mappings")):
+        return _normalize_candidate_genes_payload(data)
+
+    # Pemulihan on-the-fly jika dataset memiliki file GFF3 dan job memiliki Lead SNPs
+    job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
+    if job is not None and job.dataset_id is not None:
+        dataset = db.query(Dataset).filter(Dataset.id == job.dataset_id).first()
+        gff_candidate: Path | None = None
+        if dataset is not None:
+            if dataset.annotation_file_path and Path(dataset.annotation_file_path).is_file():
+                gff_candidate = Path(dataset.annotation_file_path)
+            else:
+                ds_dir = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id)
+                for cand_name in ("annotation.gff3.gz", "annotation.gff3", "annotation.gff.gz", "annotation.gff"):
+                    ds_anno = ds_dir / cand_name
+                    if ds_anno.is_file():
+                        gff_candidate = ds_anno
+                        break
+
+        if gff_candidate is not None:
+            lead_res = get_lead_snps_data(job_id, db)
+            lead_snps = lead_res if isinstance(lead_res, list) else lead_res.get("snps", [])
+            if lead_snps:
+                try:
+                    import csv
+                    from app.services.annotation_service import map_lead_snps_to_genes, parse_gff3_genes
+
+                    params = job.parameters or {}
+                    raw_anno = params.get("annotation") or {}
+                    feat_type = raw_anno.get("feature_type", "gene") if isinstance(raw_anno, dict) else "gene"
+                    win_kb = int(
+                        (raw_anno.get("window_kb") if isinstance(raw_anno, dict) else None)
+                        or params.get("chosen_ld_decay_kb")
+                        or 100
+                    )
+                    win_bp = win_kb * 1000
+
+                    genes_by_chr, _ = parse_gff3_genes(gff_candidate, feature_type=feat_type)
+                    mapped_rows, category_counts = map_lead_snps_to_genes(
+                        lead_snps=lead_snps,
+                        genes_by_chr=genes_by_chr,
+                        window_bp=win_bp,
+                    )
+                    payload = _normalize_candidate_genes_payload({
+                        "status": "completed",
+                        "window_bp": win_bp,
+                        "window_kb": win_kb,
+                        "counts": category_counts,
+                        "rows": mapped_rows,
+                    })
+
+                    anno_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "annotation"
+                    anno_dir.mkdir(parents=True, exist_ok=True)
+                    cand_file = anno_dir / "candidate_genes.json"
+                    cand_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+                    go_genes = payload.get("candidate_genes_list") or []
+                    (anno_dir / "Daftar_Gen_Untuk_GO.txt").write_text(
+                        "\n".join(go_genes) + ("\n" if go_genes else ""), encoding="utf-8"
+                    )
+
+                    ekstraksi_csv = anno_dir / "Ekstraksi_Gen_Mentah.csv"
+                    with ekstraksi_csv.open("w", encoding="utf-8", newline="") as ef:
+                        writer = csv.writer(ef)
+                        writer.writerow(["SNP", "Kromosom", "Posisi", "P_Value", "Gen_Terdekat", "Nama_Gen", "Jarak_bp", "Kategori", "Strand", "Deskripsi", "Gen_Dalam_Jendela"])
+                        for r in payload["rows"]:
+                            win_ids = ", ".join((g.get("id") or g.get("gene_id") or "") for g in r.get("genes_in_window", []))
+                            writer.writerow([
+                                r.get("snp"),
+                                r.get("chr"),
+                                r.get("pos"),
+                                r.get("p"),
+                                r.get("nearest_gene"),
+                                r.get("nearest_gene_name"),
+                                r.get("distance_bp"),
+                                r.get("category"),
+                                r.get("strand"),
+                                r.get("description"),
+                                win_ids,
+                            ])
+                    return payload
+                except Exception:
+                    pass
+
+    return data
