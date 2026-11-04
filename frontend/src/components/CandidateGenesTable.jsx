@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from "react";
+import { GoEnrichmentPanel } from "./GoEnrichmentPanel";
 
-export function CandidateGenesTable({ annotationData = null, jobId = null }) {
+export function CandidateGenesTable({ annotationData = null, goEnrichmentData = null, jobId = null }) {
   const [filterText, setFilterText] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("ALL");
   const [expandedSnp, setExpandedSnp] = useState(null);
@@ -300,7 +301,9 @@ export function CandidateGenesTable({ annotationData = null, jobId = null }) {
                 <th style={{ padding: "8px 12px" }}>Chr:Pos</th>
                 <th style={{ padding: "8px 12px" }}>P-value</th>
                 <th style={{ padding: "8px 12px" }}>Kategori</th>
-                <th style={{ padding: "8px 12px" }}>Gen Terdekat</th>
+                <th style={{ padding: "8px 12px" }}>SOURCE / TYPE</th>
+                <th style={{ padding: "8px 12px" }}>Gen Terdekat (ID)</th>
+                <th style={{ padding: "8px 12px" }}>START – END (GFF3)</th>
                 <th style={{ padding: "8px 12px" }}>Jarak (bp)</th>
                 <th style={{ padding: "8px 12px" }}>Gen dalam Jendela (±{windowKb} kb)</th>
               </tr>
@@ -365,6 +368,11 @@ export function CandidateGenesTable({ annotationData = null, jobId = null }) {
                           {item.category}
                         </span>
                       </td>
+                      <td style={{ padding: "8px 12px", fontSize: 11, color: "#475569" }}>
+                        <span style={{ fontWeight: 600 }}>{item.source || closest?.source || "GFF3"}</span>
+                        {" / "}
+                        <span>{item.feature_type || closest?.feature_type || "gene"}</span>
+                      </td>
                       <td style={{ padding: "8px 12px" }}>
                         {closest ? (
                           <div>
@@ -395,6 +403,13 @@ export function CandidateGenesTable({ annotationData = null, jobId = null }) {
                             )}
                           </div>
                         )}
+                      </td>
+                      <td style={{ padding: "8px 12px", fontFamily: "monospace", fontSize: 11, color: "#334155" }}>
+                        {(item.gene_start || closest?.start) && (item.gene_end || closest?.end)
+                          ? `${Number(item.gene_start || closest?.start).toLocaleString("id-ID")} – ${Number(
+                              item.gene_end || closest?.end
+                            ).toLocaleString("id-ID")}`
+                          : "-"}
                       </td>
                       <td style={{ padding: "8px 12px" }}>
                         {distVal === 0 ? (
@@ -432,7 +447,7 @@ export function CandidateGenesTable({ annotationData = null, jobId = null }) {
                     {/* Expandable detail row for genes in window */}
                     {isExpanded && item.genes_in_window && item.genes_in_window.length > 0 && (
                       <tr style={{ background: "#f8fafc" }}>
-                        <td colSpan={7} style={{ padding: "10px 14px" }}>
+                        <td colSpan={9} style={{ padding: "10px 14px" }}>
                           <div
                             style={{
                               border: "1px solid #e2e8f0",
@@ -501,6 +516,12 @@ export function CandidateGenesTable({ annotationData = null, jobId = null }) {
           </table>
         </div>
       )}
+
+      {/* Bagian Fase 5.3: Gene Ontology (GO) Enrichment Dotplot & Tabel GO */}
+      <GoEnrichmentPanel
+        goData={goEnrichmentData || annotationData?.go_enrichment}
+        jobId={jobId}
+      />
     </div>
   );
 }

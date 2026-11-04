@@ -13,6 +13,7 @@ import { DataInspectionPanel } from "./DataInspectionPanel";
 import { QcComparisonPanel } from "./QcComparisonPanel";
 import { PeakComparisonTable } from "./PeakComparisonTable";
 import { CandidateGenesTable } from "./CandidateGenesTable";
+import { PrimerDesignPanel } from "./PrimerDesignPanel";
 import {
   fetchInspectionData,
   fetchQcComparisonData,
@@ -25,6 +26,8 @@ import {
   fetchPeakComparisonData,
   fetchMultilocusResultsData,
   fetchCandidateGenesData,
+  fetchGoEnrichmentData,
+  fetchPrimersData,
 } from "../api/gwasApi";
 
 const MAIN_TABS = [
@@ -33,7 +36,8 @@ const MAIN_TABS = [
   { key: "structure", label: "🧬 Struktur Populasi & LD" },
   { key: "inspection_qc", label: "🔍 Inspeksi & QC" },
   { key: "multilocus", label: "🔬 Multi-Locus GWAS" },
-  { key: "annotation", label: "🌿 Anotasi Gen GFF3" },
+  { key: "annotation", label: "🌿 Anotasi Gen GFF3 & GO" },
+  { key: "primers", label: "🧪 Flanking & Primer3" },
 ];
 
 export default function GwasResultsPanel({ jobId }) {
@@ -56,6 +60,8 @@ export default function GwasResultsPanel({ jobId }) {
   const [peakData, setPeakData] = useState(null);
   const [multilocusSummary, setMultilocusSummary] = useState(null);
   const [annotationData, setAnnotationData] = useState(null);
+  const [goEnrichmentData, setGoEnrichmentData] = useState(null);
+  const [primersData, setPrimersData] = useState(null);
 
   // Fetch all supplementary pipeline stage data
   useEffect(() => {
@@ -74,6 +80,8 @@ export default function GwasResultsPanel({ jobId }) {
     fetchPeakComparisonData(jobId, sig).then(setPeakData).catch(() => {});
     fetchMultilocusResultsData(jobId, sig).then(setMultilocusSummary).catch(() => {});
     fetchCandidateGenesData(jobId, sig).then(setAnnotationData).catch(() => {});
+    fetchGoEnrichmentData(jobId, sig).then(setGoEnrichmentData).catch(() => {});
+    fetchPrimersData(jobId, sig).then(setPrimersData).catch(() => {});
 
     return () => controller.abort();
   }, [jobId]);
@@ -371,10 +379,21 @@ export default function GwasResultsPanel({ jobId }) {
         </div>
       )}
 
-      {/* TAB 6: ANOTASI GEN KANDIDAT */}
+      {/* TAB 6: ANOTASI GEN KANDIDAT & GO ENRICHMENT */}
       {activeTab === "annotation" && (
         <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0" }}>
-          <CandidateGenesTable annotationData={annotationData} jobId={jobId} />
+          <CandidateGenesTable
+            annotationData={annotationData}
+            goEnrichmentData={goEnrichmentData}
+            jobId={jobId}
+          />
+        </div>
+      )}
+
+      {/* TAB 7: FLANKING SEQUENCE (201 BP) & PRIMER3 DESIGN */}
+      {activeTab === "primers" && (
+        <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0" }}>
+          <PrimerDesignPanel primersData={primersData} jobId={jobId} />
         </div>
       )}
     </div>

@@ -17,6 +17,8 @@ from app.services.annotation_service import (
     normalize_chr_name,
     parse_gff3_genes,
 )
+from app.services.go_enrichment_service import run_go_enrichment_analysis
+from app.services.primer_service import generate_flanking_and_primers
 from app.tasks._common import (
     JobCancelledError,
     append_log,
@@ -113,20 +115,45 @@ def run_annotation(
             f"Tipe Fitur Target  : {cfg.feature_type}\n"
         )
 
-        # Cek kondisi skip
+        trait_name = str(
+            ctx.get("trait")
+            or (((job.parameters or {}).get("phenotype") or {}).get("trait"))
+            or "trait"
+        )
+
+        # Selalu jalankan Fase 5.4 / Fase 6–8 (Flanking 201 bp & Primer3 Design) jika ada Lead SNPs
+        primers_data: dict[str, Any] | None = None
+        if len(lead_snps) > 0:
+            try:
+                primers_data = generate_flanking_and_primers(
+                    lead_snps=lead_snps,
+                    trait_name=trait_name,
+                    max_snps=20,
+                    output_dir=workspace,
+                )
+                write_json(workspace / "primers.json", primers_data)
+                append_log(
+                    log_file,
+                    f"Desain Primer3 & Flanking 201 bp selesai untuk {primers_data.get('total_markers', 0)} Lead SNP "
+                    f"({primers_data.get('markers_with_primers', 0)} penanda menghasilkan pasangan primer).",
+                )
+            except Exception as p_exc:
+                logger.warning("Gagal membangkitkan desain primer di annotation_tasks: %s", p_exc)
+
+        # Cek kondisi skip untuk pemetaan GFF3
         if not cfg.enabled:
             reason = "Anotasi gen dinonaktifkan oleh pengguna"
             append_log(log_file, f"[SKIPPED] {reason}.\n")
             write_json(workspace / "skipped.json", {"status": "skipped", "reason": reason})
             mark_job(db, job, overall_status=JobStatus.COMPLETED, completed_at=datetime.now(timezone.utc))
-            return {**ctx, "status": "skipped", "annotation_skipped": True, "log_file": str(log_file)}
+            return {**ctx, "status": "skipped", "annotation_skipped": True, "primers": primers_data, "log_file": str(log_file)}
 
         if gff_candidate is None:
             reason = "File anotasi referensi GFF3 tidak diunggah pada dataset ini"
             append_log(log_file, f"[SKIPPED] {reason}.\n")
             write_json(workspace / "skipped.json", {"status": "skipped", "reason": reason})
             mark_job(db, job, overall_status=JobStatus.COMPLETED, completed_at=datetime.now(timezone.utc))
-            return {**ctx, "status": "skipped", "annotation_skipped": True, "log_file": str(log_file)}
+            return {**ctx, "status": "skipped", "annotation_skipped": True, "primers": primers_data, "log_file": str(log_file)}
 
         if len(lead_snps) == 0:
             reason = "Tidak ada Lead SNP signifikan yang lolos threshold untuk dianotasi"
@@ -171,6 +198,25 @@ def run_annotation(
 
         sorted_go_genes = sorted(unique_go_genes)
 
+        # Jalankan Fase 5.3 Gene Ontology (GO) Enrichment & Pemetaan Ortolog
+        go_enrichment_data = run_go_enrichment_analysis(
+            mapped_rows=mapped_rows,
+            candidate_genes_list=sorted_go_genes,
+            trait_name=trait_name,
+            output_dir=workspace,
+        )
+        write_json(workspace / "go_enrichment.json", go_enrichment_data)
+
+        # Perbarui juga desain primer dengan atribut nearest_gene dari mapped_rows
+        if mapped_rows:
+            primers_data = generate_flanking_and_primers(
+                lead_snps=mapped_rows,
+                trait_name=trait_name,
+                max_snps=20,
+                output_dir=workspace,
+            )
+            write_json(workspace / "primers.json", primers_data)
+
         candidate_data = {
             "status": "completed",
             "window_bp": window_bp,
@@ -180,6 +226,7 @@ def run_annotation(
             "candidate_genes_list": sorted_go_genes,
             "rows": mapped_rows,
             "mappings": mapped_rows,
+            "go_enrichment": go_enrichment_data,
         }
         candidate_json_file = workspace / "candidate_genes.json"
         write_json(candidate_json_file, candidate_data)

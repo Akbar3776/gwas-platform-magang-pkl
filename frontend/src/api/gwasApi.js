@@ -157,3 +157,25 @@ export async function fetchCandidateGenesData(jobId, signal) {
   });
   return handleJsonResponse(response, "Gagal mengambil data anotasi gen kandidat");
 }
+
+/**
+ * Mengambil hasil Gene Ontology (GO) Enrichment & Tabel GO (Fase 5.3).
+ */
+export async function fetchGoEnrichmentData(jobId, signal) {
+  const response = await apiFetch(`/results/${jobId}/go-enrichment`, {
+    signal,
+    headers: { Accept: "application/json" },
+  });
+  return handleJsonResponse(response, "Gagal mengambil data GO enrichment");
+}
+
+/**
+ * Mengambil sekuens flanking 201 bp dan desain primer Primer3 (Fase 5.4 / 6–8).
+ */
+export async function fetchPrimersData(jobId, signal) {
+  const response = await apiFetch(`/results/${jobId}/primers`, {
+    signal,
+    headers: { Accept: "application/json" },
+  });
+  return handleJsonResponse(response, "Gagal mengambil data desain primer");
+}

@@ -282,33 +282,59 @@ def get_multilocus_results_data(job_id: uuid.UUID, db: Session = Depends(get_db)
     data = _load_job_json_result(
         job_id, db, ResultType.MULTILOCUS_RESULTS, "multilocus", "multilocus_summary.json"
     )
-    if isinstance(data, dict):
+    if isinstance(data, dict) and data.get("status") not in {"skipped", "not_available"}:
         leads = data.get("lead_snps") or []
-        if not leads:
+        needs_enrichment = not leads or any("pve_pct" not in s for s in leads if isinstance(s, dict))
+        if needs_enrichment:
             job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "multilocus"
             if job_root.is_dir():
-                import csv
+                from app.tasks.multilocus_tasks import (
+                    METHOD_DISPLAY_NAMES,
+                    extract_multilocus_leads_from_tsv,
+                    write_significant_pve_csv,
+                )
+
+                job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
+                trait_label = str(
+                    (((job.parameters if job else None) or {}).get("phenotype") or {}).get("trait")
+                    or "Trait"
+                )
                 extracted_leads: list[dict[str, Any]] = []
+                results_map = dict(data.get("results") or {})
                 for m_name in ["farmcpu", "blink", "mlmm"]:
                     tsv_f = job_root / f"{m_name}_results.tsv"
                     if tsv_f.is_file():
-                        try:
-                            with tsv_f.open("r", encoding="utf-8") as tf:
-                                reader = csv.DictReader(tf, delimiter="\t")
-                                rows = sorted(reader, key=lambda x: float(x.get("p", 1.0)))[:5]
-                                for r in rows:
-                                    extracted_leads.append({
-                                        "snp": r.get("rs"),
-                                        "chr": str(r.get("chr", "")).lstrip("chrCHR"),
-                                        "pos": int(r.get("pos", 0)),
-                                        "p": float(r.get("p", 1.0)),
-                                        "method": m_name.upper(),
-                                    })
-                        except Exception:
-                            pass
+                        m_upper = m_name.upper()
+                        m_snps = extract_multilocus_leads_from_tsv(
+                            tsv_f,
+                            method_name=m_upper,
+                            trait_name=trait_label,
+                            max_top=5,
+                        )
+                        if m_snps:
+                            extracted_leads.extend(m_snps)
+                            display_m = METHOD_DISPLAY_NAMES.get(m_upper, m_upper)
+                            pve_csv = job_root / f"{display_m}_Significant_SNPs_PVE.csv"
+                            try:
+                                write_significant_pve_csv(pve_csv, m_snps, trait_name=trait_label)
+                            except Exception:
+                                pass
+                            if m_upper in results_map and isinstance(results_map[m_upper], dict):
+                                results_map[m_upper] = {
+                                    **results_map[m_upper],
+                                    "pve_csv_file": str(pve_csv),
+                                    "significant_snps": m_snps,
+                                }
                 if extracted_leads:
                     data["lead_snps"] = extracted_leads
                     data["n_lead_snps"] = len(extracted_leads)
+                    data["results"] = results_map
+                    try:
+                        (job_root / "multilocus_summary.json").write_text(
+                            json.dumps(data, indent=2), encoding="utf-8"
+                        )
+                    except Exception:
+                        pass
     return data
 
 
@@ -381,6 +407,19 @@ def _normalize_candidate_genes_payload(data: dict[str, Any]) -> dict[str, Any]:
 
     win_bp = int(data.get("window_bp") or (int(data.get("window_kb") or 100) * 1000))
     win_kb = int(data.get("window_kb") or max(1, round(win_bp / 1000)))
+    sorted_genes = sorted(unique_genes)
+
+    go_enrichment = data.get("go_enrichment")
+    if not isinstance(go_enrichment, dict) or not go_enrichment.get("go_table"):
+        try:
+            from app.services.go_enrichment_service import run_go_enrichment_analysis
+
+            go_enrichment = run_go_enrichment_analysis(
+                mapped_rows=normalized_rows,
+                candidate_genes_list=sorted_genes,
+            )
+        except Exception:
+            go_enrichment = None
 
     return {
         **data,
@@ -389,9 +428,10 @@ def _normalize_candidate_genes_payload(data: dict[str, Any]) -> dict[str, Any]:
         "window_kb": win_kb,
         "total_lead_snps": len(normalized_rows),
         "counts": counts,
-        "candidate_genes_list": sorted(unique_genes),
+        "candidate_genes_list": sorted_genes,
         "rows": normalized_rows,
         "mappings": normalized_rows,
+        "go_enrichment": go_enrichment,
     }
 
 
@@ -485,3 +525,85 @@ def get_candidate_genes_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -
                     pass
 
     return data
+
+
+@router.get("/{job_id}/go-enrichment", summary="Analisis Gene Ontology (GO) Enrichment & Tabel GO (Fase 5.3)")
+def get_go_enrichment_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
+    anno_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "annotation"
+    go_file = anno_dir / "go_enrichment.json"
+    if go_file.is_file():
+        try:
+            loaded = json.loads(go_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict) and loaded.get("go_table"):
+                return loaded
+        except Exception:
+            pass
+
+    cand = get_candidate_genes_data(job_id, db)
+    if isinstance(cand, dict) and isinstance(cand.get("go_enrichment"), dict):
+        go_payload = cand["go_enrichment"]
+        try:
+            from app.services.go_enrichment_service import run_go_enrichment_analysis
+
+            job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
+            trait_label = str(
+                (((job.parameters if job else None) or {}).get("phenotype") or {}).get("trait")
+                or "Candidate Genes"
+            )
+            go_payload = run_go_enrichment_analysis(
+                mapped_rows=cand.get("rows") or [],
+                candidate_genes_list=cand.get("candidate_genes_list") or [],
+                trait_name=trait_label,
+                output_dir=anno_dir,
+            )
+            go_file.write_text(json.dumps(go_payload, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        return go_payload
+
+    return {"status": "not_available", "job_id": str(job_id), "go_table": [], "enrichment_terms": []}
+
+
+@router.get("/{job_id}/primers", summary="Sekuens Flanking 201 bp & Desain Primer PCR Primer3 (Fase 5.4 / 6–8)")
+def get_primers_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
+    anno_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "annotation"
+    primers_file = anno_dir / "primers.json"
+    if primers_file.is_file():
+        try:
+            loaded = json.loads(primers_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict) and loaded.get("markers"):
+                return loaded
+        except Exception:
+            pass
+
+    # Bangkitkan on-the-fly dari candidate_genes atau lead_snps untuk job yang sudah selesai
+    cand = get_candidate_genes_data(job_id, db)
+    source_snps: list[dict[str, Any]] = []
+    if isinstance(cand, dict) and cand.get("rows"):
+        source_snps = list(cand["rows"])
+    else:
+        lead_res = get_lead_snps_data(job_id, db)
+        source_snps = lead_res if isinstance(lead_res, list) else list(lead_res.get("snps") or [])
+
+    if source_snps:
+        try:
+            from app.services.primer_service import generate_flanking_and_primers
+
+            job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
+            trait_label = str(
+                (((job.parameters if job else None) or {}).get("phenotype") or {}).get("trait")
+                or "trait"
+            )
+            payload = generate_flanking_and_primers(
+                lead_snps=source_snps,
+                trait_name=trait_label,
+                max_snps=20,
+                output_dir=anno_dir,
+            )
+            anno_dir.mkdir(parents=True, exist_ok=True)
+            primers_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            return payload
+        except Exception:
+            pass
+
+    return {"status": "not_available", "job_id": str(job_id), "total_markers": 0, "markers": []}

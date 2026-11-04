@@ -59,6 +59,7 @@ def parse_gff3_genes(
 
             seqid = parts[0]
             seen_seqids.add(seqid)
+            source_col = parts[1] if len(parts) > 1 and parts[1] != "." else "GFF3"
             feat = parts[2]
 
             # Hanya proses fitur gen yang diminta (default: gene, mRNA jika gene absen)
@@ -71,7 +72,7 @@ def parse_gff3_genes(
                 strand = parts[6]
                 attributes_raw = parts[8]
 
-                # Parse atribut ID, Name, Description
+                # Parse atribut ID, Name, Description, Ontology_term, Dbxref
                 attrs: dict[str, str] = {}
                 for item in attributes_raw.split(";"):
                     if "=" in item:
@@ -83,18 +84,33 @@ def parse_gff3_genes(
                 if ":" in gene_id:
                     gene_id = gene_id.split(":", 1)[1]
 
-                gene_name = attrs.get("NAME") or attrs.get("GENE_NAME") or gene_id
+                gene_name = attrs.get("NAME") or attrs.get("GENE_NAME") or attrs.get("SYMBOL") or gene_id
                 description = attrs.get("NOTE") or attrs.get("DESCRIPTION") or attrs.get("PRODUCT") or ""
+                go_raw = ",".join(
+                    filter(
+                        None,
+                        [
+                            attrs.get("ONTOLOGY_TERM", ""),
+                            attrs.get("GO", ""),
+                            attrs.get("DBXREF", ""),
+                        ],
+                    )
+                )
+                go_ids = sorted(set(re.findall(r"GO:\d{7}", go_raw)))
 
                 norm_chr = normalize_chr_name(seqid)
                 record = {
                     "gene_id": gene_id,
                     "name": gene_name,
                     "chr": norm_chr,
+                    "gff_chrom": seqid,
+                    "source": source_col,
+                    "feature_type": feat,
                     "start": min(start, end),
                     "end": max(start, end),
                     "strand": strand,
                     "description": description,
+                    "go_ids": go_ids,
                 }
                 genes_by_chr.setdefault(norm_chr, []).append(record)
 
@@ -210,11 +226,15 @@ def map_lead_snps_to_genes(
                     "gene_id": g["gene_id"],
                     "name": g["name"],
                     "gene_name": g["name"],
+                    "gff_chrom": g.get("gff_chrom", raw_chr),
+                    "source": g.get("source", "GFF3"),
+                    "feature_type": g.get("feature_type", "gene"),
                     "start": g["start"],
                     "end": g["end"],
                     "strand": g["strand"],
                     "distance": int(dist_g),
                     "desc": g["description"][:100] if g["description"] else "",
+                    "go_ids": g.get("go_ids", []),
                 })
 
         mapped_rows.append({
@@ -225,11 +245,22 @@ def map_lead_snps_to_genes(
             "beta": snp.get("beta", 0.0),
             "nearest_gene": nearest_gene["gene_id"],
             "nearest_gene_name": nearest_gene["name"],
+            "gff_chrom": nearest_gene.get("gff_chrom", raw_chr),
+            "source": nearest_gene.get("source", "GFF3"),
+            "feature_type": nearest_gene.get("feature_type", "gene"),
+            "gene_start": nearest_gene["start"],
+            "gene_end": nearest_gene["end"],
             "closest_gene": {
                 "gene_id": nearest_gene["gene_id"],
                 "gene_name": nearest_gene["name"],
+                "gff_chrom": nearest_gene.get("gff_chrom", raw_chr),
+                "source": nearest_gene.get("source", "GFF3"),
+                "feature_type": nearest_gene.get("feature_type", "gene"),
+                "start": nearest_gene["start"],
+                "end": nearest_gene["end"],
                 "strand": nearest_gene["strand"],
                 "description": nearest_gene["description"],
+                "go_ids": nearest_gene.get("go_ids", []),
             },
             "distance_bp": dist_int,
             "distance_to_closest_gene": dist_int,

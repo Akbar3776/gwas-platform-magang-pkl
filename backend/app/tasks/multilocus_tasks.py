@@ -32,6 +32,165 @@ from app.utils.process import CLIExecutionError, run_cli_command
 logger = get_task_logger(__name__)
 
 SUPPORTED_MULTILOCUS_MODELS = ["FarmCPU", "BLINK", "MLMM"]
+METHOD_DISPLAY_NAMES = {"FARMCPU": "FarmCPU", "BLINK": "BLINK", "MLMM": "MLMM"}
+
+
+def compute_bh_fdr(p_values: np.ndarray) -> np.ndarray:
+    """Hitung nilai P terkompensasi FDR Benjamini-Hochberg (H&B.P.Value) secara tervektorisasi."""
+    m = len(p_values)
+    if m == 0:
+        return np.array([], dtype=np.float64)
+    p_clean = np.clip(np.nan_to_num(p_values, nan=1.0, posinf=1.0, neginf=1e-300), 1e-300, 1.0)
+    order = np.argsort(p_clean)
+    ranked_p = p_clean[order]
+    ranks = np.arange(1, m + 1, dtype=np.float64)
+    raw_q = ranked_p * (m / ranks)
+    q_monotone = np.minimum.accumulate(raw_q[::-1])[::-1]
+    q_clipped = np.clip(q_monotone, 1e-300, 1.0)
+    result = np.empty(m, dtype=np.float64)
+    result[order] = q_clipped
+    return result
+
+
+def compute_snp_pve_pct(
+    beta: float,
+    se: float,
+    maf: float,
+    nobs: int,
+    p_val: float,
+    y_var: float | None = None,
+) -> float:
+    """
+    Hitung Phenotype_Variance_Explained(%) (PVE%) untuk satu SNP.
+    Menggunakan 2 * p * (1 - p) * beta^2 / Var(Y) bila Var(Y) tersedia dan valid,
+    atau R^2 parsial t^2 / (t^2 + n - 2) dari statistik t = beta / se (atau chi2 isf dari p_val).
+    """
+    from scipy.stats import chi2
+
+    eff_maf = float(min(max(maf, 0.0), 0.5))
+    n_eff = max(int(nobs), 3)
+    pve = 0.0
+    if y_var is not None and y_var > 1e-12 and eff_maf > 0.0 and abs(beta) > 0.0:
+        pve = (2.0 * eff_maf * (1.0 - eff_maf) * (beta ** 2) / y_var) * 100.0
+
+    if pve <= 0.0 or pve >= 100.0:
+        if se > 1e-12 and abs(beta) > 0.0:
+            t2 = (beta / se) ** 2
+        else:
+            clamped_p = min(max(float(p_val), 1e-300), 0.999999)
+            t2 = float(chi2.isf(clamped_p, df=1))
+        pve = (t2 / (t2 + max(n_eff - 2, 1))) * 100.0
+
+    return round(float(min(max(pve, 0.0), 99.99)), 6)
+
+
+def write_significant_pve_csv(
+    csv_path: Path,
+    snps: list[dict[str, Any]],
+    trait_name: str = "Trait",
+) -> None:
+    """Menulis file {Model}_Significant_SNPs_PVE.csv sesuai format GAPIT & HASIL OUTPUT.md."""
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", encoding="utf-8", newline="") as cf:
+        writer = csv.writer(cf)
+        writer.writerow([
+            "Traits",
+            "SNP",
+            "Chr",
+            "Pos",
+            "P.value",
+            "MAF",
+            "nobs",
+            "effect",
+            "H&B.P.Value",
+            "Phenotype_Variance_Explained(%)",
+        ])
+        for s in snps:
+            writer.writerow([
+                s.get("trait") or trait_name,
+                s.get("snp"),
+                s.get("chr"),
+                s.get("pos"),
+                s.get("p"),
+                round(float(s.get("maf", 0.25)), 6),
+                int(s.get("nobs", 0)),
+                round(float(s.get("effect", s.get("beta", 0.0))), 6),
+                s.get("h_b_p_value", s.get("fdr_p", s.get("p"))),
+                round(float(s.get("pve_pct", 0.0)), 6),
+            ])
+
+
+def extract_multilocus_leads_from_tsv(
+    tsv_path: Path,
+    method_name: str,
+    trait_name: str = "Trait",
+    max_top: int = 5,
+) -> list[dict[str, Any]]:
+    """Membaca TSV kanonik multi-locus dan melengkapi metrik MAF, nobs, effect, H&B.P.Value, dan PVE(%)."""
+    if not tsv_path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    with tsv_path.open("r", encoding="utf-8") as tf:
+        reader = csv.DictReader(tf, delimiter="\t")
+        for r in reader:
+            try:
+                p_v = float(r.get("p", 1.0))
+                rows.append({
+                    "rs": r.get("rs") or f"{r.get('chr')}:{r.get('pos')}",
+                    "chr": str(r.get("chr", "")).lstrip("chrCHR"),
+                    "pos": int(float(r.get("pos", 0))),
+                    "af": float(r.get("af", 0.25) or 0.25),
+                    "beta": float(r.get("beta", 0.0) or 0.0),
+                    "se": float(r.get("se", 0.0) or 0.0),
+                    "p": p_v,
+                    "n": int(float(r.get("n", 0) or 0)),
+                })
+            except (ValueError, TypeError):
+                continue
+
+    if not rows:
+        return []
+
+    p_arr = np.array([r["p"] for r in rows], dtype=np.float64)
+    q_arr = compute_bh_fdr(p_arr)
+    bonf = 0.05 / max(len(rows), 1)
+
+    order = np.argsort(p_arr)
+    sig_indices = [int(i) for i in order if p_arr[i] <= bonf]
+    chosen_indices = sig_indices[: max(max_top, len(sig_indices))] if sig_indices else [int(i) for i in order[:max_top]]
+
+    display_method = METHOD_DISPLAY_NAMES.get(method_name.strip().upper(), method_name)
+    out: list[dict[str, Any]] = []
+    for idx in chosen_indices:
+        r = rows[idx]
+        af = min(max(r["af"], 0.0), 1.0)
+        maf = round(min(af, 1.0 - af), 6)
+        if maf <= 0.0:
+            maf = 0.25
+        pve_pct = compute_snp_pve_pct(
+            beta=r["beta"],
+            se=r["se"],
+            maf=maf,
+            nobs=r["n"],
+            p_val=r["p"],
+        )
+        out.append({
+            "trait": trait_name,
+            "snp": r["rs"],
+            "chr": r["chr"],
+            "pos": r["pos"],
+            "p": float(r["p"]),
+            "maf": maf,
+            "nobs": r["n"],
+            "effect": round(float(r["beta"]), 6),
+            "beta": round(float(r["beta"]), 6),
+            "se": round(float(r["se"]), 6),
+            "h_b_p_value": float(q_arr[idx]),
+            "pve_pct": pve_pct,
+            "method": display_method,
+            "is_significant": bool(r["p"] <= bonf),
+        })
+    return out
 
 
 def _run_python_multilocus_engine(
@@ -129,6 +288,21 @@ def _run_python_multilocus_engine(
     y_val = np.where(valid_pheno, pheno_vec, 0.0)
     y_mean = np.mean(y_val[valid_pheno])
     y_centered = np.where(valid_pheno, y_val - y_mean, 0.0)
+    y_var = float(np.var(y_val[valid_pheno])) if int(np.sum(valid_pheno)) >= 2 else 0.0
+    trait_name = str(ctx.get("trait") or "Trait")
+
+    # Hitung AF, MAF, dan nobs aktual per varian secara tervektorisasi
+    valid_geno_global = (G_mat >= 0) & valid_pheno[:, None]
+    nobs_arr = np.sum(valid_geno_global, axis=0).astype(np.int64)
+    geno_sum_global = np.sum(np.where(valid_geno_global, G_mat.astype(np.float64), 0.0), axis=0)
+    af_arr = np.divide(
+        geno_sum_global,
+        2.0 * np.maximum(nobs_arr, 1),
+        out=np.full(n_variants, 0.25, dtype=np.float64),
+        where=nobs_arr > 0,
+    )
+    af_arr = np.clip(af_arr, 0.0, 1.0)
+    maf_arr = np.minimum(af_arr, 1.0 - af_arr)
 
     # 3. Muat Kovariat / Kinship
     kinship_file = workspace.parent / "structure" / "kinship.cXX.txt"
@@ -337,31 +511,72 @@ def _run_python_multilocus_engine(
                     vm["rs"],
                     vm["alt"],
                     vm["ref"],
-                    0.25,
+                    round(float(af_arr[idx]), 6),
                     round(float(final_b[idx]), 6),
                     round(float(final_se[idx]), 6),
                     float(final_p[idx]),
-                    n_samples,
+                    int(nobs_arr[idx]) if int(nobs_arr[idx]) > 0 else n_samples,
                 ])
 
-        # Ambil top lead SNPs dari metode ini
-        top_indices = np.argsort(final_p)[: min(5, n_variants)]
+        # Hitung FDR Benjamini-Hochberg (H&B.P.Value) dan PVE(%) untuk top/significant SNPs
+        q_arr = compute_bh_fdr(final_p)
+        bonf_p = 0.05 / max(n_variants, 1)
+        sorted_indices = np.argsort(final_p)
+        sig_indices = [int(i) for i in sorted_indices if float(final_p[i]) <= bonf_p]
+        top_indices = sig_indices[: max(5, len(sig_indices))] if sig_indices else [int(i) for i in sorted_indices[: min(5, n_variants)]]
+
+        display_m = METHOD_DISPLAY_NAMES.get(m_name, m_name)
+        method_sig_snps: list[dict[str, Any]] = []
         for ti in top_indices:
-            lead_snps_multi.append({
+            ti_maf = round(float(maf_arr[ti]), 6) if float(maf_arr[ti]) > 0.0 else 0.25
+            ti_nobs = int(nobs_arr[ti]) if int(nobs_arr[ti]) > 0 else n_samples
+            ti_beta = round(float(final_b[ti]), 6)
+            ti_se = round(float(final_se[ti]), 6)
+            ti_p = float(final_p[ti])
+            ti_q = float(q_arr[ti])
+            ti_pve = compute_snp_pve_pct(
+                beta=ti_beta,
+                se=ti_se,
+                maf=ti_maf,
+                nobs=ti_nobs,
+                p_val=ti_p,
+                y_var=y_var,
+            )
+            snp_entry = {
+                "trait": trait_name,
                 "snp": variants_meta[ti]["rs"],
                 "chr": str(variants_meta[ti]["chr"]),
                 "pos": variants_meta[ti]["ps"],
-                "p": float(final_p[ti]),
+                "p": ti_p,
+                "maf": ti_maf,
+                "nobs": ti_nobs,
+                "effect": ti_beta,
+                "beta": ti_beta,
+                "se": ti_se,
+                "h_b_p_value": ti_q,
+                "pve_pct": ti_pve,
                 "method": m_name,
-            })
+                "is_significant": bool(ti_p <= bonf_p),
+            }
+            lead_snps_multi.append(snp_entry)
+            method_sig_snps.append(snp_entry)
+
+        pve_csv = workspace / f"{display_m}_Significant_SNPs_PVE.csv"
+        write_significant_pve_csv(pve_csv, method_sig_snps, trait_name=trait_name)
 
         all_methods_results[m_name] = {
             "status": "completed",
             "tsv_file": str(out_tsv),
+            "pve_csv_file": str(pve_csv),
             "total_snps": n_variants,
             "min_p": float(np.min(final_p)),
+            "n_significant_bonferroni": len(sig_indices),
+            "significant_snps": method_sig_snps,
         }
-        append_log(log_file, f"[INFO] Hasil {m_name} tersimpan ke {out_tsv.name} (min p = {np.min(final_p):.2e}).")
+        append_log(
+            log_file,
+            f"[INFO] Hasil {display_m} tersimpan ke {out_tsv.name} & {pve_csv.name} (min p = {np.min(final_p):.2e}).",
+        )
 
     return {
         "methods_results": all_methods_results,
@@ -508,25 +723,30 @@ def run_multilocus_gwas(
                     methods_results[m] = {"status": "completed", "tsv_file": str(tsv_target)}
 
         # Pastikan multi_lead_snps terisi dari TSV model bila sebelumnya kosong
+        trait_label = str(
+            ctx.get("trait")
+            or ((job.parameters or {}).get("phenotype") or {}).get("trait")
+            or "Trait"
+        )
         if not multi_lead_snps:
             for m in active_methods:
                 m_lower = m.lower()
                 tsv_target = workspace / f"{m_lower}_results.tsv"
                 if tsv_target.is_file():
-                    try:
-                        with tsv_target.open("r", encoding="utf-8") as tf:
-                            t_reader = csv.DictReader(tf, delimiter="\t")
-                            rows = sorted(t_reader, key=lambda x: float(x.get("p", 1.0)))[:5]
-                            for r in rows:
-                                multi_lead_snps.append({
-                                    "snp": r.get("rs"),
-                                    "chr": str(r.get("chr", "")).lstrip("chrCHR"),
-                                    "pos": int(r.get("pos", 0)),
-                                    "p": float(r.get("p", 1.0)),
-                                    "method": m.upper(),
-                                })
-                    except Exception:
-                        pass
+                    extracted = extract_multilocus_leads_from_tsv(
+                        tsv_target,
+                        method_name=m.upper(),
+                        trait_name=trait_label,
+                        max_top=5,
+                    )
+                    if extracted:
+                        multi_lead_snps.extend(extracted)
+                        display_m = METHOD_DISPLAY_NAMES.get(m.upper(), m)
+                        pve_csv = workspace / f"{display_m}_Significant_SNPs_PVE.csv"
+                        write_significant_pve_csv(pve_csv, extracted, trait_name=trait_label)
+                        if m.upper() in methods_results:
+                            methods_results[m.upper()]["significant_snps"] = extracted
+                            methods_results[m.upper()]["pve_csv_file"] = str(pve_csv)
 
         # Simpan ringkasan multi-locus JSON
         summary_payload = {
@@ -671,6 +891,11 @@ def generate_peak_comparison(
                 "pos": s_pos,
                 "p_single": s.get("p"),
                 "p_multi": matched_multi.get("p"),
+                "maf": matched_multi.get("maf"),
+                "nobs": matched_multi.get("nobs"),
+                "effect": matched_multi.get("effect", s.get("beta")),
+                "h_b_p_value": matched_multi.get("h_b_p_value"),
+                "pve_pct": matched_multi.get("pve_pct"),
                 "method": matched_multi.get("method", "Multi-Locus"),
                 "status": "Konsisten (Single + Multi-Locus)",
                 "keterangan": f"Sangat andal; terkonfirmasi oleh model LMM dan {matched_multi.get('method', 'Multi-Locus')}.",
@@ -682,6 +907,7 @@ def generate_peak_comparison(
                 "pos": s_pos,
                 "p_single": s.get("p"),
                 "p_multi": None,
+                "effect": s.get("beta"),
                 "method": "Single-Locus",
                 "status": "Hanya Single-Locus",
                 "keterangan": "Dicurigai akibat LD kuat atau false positive; perlu validasi.",
@@ -695,6 +921,11 @@ def generate_peak_comparison(
                 "pos": int(m.get("pos", 0)),
                 "p_single": None,
                 "p_multi": m.get("p"),
+                "maf": m.get("maf"),
+                "nobs": m.get("nobs"),
+                "effect": m.get("effect", m.get("beta")),
+                "h_b_p_value": m.get("h_b_p_value"),
+                "pve_pct": m.get("pve_pct"),
                 "method": m.get("method", "Multi-Locus"),
                 "status": "Hanya Multi-Locus",
                 "keterangan": f"Potensi varian efek minor ({m.get('method', 'Multi-Locus')}) yang tersembunyi pada model univariat.",
