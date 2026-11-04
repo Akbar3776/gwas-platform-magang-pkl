@@ -111,3 +111,41 @@ def test_run_greedy_clumping_candidate_peaks(tmp_path):
     assert lead_snps[0]["n_clumped"] == 1
     assert lead_snps[1]["snp"] == "rs_cand2"
     assert lead_snps[2]["snp"] == "rs_cand3"
+
+
+def test_lead_snps_http_endpoint_wraps_json_array(tmp_path, monkeypatch):
+    import json
+    import uuid
+    from fastapi.testclient import TestClient
+    from app.core.config import settings
+    from app.main import app
+
+    job_id = uuid.uuid4()
+    postgwas_dir = tmp_path / "jobs" / str(job_id) / "postgwas"
+    postgwas_dir.mkdir(parents=True, exist_ok=True)
+    sample_array = [
+        {
+            "snp": "6:896078569",
+            "chr": "6",
+            "pos": 896078569,
+            "p": 1.65e-6,
+            "beta": 4.28,
+            "se": 0.89,
+            "n_clumped": 2,
+            "clumped_snps": ["."],
+            "is_candidate": True,
+            "a1": "G",
+            "a0": "A",
+        }
+    ]
+    (postgwas_dir / "lead_snps.json").write_text(json.dumps(sample_array), encoding="utf-8")
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+
+    client = TestClient(app)
+    resp = client.get(f"/api/v1/results/{job_id}/lead-snps")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body, dict)
+    assert body["count"] == 1
+    assert len(body["snps"]) == 1
+    assert body["snps"][0]["snp"] == "6:896078569"

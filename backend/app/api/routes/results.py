@@ -29,7 +29,7 @@ def _load_job_json_result(
     result_type: ResultType,
     subfolder: str | list[str],
     filename: str | list[str],
-) -> dict[str, Any]:
+) -> dict[str, Any] | list[Any]:
     """Helper untuk memuat hasil analisis JSON dari database Result atau filesystem."""
     try:
         parsed_id = job_id if isinstance(job_id, uuid.UUID) else uuid.UUID(str(job_id))
@@ -201,14 +201,17 @@ def get_lead_snps_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict
     data = _load_job_json_result(
         job_id, db, ResultType.LEAD_SNPS, "postgwas", "lead_snps.json"
     )
-    # Bila lead snps kosong atau tidak ditemukan tapi file asosiasi normalisasi ada di gwas/postgwas
-    raw_snps = data if isinstance(data, list) else data.get("snps", [])
-    if not raw_snps or len(raw_snps) == 0:
+    raw_snps = data if isinstance(data, list) else (data.get("snps", []) if isinstance(data, dict) else [])
+    if not raw_snps:
         job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
-        norm_assoc = job_root / "gwas" / "gwas_results.normalized.tsv"
-        if not norm_assoc.is_file():
-            norm_assoc = job_root / "postgwas" / "gwas_results.normalized.tsv"
-        if norm_assoc.is_file():
+        candidates = [
+            job_root / "gwas" / "gwas_results.normalized.tsv",
+            job_root / "postgwas" / "gwas_results.normalized.tsv",
+            job_root / "gwas" / "gwas_lmm.assoc.txt",
+            job_root / "gwas" / "gwas_glm.assoc.txt",
+        ]
+        norm_assoc = next((p for p in candidates if p.is_file()), None)
+        if norm_assoc is not None:
             from app.services.postgwas_service import run_greedy_clumping
             thresh_data = _load_job_json_result(job_id, db, ResultType.THRESHOLDS, "postgwas", "thresholds.json")
             sel_p = float(thresh_data.get("selected_p") or 5e-8) if isinstance(thresh_data, dict) else 5e-8
@@ -218,10 +221,25 @@ def get_lead_snps_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict
                 if postgwas_dir.is_dir():
                     try:
                         lead_f = postgwas_dir / "lead_snps.json"
-                        lead_f.write_text(json.dumps(regenerated, indent=2), encoding="utf-8")
+                        lead_f.write_text(
+                            json.dumps({"count": len(regenerated), "snps": regenerated}, indent=2),
+                            encoding="utf-8",
+                        )
                     except Exception:
                         pass
                 return {"count": len(regenerated), "snps": regenerated}
+
+    if isinstance(data, list):
+        wrapped = {"count": len(data), "snps": data}
+        try:
+            lead_f = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "postgwas" / "lead_snps.json"
+            if lead_f.is_file():
+                lead_f.write_text(json.dumps(wrapped, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        return wrapped
+    if isinstance(data, dict) and "snps" not in data:
+        return {**data, "count": len(raw_snps), "snps": raw_snps}
     return data
 
 

@@ -84,7 +84,8 @@ def run_annotation(
             lead_snps_f = workspace.parent / "postgwas" / "lead_snps.json"
             if lead_snps_f.is_file():
                 try:
-                    lead_snps = json.loads(lead_snps_f.read_text(encoding="utf-8"))
+                    loaded_leads = json.loads(lead_snps_f.read_text(encoding="utf-8"))
+                    lead_snps = loaded_leads.get("snps", []) if isinstance(loaded_leads, dict) else loaded_leads
                 except Exception:
                     lead_snps = []
             else:

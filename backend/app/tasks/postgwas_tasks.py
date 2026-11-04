@@ -249,8 +249,9 @@ def run_postgwas_analysis(
                 clump_r2=clump_cfg.r2,
             )
 
+        lead_snps_payload = {"count": len(lead_snps), "snps": lead_snps}
         lead_snps_file = workspace / "lead_snps.json"
-        write_json(lead_snps_file, lead_snps)
+        write_json(lead_snps_file, lead_snps_payload)
 
         # Tulis lead_snps.tsv untuk ekspor/unduhan
         lead_snps_tsv = workspace / "lead_snps.tsv"
