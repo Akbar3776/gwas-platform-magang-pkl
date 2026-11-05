@@ -1,3 +1,5 @@
+# GWAS WORKFLOW (SEMUA)
+
 # Peta Alur Kerja
 
 1. **Fase 1**: Inspect data dan cek konsistensi antar file
@@ -21,7 +23,7 @@
 
 1. Cek file Genotipe (genotipe.vcf.gz)
 
-```jsx
+```bash
 # Pastikan nama sampel terbaca dengan benar
 bcftools query -l genotipe.vcf.gz | head
 
@@ -34,7 +36,7 @@ bcftools query -l genotipe.vcf.gz > sampel_vcf.txt
 
 1. Periksa file fenotipe (`fenotipe.txt`)
 
-```jsx
+```bash
 # Periksa struktur dan nama kolom
 head -5 fenotipe.txt
 
@@ -47,11 +49,18 @@ tail -n +2 fenotipe.txt | wc -l
 
 **1.2 Menyesuaikan ID genotipe dan fenotipe**
 
-```jsx
-# 1. Baca ID sampel dari VCF
+<aside>
+⚠️
+
+Kalau IID tidak sama, kalau sama dapat dilewati ke 1.3
+
+</aside>
+
+```r
+# Baca ID sampel dari VCF
 ids_vcf <- trimws(readLines("sampel_vcf.txt"))
 
-# 2. Baca file fenotipe
+# Baca file fenotipe
 fen <- read.table(
   "fenotipe.txt",
   header = TRUE,
@@ -60,18 +69,18 @@ fen <- read.table(
   check.names = FALSE
 )
 
-# 3. Periksa struktur file fenotipe
+# Periksa struktur file fenotipe
 print(head(fen))
 print(names(fen))
 
-# 4. Pastikan kolom identitas tersedia
+# Pastikan kolom identitas tersedia
 stopifnot(all(c("FID", "IID") %in% names(fen)))
 
-# 5. Rapikan spasi pada ID
+# Rapikan spasi pada ID
 fen$FID <- trimws(fen$FID)
 fen$IID <- trimws(fen$IID)
 
-# 6. Periksa ID kosong dan duplikat
+# Periksa ID kosong dan duplikat
 cat("ID VCF kosong:",
     sum(is.na(ids_vcf) | ids_vcf == ""), "\n")
 
@@ -84,7 +93,7 @@ cat("IID fenotipe duplikat:",
 cat("ID VCF duplikat:",
     sum(duplicated(ids_vcf)), "\n")
 
-# 7. Periksa nilai fenotipe
+# Periksa nilai fenotipe
 # Asumsi kolom fenotipe adalah kolom ketiga
 # Ambil kolom fenotipe
 nilai_raw <- trimws(fen[[3]])
@@ -99,7 +108,7 @@ nilai <- suppressWarnings(as.numeric(nilai_raw))
 # Tandai nilai fenotipe yang valid
 ada_nilai <- !missing & !is.na(nilai)
 
-# 8. Periksa irisan ID berdasarkan IID
+# Periksa irisan ID berdasarkan IID
 ids_fen_valid <- fen$IID[ada_nilai]
 
 irisan <- intersect(ids_vcf, ids_fen_valid)
@@ -107,16 +116,15 @@ irisan <- intersect(ids_vcf, ids_fen_valid)
 hanya_vcf <- setdiff(ids_vcf, fen$IID)
 hanya_fen <- setdiff(fen$IID, ids_vcf)
 
-# 9. Ringkasan hasil
+# Ringkasan hasil
 cat("Jumlah sampel VCF:", length(ids_vcf), "\n")
 cat("Jumlah sampel fenotipe:", nrow(fen), "\n")
 cat("Jumlah baris dengan fenotipe valid:", sum(ada_nilai), "\n")
-cat("Jumlah ID yang cocok dan memiliki fenotipe valid:",
-    length(irisan), "\n")
+cat("Jumlah ID yang cocok dan memiliki fenotipe valid:", length(irisan), "\n")
 cat("ID hanya di VCF:", length(hanya_vcf), "\n")
 cat("ID hanya di fenotipe:", length(hanya_fen), "\n")
 
-# 10. Simpan hasil
+# Simpan hasil
 writeLines(irisan, "keep_ids.txt")
 writeLines(hanya_vcf, "id_hanya_vcf.txt")
 writeLines(hanya_fen, "id_hanya_fenotipe.txt")
@@ -126,12 +134,9 @@ writeLines(hanya_fen, "id_hanya_fenotipe.txt")
 
 Gunakan file fenotipe asli, lalu ambil hanya individu yang ID-nya cocok dengan genotipe dan memiliki nilai fenotipe valid.
 
-```jsx
+```r
 # Baca data fenotipe
-fen <- fread(
-  "fenotipe.txt",
-  na.strings = c("", ".", "NA")
-)
+fen <- fread("fenotipe.txt", na.strings = c("", ".", "NA"))
 
 # Baca daftar ID yang cocok dari tahap 1.1
 keep_ids <- readLines("keep_ids.txt")
@@ -154,8 +159,7 @@ fen_analisis <- fen_analisis[
 ]
 
 # Periksa jumlah sampel akhir
-cat("Jumlah sampel untuk eksplorasi fenotipe:",
-    nrow(fen_analisis), "\n")
+cat("Jumlah sampel untuk eksplorasi fenotipe:", nrow(fen_analisis), "\n")
     
 # Menghitung statistik deskriptif
 nilai <- fen_analisis[[3]]
@@ -194,7 +198,7 @@ boxplot(
 
 ---
 
-# **Fase 2**: QC (quality control) VCF dan fenotipe
+# **Fase 2**: QC (Quality Control) VCF dan fenotipe
 
 ### 2.1 Parameter QC untuk Organisme Diploid
 
@@ -204,16 +208,21 @@ boxplot(
     
     ```jsx
     # QC 1
-    	./plink2 --vcf genotipe.vcf.gz --keep keep_ids.txt --snps-only just-acgt --max-alleles 2 --set-all-var-ids @:# --allow-extra-chr --pheno-name NAMA_TRAIT --maf 0.05 --geno 0.05 --make-bed  --memory 6000 --out qc_step1
+    plink2 --vcf genotipe.vcf.gz --keep keep_ids.txt --snps-only just-acgt --max-alleles 2 --set-all-var-ids @:# --allow-extra-chr --maf 0.05 --geno 0.05 --make-bed --out qc_step1
     
-    # QC lanjutan
-    ./plink2 --bfile qc_step1 --allow-extra-chr --mind 0.05 --maf 0.05 --make-bed --out data_qc
+    # QC 2
+    plink2 --bfile qc_step1 --allow-extra-chr --mind 0.1 --make-bed --out data_qc
+    
     ```
     
 - **Kawin silang/Outcross**
     
     ```jsx
-    HWE
+    # QC 1
+    plink2 --vcf genotipe.vcf.gz --keep keep_ids.txt --snps-only just-acgt --max-alleles 2 --set-all-var-ids @:# --allow-extra-chr --pheno-name NAMA_TRAIT --maf 0.05 --geno 0.05 --make-bed --out qc_step1
+    
+    # QC 2
+    plink2 --bfile qc_step1 --allow-extra-chr --mind 0.1 --hwe 1e-6 --make-bed --out data_qc
     ```
     
 
@@ -223,12 +232,12 @@ boxplot(
     
     Bandingkan jumlah SNP & sampel sebelum dan sesudah. Kalau SNP yang tersisa turun drastis (>50%), curiga ada filter yang salah (biasanya HWE).
     
-    ```jsx
+    ```bash
     # Ringkasan sebelum QC
-    ./plink2 --vcf genotipe.vcf.gz --allow-extra-chr --freq --missing --out qc/before_qc
+    plink2 --vcf genotipe.vcf.gz --allow-extra-chr --freq --missing --out qc/before_qc
     
     # Ringkasan setelah QC
-    ./plink2 --bfile data_qc --allow-extra-chr --freq --missing --out qc/after_qc
+    plink2 --bfile data_qc --allow-extra-chr --freq --missing --out qc/after_qc
     
     wc -l qc/data_qc.bim   # Menghitung jumlah SNP yang tersisa
     wc -l qc/data_qc.fam   # Menghitung jumlah sampel yang tersisa
@@ -238,14 +247,14 @@ boxplot(
     
     **Imputasi Data dengan Tools**: **Beagle 5.5**
     
-    Jika ada terlalu banyak SNP yang hilang namun tetap ingin dipertahankan, proses imputasi data  perlu dilakukan sebelum mengulangi langkah QC ini.
+    Jika ada terlalu banyak SNP yang hilang namun tetap ingin dipertahankan, proses imputasi data perlu dilakukan sebelum mengulangi langkah QC ini.
     
-    ```jsx
-    # 1. Convert QC'd BED file to VCF for Beagle input 
+    ```bash
+    # Convert QC'd BED file to VCF for Beagle input 
     plink2 --bfile data_qc --recode vcf-fid --out snps_qc 
-    # 2. Run Beagle Imputation 
+    # Run Beagle Imputation 
     java -Xmx16g -jar beagle.jar gt=snps_qc.vcf out=snps_imputed 
-    # 3. Convert imputed VCF back to PLINK BED format 
+    # Convert imputed VCF back to PLINK BED format 
     plink2 --vcf snps_imputed.vcf.gz --make-bed --out org_snps_imputed
     ```
     
@@ -262,7 +271,7 @@ Mengoreksi stratifikasi atau struktur populasi agar tidak terjadi *false positiv
 
 Sebelum menghitung PCA dan Kinship, SNP yang berada dalam kondisi *Linkage Disequilibrium* (LD) yang tinggi harus di-*pruning* (dipangkas sementara). Hal ini dilakukan supaya SNP yang saling terkait tidak mendominasi dan mengaburkan sumbu variansi populasi yang sebenarnya.  
 
-```jsx
+```bash
 # Melakukan LD pruning (SNP yang lolos akan masuk ke file .prune.in)
 plink2 --bfile data_qc --allow-extra-chr --indep-pairwise 50 5 0.2 --out pca/ld_pruned
 ```
@@ -271,10 +280,16 @@ plink2 --bfile data_qc --allow-extra-chr --indep-pairwise 50 5 0.2 --out pca/ld_
 
 Setelah mendapatkan daftar SNP yang independen (dari *LD pruning*), kita gunakan daftar tersebut untuk menghitung PCA dan matriks kekerabatan (*Kinship*).
 
-```jsx
+<aside>
+⚠️
+
+Untuk analisis multi-locus GWAS, perhitungan kinship matrix dapat dilakukan secara langsung dengan package `GAPIT3`atau `mrMLM`
+
+</aside>
+
+```bash
 # Menghitung PCA (menghasilkan 10 PC utama)
-plink2 --bfile qc/data_qc --allow-extra-chr --extract pca/ld_pruned.prune.in \
-  --pca 10 --out pca/pca_results
+plink2 --bfile qc/data_qc --allow-extra-chr --extract pca/ld_pruned.prune.in --pca 10 --out pca/pca_results
 
 # Menghitung matriks Kinship (berbentuk bujur sangkar / square matrix untuk model LMM)
 gemma -bfile snps_imputed -gk 1 -out kinship
@@ -291,10 +306,9 @@ library(ggplot2)
 library(data.table)
 library(dplyr)
 
-# PEMBUATAN PLOT PCA
-
 eigenval <- read.table("NB_khusus_pca.eigenval", header = FALSE)
 
+# Dijadikan persentase lalu dibulatkan
 pve <- eigenval$V1 / sum(eigenval$V1 * 100)
 pc1_var <- round(pve[1], 2)
 pc2_var <- round(pve[2], 2)
@@ -310,7 +324,7 @@ ggplot(pca_data, aes(x = PC1, y = PC2, color = Cluster)) +
   scale_color_manual(values = c("#0072B2", "#E69F00", "#009E73", "#D55E00"),
                      labels = c("Subpopulation 1", "Subpopulation 2", 
                                 "Subpopulation 3", "Subpopulation 4")) +
-  labs(title = "Genomic Data: PCA",
+  labs(title = "Genomic Data: Principal Component Analysis (PCA)",
        x = "PC1",
        y = "PC2",
        color = "Genetic Group") +
@@ -328,28 +342,22 @@ ggplot(pca_data, aes(x = PC1, y = PC2, color = Cluster)) +
   )
 ```
 
-#### 3.3.2 Scree
-
-```r
-placeholder
-```
-
-#### 3.3.4 Kinship matrix heatmap in R using pheatmap package
+#### 3.3.3 Kinship matrix heatmap in R using pheatmap package
 
 ```r
 library(pheatmap) 
 
-# 1. Import kinship matrixnya 
+# Import kinship matrixnya 
 K <- as.matrix(read.table("output/rice_gwas_kinship.cK.txt")) 
 fam <- read.table("rice_gwas_imputed.fam")
 
 rownames(K) <- fam$V2
 colnames(K) <- fam$V2
 
-# 2. Buat warna yang bagus
+# Buat warna yang bagus
 colors <- colorRampPalette(c("#0d233a", "#ffffff", "#b2182b"))(100)
 
-# 3. Plotting dan saving heatmap
+# Plotting dan saving heatmap
 pheatmap(K, 
 color = colors, 
 clustering_method = "ward.D2", 
@@ -432,7 +440,6 @@ Hanya ketika jika tidak ada kekerabatan kuat antar sampel (misalnya pada populas
 
 ```bash
 plink2 --bfile input_file --pheno pheno.txt --covar hasil_pca.eigenvec --glm hide-covar --allow-extra-chr --out gwas_glm
-
 ```
 
 ### 4B. Jalur **Single-Locus** Mixed Model (LMM)
@@ -454,13 +461,13 @@ gemma -bfile input_file_imputed -k output/rice_kinship.cK.txt -pheno pheno_forma
 p_vals <- gwas$p_wald 
 p_vals <- p_vals[!is.na(p_vals) & p_vals > 0] 
 
-# 2. Calculate Lambda 
+# Calculate Lambda 
 chisq <- qchisq(1 - p_vals, df = 1) 
 lambda <- median(chisq) / qchisq(0.5, df = 1) 
 
 cat("Genomic Inflation Factor (Lambda):", round(lambda, 4), "\n") 
 
-# 3. Prepare Expected vs. Observed -log10(P) values 
+# Prepare Expected vs. Observed -log10(P) values 
 n <- length(p_vals) 
 observed <- -log10(sort(p_vals)) 
 expected <- -log10(ppoints(n))
@@ -482,13 +489,77 @@ CMplot(gwas[, c("rs", "chr", "ps", "p_wald")],
 	dpi = 300)
 ```
 
-### 4C. Jalur **Multi-Locus** (FarmCPU & BLINK di GAPIT3)
+### 4C. Jalur **Multi-Locus** (FarmCPU, BLINK, MLMM di GAPIT3)
 
 Direkomendasikan sebagai **hasil utama** untuk data *inbred/klonal*, serta sensitif untuk menangkap *minor-effect loci* yang tertutup di model *Single-Locus*.
 
-```jsx
+Khusus untuk package GAPIT, dia hanya mau menerima file genotipe dengan format .hapmap atau .raw saja, sehingga kita perlu untuk convert format genotipe .bed/.bim/.fam menjadi .raw dengan tools plink2
 
+```bash
+plink2 --bfile dataset --recode A --out gapit_numeric
 ```
+
+[GitHub - jiabowang/GAPIT: Genome Association Predict Integrate Tools](https://github.com/jiabowang/GAPIT)
+
+```r
+source("http://zzlab.net/GAPIT/gapit_functions.txt")
+library(data.table)
+
+# 1. PHENOTYPE (Y) & COVARIATES (CV)
+Y <- fread("pheno_clean.txt")
+Y <- as.data.frame(Y[, .(Taxa = IID, clove_weight, clove_number)])
+
+CV <- fread("bawang_pca.eigenvec")
+CV <- CV[, c(2, 3:ncol(CV)), with=FALSE] 
+colnames(CV)[1] <- "Taxa"
+CV <- as.data.frame(CV)
+
+# 2. GENOTYPE (GD) & MAP (GM)
+raw_data <- fread("gapit_numeric.raw")
+bim <- fread("bawang_snps_imputed.bim")
+
+# Build GM and FORCE unique names using row numbers (SNP_1, SNP_2, etc.)
+GM <- bim[, .(Name = paste0("SNP_", 1:.N), Chromosome = V1, Position = V4)]
+GM$Chromosome <- as.numeric(gsub("chr", "", GM$Chromosome, ignore.case = TRUE))
+GM <- as.data.frame(GM)
+
+# Build GD and align the new unique names
+GD <- raw_data[, c(2, 7:ncol(raw_data)), with=FALSE]
+colnames(GD)[1] <- "taxa"
+colnames(GD)[-1] <- GM$Name
+GD <- as.data.frame(GD)
+
+# Strip unmapped scaffolds (NAs) that cause plotting crashes
+valid_snps <- !is.na(GM$Chromosome)
+GM <- GM[valid_snps, ]
+GD <- GD[, c(TRUE, valid_snps)]
+
+# --- 3. FINAL CHECK ---
+cat("Duplicate count:", sum(duplicated(GM$Name)), "\n")
+cat("Alignment check (Should be TRUE):", identical(GM$Name, colnames(GD)[-1]), "\n")
+cat("Total markers ready for GWAS:", nrow(GM), "\n")
+
+# --- 4. EXECUTE GAPIT ---
+myGAPIT <- GAPIT(
+  Y = Y,
+  GD = GD,
+  GM = GM,
+  CV = CV,
+  model = c("Blink", "FarmCPU", "MLMM"), 
+  PCA.total = 0,
+  SNP.MAF = 0.05,
+  Inter.Plot = FALSE,
+  Multiple_analysis = FALSE,
+  file.output = TRUE
+)
+```
+
+<aside>
+⚠️
+
+Khusus untuk GAPIT/mrMLM akan ada banyak output berbeda. Fokus pada Manhattan plot di genotipe dan Q-Q Plot lalu Significant SNPs (pdf) dan PVE (csv)
+
+</aside>
 
 ### 4D. Penentuan LD Decay
 
@@ -497,8 +568,8 @@ LD Decay (peluruhan *Linkage Disequilibrium*) adalah sifat populasi dan genom ya
 1. Batas jarak fisik (… kb) untuk parameter *clumping* di hasil *Single-Locus*.   
 2. Jarak rentang interval (… kb) untuk mencari gen kandidat di Fase 5 (berlaku untuk hasil *Single-Locus* maupun *Multi-Locus*).
 
-```jsx
-./plink2 \
+```bash
+plink2 \
   --bfile qc/data_qc \
   --r2-unphased \
   --ld-window 99999 \
@@ -507,7 +578,7 @@ LD Decay (peluruhan *Linkage Disequilibrium*) adalah sifat populasi dan genom ya
   --out gwas/ld_decay_allchr
 ```
 
-```jsx
+```r
 # visualisasi titik potong di R
 
 library(data.table)
@@ -540,13 +611,13 @@ ggplot(ld_summary, aes(x = Bin, y = Mean_R2)) +
 
 **Kalau LD decay tidak tembus 0.2** (`titik_potong` bernilai Inf, umum di klonal/inbred, genom besar, atau sampel sedikit): jangan dipaksakan ke 0.2. Pilih salah satu opsi di bawah dan laporkan apa adanya, misalnya "r2 terendah 0.35 di 1 Mb, interval ditetapkan ±100 kb …".
 
-Titik potong akan dipakai di Fase 4F dan Fase 5.
+**Titik potong akan dipakai di Fase 4F dan Fase 5.**
 
-Multi-Locus langsung ke 4E lalu ke 4FG
+**Multi-Locus langsung ke 4E lalu ke 4FG**
 
 ### 4E. Menentukan Threshold &
 
-```jsx
+```r
 # Baca hasil GWAS Single-Locus (sesuaikan nama file dengan output PLINK2)
 gwas_res <- read.table("gwas/hasil_gwas.PHENO1.glm.linear", header = TRUE, comment.char = "")
 
@@ -579,8 +650,8 @@ print(paste("Threshold LOD", lod_score, "setara dengan p-value:", p_lod))
 
 ### 4F. Clumping (Khusus Single-Locus)
 
-```jsx
-./plink2 --bfile qc/data_qc --allow-extra-chr \
+```bash
+plink2 --bfile qc/data_qc --allow-extra-chr \
   --clump gwas/hasil_gwas.PHENO1.glm.linear \
   --clump-p1 2.5e-6 \
   --clump-p2 1e-4 \
@@ -597,9 +668,9 @@ print(paste("Threshold LOD", lod_score, "setara dengan p-value:", p_lod))
 
 ### 4G. Manhattan Plot (Script nyambung sama 4E)
 
-ini belom kelar
+Manhattan Plot dapat dibuat kalau dari hasil GWAS tidak dibuat
 
-```jsx
+```r
 # Single-Locus
 library(CMplot)
 
@@ -635,7 +706,7 @@ CMplot(plot_df,
 
 Mengekstrak dan membandingkan daftar *Lead SNP* dari *Single-Locus* (setelah clumping) dengan daftar dari *Multi-Locus*.
 
-```jsx
+```r
 # --- 1. Membaca Hasil Single-Locus (Setelah Clumping) ---
 # Ganti nama file dengan output dari Fase 4F
 single_res <- read.table("gwas/clumped.clumped", header = TRUE, stringsAsFactors = FALSE)
@@ -696,14 +767,14 @@ cat("Tabel hasil telah berhasil disimpan sebagai 'Ringkasan_Puncak_GWAS.csv' di 
 
 ## **Fase 5**: Memilih SNP signifikan dan menganotasinya ke gen
 
-**Sebelum:** daftar lead SNP (dari clumping atau hasil Multi-Locus) + file anotasi GFF3 genom referensi.
-**Output:** daftar gen kandidat + hasil GO enrichment.
+**Sebelum:** daftar lead SNP (dari clumping atau hasil Multi-Locus) + file anotasi GFF3 genom referensi. **KHUSUS UNTUK ANALISIS DENGAN GAPIT, FILE SNP SIGNIFIKAN SUDAH ADA.**
+**Output:** Daftar gen kandidat + hasil GO enrichment.
 
 ## 5.1 Ambil gen di sekitar lead SNP (Yang di atas treshold)
 
 Interval gen mengikuti LD decay.
 
-```jsx
+```r
 # --- 1. Persiapan Library ---
 library(rtracklayer)
 library(GenomicRanges)
@@ -726,7 +797,6 @@ snp_ranges <- GRanges(
 )
 
 # --- 3. Membaca Genom Referensi (GFF3) ---
-cat("Membaca GFF3...\n")
 gff <- import("annotation.gff3")
 genes <- gff[gff$type == "gene"]
 
@@ -750,11 +820,13 @@ cat("Ekstraksi selesai! Lanjut ke tahap Anotasi.\n")
 
 ## 5.2 Anotasi
 
+Anotasi dapat dilakukan dengan bedtools atau dengan menggunakan R.
+
 - **Genik:** SNP berada tepat di dalam urutan gen.
 - **Near-gen:** SNP berada di luar gen, namun masih masuk dalam jangkauan jarak LD Decay.
 - **Intergenik:** SNP berada jauh di luar area gen dan melampaui batas LD Decay.
 
-```jsx
+```r
 # --- 1. Masukkan Nilai LD Decay ---
 # Ganti dengan angka LD decay populasi Anda (dalam bp). Contoh: 50 kb = 50000.
 jarak_ld <- 50000  
@@ -775,3 +847,87 @@ print(table(ekstraksi_df$Kategori_Lokasi))
 gen_valid <- subset(ekstraksi_df, Kategori_Lokasi %in% c("Genik", "Near-gen"))$Gen_Terdekat
 write.table(unique(gen_valid), "gwas/Daftar_Gen_Untuk_GO.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
 ```
+
+```bash
+# Filter your GFF3 to only contain primary genes (removing mRNA/exon clutter)
+awk -F'\t' '$3 == "gene"' Garlic.gff3 > Garlic_genes.gff3
+
+# Convert the pre-filtered CSV to a 0-based BED file and append "chr"
+# NR > 1 skips the header row. $2 is Chromosome, $3 is Position, $1 is SNP Name.
+awk -F',' 'NR > 1 {print "chr"$2 "\t" $3-1 "\t" $3 "\t" $1}' your_filtered_file.csv > sig_snps.bed
+
+# Cross-reference the SNPs against the genes using the +/- 1 Mb window
+bedtools window -a sig_snps.bed -b Garlic_genes.gff3 -w 1000000 > annotated_LD_blocks_1Mb.txt
+```
+
+Kenapa kita filter file .gff3 agar hanya ada genes saja tidak mRNA?
+File gff3 secara umum memiliki fitur bertumpuk untuk setiap lokus yang biasanya terlihat seperti:
+
+- Gene: Sepanjang genom
+    - mRNA (transcript): Sepanjang genom juga (1000 sampai 5000 bp) yang terdiri dari
+        - exon 1
+        - exon 2
+        - CDS (Coding Sequence): Ada didalam exon
+
+Kalau misalkan tidak di filter bedtools window akan mencocokkan SNP Anda dengan setiap subkomponen tersebut.
+
+Jika SNP yang signifikan berada di dalam jendela 1 Mb dari sebuah gen, bedtools akan menghasilkan satu hasil pencocokan untuk baris gen, satu hasil pencocokan lain untuk baris mRNA, serta hasil pencocokan tambahan untuk baris ekson dan CDS. Satu gen kandidat saja dapat menghasilkan 10 hingga 15 baris yang berulang dalam berkas teks akhir Anda, sehingga mengubah daftar gen kandidat yang rapi menjadi dokumen yang membengkak dan sulit dibaca.
+
+## 5.3 Gene Ontology
+
+<aside>
+⚠️
+
+Jika menggunakan file ortholog untuk melakukan gene ontology dapat menggunakan script R dibawah. Diasumsikan telah menginstall BiocManager, BiocGeneric package di R.
+
+</aside>
+
+```r
+### GENE ONTOLOGY
+BiocManager::install("clusterProfiler", force = TRUE)
+BiocManager::install("org.At.tair.db", force = TRUE)
+library(clusterProfiler)
+library(org.At.tair.db)
+library(data.table)
+
+# 1. LOAD THE BEDTOOLS OUTPUT
+bed_out <- fread("annotated_LD_blocks_1Mb_MLMM_CW.txt", header = FALSE)
+garlic_candidates <- unique(sub(".*ID=([^;]+).*", "\\1", bed_out$V13))
+
+# 2. LOAD YOUR BLAST ORTHOLOG FILE
+# If your columns are separated by tabs, ensure sep="\t" is set
+orthologs <- fread("Asa_Ath.blast", sep="\t") 
+
+# Clean up any accidental formatting in the Subject_id column (e.g., removing transcript versions like AT1G01010.1 -> AT1G01010)
+orthologs[, Subject_id := sub("\\.[0-9]+$", "", Subject_id)]
+
+# 3. TRANSLATE GARLIC IDs TO ARABIDOPSIS IDs
+# Foreground: Extract Arabidopsis hits for your candidates, keeping only unique IDs
+target_arabidopsis <- unique(orthologs[Query_id %in% garlic_candidates, Subject_id])
+
+# Background: Extract every unique Arabidopsis ID from the entire BLAST file
+background_arabidopsis <- unique(orthologs$Subject_id)
+
+cat("Ready! You have", length(target_arabidopsis), "target genes.\n")
+
+# 4. RUN GO ENRICHMENT (Biological Process)
+go_results <- enrichGO(
+  gene          = target_arabidopsis,
+  universe      = background_arabidopsis,
+  OrgDb         = org.At.tair.db,
+  keyType       = "TAIR",
+  ont           = "BP",    # Use "MF" for Molecular Function, "CC" for Cellular Component
+  pAdjustMethod = "BH",    
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05
+)
+
+my_plot <- dotplot(go_results, showCategory = 15) + 
+  ggplot2::ggtitle("GO Enrichment: Clove Number Candidate Genes")
+
+# Save as both PDF and high-res PNG
+ggplot2::ggsave("Clove_Number_MLMM_GO_Plot.pdf", plot = my_plot, width = 10, height = 8)
+ggplot2::ggsave("Clove_Number_MLMM_GO_Plot.png", plot = my_plot, width = 10, height = 8, dpi = 300)
+```
+
+## 5.4 Flanking
