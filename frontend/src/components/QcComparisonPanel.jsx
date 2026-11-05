@@ -29,6 +29,8 @@ export function QcComparisonPanel({ comparison }) {
 
   const hasBeforeHist = before?.maf_hist?.edges?.length > 1;
   const hasAfterHist = after?.maf_hist?.edges?.length > 1;
+  const hasBeforeMiss = before?.missing_hist?.edges?.length > 1;
+  const hasAfterMiss = after?.missing_hist?.edges?.length > 1;
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
@@ -117,7 +119,7 @@ export function QcComparisonPanel({ comparison }) {
         </div>
       </div>
 
-      {/* Histograms: Before vs After */}
+      {/* Histograms: Before vs After (MAF) */}
       {(hasBeforeHist || hasAfterHist) && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14 }}>
           {hasBeforeHist && (
@@ -139,6 +141,36 @@ export function QcComparisonPanel({ comparison }) {
                 counts={after.maf_hist.counts}
                 title="Distribusi MAF (Sesudah QC)"
                 xLabel="Minor Allele Frequency"
+                width={380}
+                height={200}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Histograms: Before vs After (Missingness Varian) */}
+      {(hasBeforeMiss || hasAfterMiss) && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14 }}>
+          {hasBeforeMiss && (
+            <div style={{ background: "#fff", padding: 12, borderRadius: 8, border: "1px solid #e2e8f0" }}>
+              <HistogramChart
+                edges={before.missing_hist.edges}
+                counts={before.missing_hist.counts}
+                title="Missingness Varian (Sebelum QC)"
+                xLabel="Tingkat Missing (F_MISS)"
+                width={380}
+                height={200}
+              />
+            </div>
+          )}
+          {hasAfterMiss && (
+            <div style={{ background: "#fff", padding: 12, borderRadius: 8, border: "1px solid #e2e8f0" }}>
+              <HistogramChart
+                edges={after.missing_hist.edges}
+                counts={after.missing_hist.counts}
+                title="Missingness Varian (Sesudah QC)"
+                xLabel="Tingkat Missing (F_MISS)"
                 width={380}
                 height={200}
               />

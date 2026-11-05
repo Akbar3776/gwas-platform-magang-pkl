@@ -13,9 +13,9 @@ from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, ResultType
 from app.schemas.pipeline import QCPipelineConfig
 from app.services.qc_service import (
-    build_plink2_qc_commands,
     build_plink19_qc_commands,
-    run_python_fallback_qc,
+    build_plink2_qc_commands,
+    build_qc_comparison_from_plink_outputs,
 )
 from app.services.report_generator import parse_qc_summary_from_log
 from app.tasks._common import (
@@ -143,7 +143,7 @@ def run_qc_pipeline(
         has_plink2 = bool(plink2_bin)
         has_plink = bool(plink_bin)
 
-        tool_name = "PLINK 2" if has_plink2 else ("PLINK 1.9" if has_plink else "Python Fallback")
+        tool_name = "PLINK 2" if has_plink2 else ("PLINK 1.9" if has_plink else "Tidak tersedia")
         append_log(
             log_file,
             f"=== TAHAP 3: QUALITY CONTROL ({tool_name}) ===\n"
@@ -156,7 +156,6 @@ def run_qc_pipeline(
         )
 
         comparison_data: dict[str, Any] = {}
-        fallback_used = False
 
         if has_plink2 and plink2_bin:
             commands = build_plink2_qc_commands(
@@ -174,8 +173,9 @@ def run_qc_pipeline(
                     append_log(log_file, f"Menjalankan: {' '.join(cmd)}")
                     run_cli_command(cmd, cwd=workspace, log_file=log_file, timeout=QC_TIMEOUT_SECONDS)
             except (SubprocessFailed, CLIExecutionError, OSError) as exc:
-                logger.warning("PLINK2 gagal atau varian terfilter habis, beralih ke fallback Python: %s", exc)
-                fallback_used = True
+                logger.error("PLINK2 gagal pada tahap QC: %s; menghentikan pipeline.", exc)
+                append_log(log_file, f"[ERROR] PLINK2 gagal dieksekusi ({exc}); proses dihentikan tanpa fallback Python.")
+                raise
         elif has_plink and plink_bin:
             commands = build_plink19_qc_commands(
                 cfg=cfg,
@@ -192,42 +192,29 @@ def run_qc_pipeline(
                     append_log(log_file, f"Menjalankan: {' '.join(cmd)}")
                     run_cli_command(cmd, cwd=workspace, log_file=log_file, timeout=QC_TIMEOUT_SECONDS)
             except (SubprocessFailed, CLIExecutionError, OSError) as exc:
-                logger.warning("PLINK 1.9 gagal, beralih ke fallback Python: %s", exc)
-                fallback_used = True
+                logger.error("PLINK 1.9 gagal pada tahap QC: %s; menghentikan pipeline.", exc)
+                append_log(log_file, f"[ERROR] PLINK 1.9 gagal dieksekusi ({exc}); proses dihentikan tanpa fallback Python.")
+                raise
         else:
-            fallback_used = True
-
-        if fallback_used:
-            append_log(log_file, "[INFO] Menjalankan Quality Control menggunakan Python Fallback...")
-            comparison_data = run_python_fallback_qc(
-                input_vcf=input_vcf_path,
-                output_prefix=output_prefix,
-                cfg=cfg,
-                keep_ids=keep_ids_candidate,
-                pheno_path=pheno_candidate,
-                trait=trait_candidate,
-                log_file=log_file,
-            )
+            append_log(log_file, "[ERROR] Tools PLINK 2 / PLINK 1.9 tidak ditemukan; proses QC dihentikan.")
+            raise RuntimeError("Tools PLINK 2 / PLINK 1.9 tidak ditemukan; proses QC dihentikan.")
 
         # Pastikan artefak .bed/.bim/.fam/.vcf.gz lengkap
         expected_outputs = [Path(f"{output_prefix}{suffix}") for suffix in (".bed", ".bim", ".fam", ".vcf.gz")]
         missing = [str(p) for p in expected_outputs if not p.exists()]
         if missing:
-            # Bila PLINK menghasilkan output parsial, jalankan fallback agar pipeline dapat berlanjut
-            logger.warning("Artefak PLINK tidak lengkap (%s), menyempurnakan via Python fallback...", missing)
-            comparison_data = run_python_fallback_qc(
-                input_vcf=input_vcf_path,
-                output_prefix=output_prefix,
-                cfg=cfg,
-                keep_ids=keep_ids_candidate,
-                pheno_path=pheno_candidate,
-                trait=trait_candidate,
-                log_file=log_file,
-            )
+            append_log(log_file, f"[ERROR] Artefak output PLINK tidak lengkap ({', '.join(missing)}); proses QC dihentikan.")
+            raise RuntimeError(f"Artefak output PLINK tidak lengkap: {', '.join(missing)}")
 
-        # Buat qc_comparison.json bila belum ada
+        # Susun qc_comparison.json dari artefak PLINK
         comparison_file = workspace / "qc_comparison.json"
-        if not comparison_data:
+        try:
+            comparison_data = build_qc_comparison_from_plink_outputs(
+                workspace=workspace,
+                max_loss_warning=cfg.max_snp_loss_warning,
+            )
+        except Exception as exc:
+            logger.warning("Gagal menyusun perbandingan QC dari artefak output PLINK: %s", exc)
             if comparison_file.is_file():
                 try:
                     comparison_data = json.loads(comparison_file.read_text(encoding="utf-8"))
@@ -235,7 +222,7 @@ def run_qc_pipeline(
                     comparison_data = {}
 
         if not comparison_data:
-            # Hitung ringkasan dasar dari .bim dan .fam
+            # Fallback darurat jika ekstraksi artefak gagal
             n_snps_after = 0
             n_samples_after = 0
             bim_f = Path(f"{output_prefix}.bim")

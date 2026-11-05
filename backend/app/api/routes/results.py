@@ -156,9 +156,29 @@ def get_inspection_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dic
 
 @router.get("/{job_id}/qc-comparison", summary="Data perbandingan QC sebelum/sesudah (Fase 2)")
 def get_qc_comparison_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return _load_job_json_result(
+    data = _load_job_json_result(
         job_id, db, ResultType.QC_COMPARISON, "qc", ["qc_comparison.json", "qc_summary.json"]
     )
+    if isinstance(data, dict):
+        before = data.get("before") or {}
+        after = data.get("after") or {}
+        is_stale_or_identical = (
+            (before.get("n_snps") == after.get("n_snps") and (before.get("n_snps") or 0) > 0)
+            or "maf_hist" not in before
+            or not before.get("maf_hist", {}).get("edges")
+        )
+        if is_stale_or_identical:
+            qc_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "qc"
+            if qc_dir.is_dir() and ((qc_dir / "before_qc.afreq").is_file() or (qc_dir / "before_qc.frq").is_file()):
+                from app.services.qc_service import build_qc_comparison_from_plink_outputs
+                try:
+                    healed = build_qc_comparison_from_plink_outputs(qc_dir)
+                    comp_file = qc_dir / "qc_comparison.json"
+                    comp_file.write_text(json.dumps(healed, indent=2), encoding="utf-8")
+                    return healed
+                except Exception as err:
+                    logger.warning("Gagal meregenerasi perbandingan QC untuk job %s: %s", job_id, err)
+    return data
 
 
 @router.get("/{job_id}/pca", summary="Data dekomposisi PCA & Scree plot (Fase 3)")
