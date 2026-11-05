@@ -189,7 +189,7 @@ def _prepare_phenotype_vector(
 
         if any(v != -9.0 for v in matched_vals):
             pheno_vec = np.array(matched_vals, dtype=float)
-            target_pheno_file.write_text("\n".join(f"{v:.6f}" if v != -9.0 else "-9" for v in pheno_vec) + "\n", encoding="utf-8")
+            target_pheno_file.write_bytes(("\n".join(f"{v:.6f}" if v != -9.0 else "-9" for v in pheno_vec) + "\n").encode("utf-8"))
             _append_log(
                 log_file,
                 f"[6.2] File fenotipe dimuat: {resolved_path} (Mencocokkan {len(pheno_vec)} sampel)",
@@ -208,7 +208,7 @@ def _prepare_phenotype_vector(
     for s_idx in range(n_samples):
         pheno_vec[s_idx] += 0.25 * ((s_idx + 1) / n_samples)
 
-    target_pheno_file.write_text("\n".join(f"{v:.6f}" for v in pheno_vec) + "\n", encoding="utf-8")
+    target_pheno_file.write_bytes(("\n".join(f"{v:.6f}" for v in pheno_vec) + "\n").encode("utf-8"))
     _append_log(
         log_file,
         f"[6.2] Memakai vektor fenotipe kuantitatif dari dataset: {target_pheno_file.name}",
@@ -217,7 +217,13 @@ def _prepare_phenotype_vector(
 
 
 def _ensure_fam_phenotypes(bfile_prefix: str, pheno_vec: np.ndarray, log_file: Path) -> None:
-    """Ensure the .fam file has non-missing phenotypes in column 6 so GEMMA -gk 1 does not abort."""
+    """Ensure .fam/.bim use LF line endings for WSL GEMMA and .fam has non-missing phenotypes in column 6."""
+    bim_path = Path(f"{bfile_prefix}.bim")
+    if bim_path.is_file():
+        bim_bytes = bim_path.read_bytes()
+        if b"\r" in bim_bytes:
+            bim_path.write_bytes(bim_bytes.replace(b"\r\n", b"\n").replace(b"\r", b""))
+
     fam_path = Path(f"{bfile_prefix}.fam")
     if not fam_path.is_file():
         return
@@ -231,7 +237,7 @@ def _ensure_fam_phenotypes(bfile_prefix: str, pheno_vec: np.ndarray, log_file: P
             updated.append(" ".join(parts))
         else:
             updated.append(line)
-    fam_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    fam_path.write_bytes(("\n".join(updated) + "\n").encode("utf-8"))
     _append_log(log_file, f"[6.2] Kolom fenotipe pada {fam_path.name} diperbarui untuk {len(updated)} sampel.")
 
 
@@ -687,31 +693,28 @@ def run_gemma_gwas(
                 run_cli_command(association_command, cwd=work_dir, log_file=log_file, timeout=GEMMA_TIMEOUT_SECONDS)
                 _merge_gemma_log_file(output_dir_gemma / "association.log.txt", log_file, "Log GEMMA Association")
 
-                if assoc_path.is_file():
-                    lines = assoc_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                    if len(lines) > 1:
-                        ran_cli_gemma = True
-                        _append_log(
-                            log_file,
-                            f"[6.5] GEMMA CLI berhasil menganalisis {len(lines) - 1} SNP -> {assoc_path}",
-                        )
-            except (SubprocessFailed, FileNotFoundError, RuntimeError) as cli_exc:
+                if not assoc_path.is_file():
+                    raise RuntimeError(f"File hasil asosiasi GEMMA tidak ditemukan: {assoc_path}")
+                lines = assoc_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                if len(lines) <= 1:
+                    raise RuntimeError("GEMMA selesai tetapi tidak menghasilkan baris varian pada file asosiasi.")
+                ran_cli_gemma = True
                 _append_log(
                     log_file,
-                    f"[INFO] Eksekusi biner GEMMA pada dataset kecil dialihkan ke kalkulasi statistik langsung ({cli_exc}).",
+                    f"[6.5] GEMMA CLI berhasil menganalisis {len(lines) - 1} SNP -> {assoc_path}",
                 )
-
-        if not ran_cli_gemma:
-            _run_statistical_gwas_fallback(
-                genotype_path=genotype_path,
-                phenotype_path=phenotype_path or str(imputation_result.get("pheno_path") or ""),
-                model=model,
-                assoc_path=assoc_path,
-                kinship_path=kinship_path,
-                work_dir=work_dir,
-                log_file=log_file,
-                bfile_prefix=candidate_bfile,
+            except (SubprocessFailed, CLIExecutionError, FileNotFoundError, RuntimeError) as cli_exc:
+                _append_log(
+                    log_file,
+                    f"[ERROR] Eksekusi GEMMA gagal ({cli_exc}); proses dihentikan tanpa fallback Python.",
+                )
+                raise
+        else:
+            _append_log(
+                log_file,
+                "[ERROR] Tools GEMMA / PLINK tidak ditemukan; proses GWAS dihentikan.",
             )
+            raise RuntimeError("Tools GEMMA / PLINK tidak ditemukan; proses GWAS dihentikan.")
 
         from app.services.assoc_normalizer import normalize_association_results
 

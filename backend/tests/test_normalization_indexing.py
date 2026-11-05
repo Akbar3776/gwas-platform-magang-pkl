@@ -84,3 +84,114 @@ def test_index_normalized_vcf_tolerates_complete_indexing_failure(monkeypatch, t
     assert len(executed_commands) == 2
     assert log_path.is_file()
     assert "[WARNING] Pembuatan index VCF gagal" in log_path.read_text(encoding="utf-8")
+
+
+def test_normalization_halts_immediately_on_bcftools_failure_without_python_fallback(monkeypatch, tmp_path: Path):
+    """When bcftools sort fails, run_vcf_normalization must stop immediately and mark job FAILED."""
+    import uuid
+    from app.core.config import settings
+    from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, UploadStatus
+    from app.tasks import normalization_tasks
+    from tests.test_pipeline_e2e import InMemoryDB
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    db = InMemoryDB()
+    monkeypatch.setattr(normalization_tasks, "SessionLocal", lambda: db)
+
+    vcf_file = tmp_path / "input.vcf"
+    vcf_file.write_text("##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n", encoding="utf-8")
+
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=uuid.uuid4(),
+        original_filename="input.vcf",
+        storage_path=str(vcf_file),
+        file_size_bytes=vcf_file.stat().st_size,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    db.add(ds)
+
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=ds.id,
+        triggered_by=ds.owner_id,
+        pipeline_type="full_pipeline",
+        current_step=PipelineStep.NORMALIZATION,
+        overall_status=JobStatus.RUNNING_NORMALIZATION,
+        parameters={},
+    )
+    db.add(job)
+
+    log_path = tmp_path / "jobs" / str(job.id) / "normalization" / "bcftools.log"
+
+    def mock_run_cli(cmd, **kwargs):
+        if "sort" in cmd:
+            raise SubprocessFailed(cmd, 134, log_path, ("vcfsort.c:177: buf_push failed\n",))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("app.tasks.normalization_tasks.which_tool", lambda name: "bcftools")
+    monkeypatch.setattr("app.tasks.normalization_tasks.run_cli_command", mock_run_cli)
+
+    with pytest.raises(RuntimeError, match="Eksekusi bcftools gagal"):
+        normalization_tasks.run_vcf_normalization(job_id=str(job.id), dataset_id=str(ds.id))
+
+    assert job.overall_status == JobStatus.FAILED
+    assert job.failed_step == "normalization"
+    assert not (tmp_path / "jobs" / str(job.id) / "normalization" / "normalized.vcf.gz").exists()
+    assert "[ERROR] bcftools gagal dieksekusi" in log_path.read_text(encoding="utf-8")
+
+
+def test_qc_halts_immediately_on_plink_failure_without_python_fallback(monkeypatch, tmp_path: Path):
+    """When PLINK2 fails during QC, run_qc_pipeline must stop immediately without Python fallback."""
+    import uuid
+    from app.core.config import settings
+    from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, UploadStatus
+    from app.tasks import qc_tasks
+    from tests.test_pipeline_e2e import InMemoryDB
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    db = InMemoryDB()
+    monkeypatch.setattr(qc_tasks, "SessionLocal", lambda: db)
+
+    vcf_file = tmp_path / "normalized.vcf.gz"
+    vcf_file.write_bytes(b"dummy")
+
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=uuid.uuid4(),
+        original_filename="input.vcf",
+        storage_path=str(vcf_file),
+        file_size_bytes=5,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    db.add(ds)
+
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=ds.id,
+        triggered_by=ds.owner_id,
+        pipeline_type="full_pipeline",
+        current_step=PipelineStep.QC,
+        overall_status=JobStatus.RUNNING_QC,
+        parameters={},
+    )
+    db.add(job)
+
+    log_path = tmp_path / "jobs" / str(job.id) / "qc" / "plink_qc.log"
+
+    def mock_run_cli(cmd, **kwargs):
+        raise SubprocessFailed(cmd, 6, log_path, ("Error: Invalid POS on line 1 of --vcf file.\n",))
+
+    monkeypatch.setattr("app.tasks.qc_tasks.which_tool", lambda name: "plink2" if name == "plink2" else None)
+    monkeypatch.setattr("app.tasks.qc_tasks.run_cli_command", mock_run_cli)
+
+    with pytest.raises(SubprocessFailed):
+        qc_tasks.run_qc_pipeline(
+            {"normalized_vcf_path": str(vcf_file)},
+            job_id=str(job.id),
+            dataset_id=str(ds.id),
+        )
+
+    assert job.overall_status == JobStatus.FAILED
+    assert job.failed_step == "qc"
+    assert "[ERROR] PLINK2 gagal dieksekusi" in log_path.read_text(encoding="utf-8")

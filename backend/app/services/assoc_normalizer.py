@@ -49,9 +49,9 @@ def iter_normalized_rows(source_file: Path | str) -> Generator[dict[str, Any], N
         raise FileNotFoundError(f"File hasil asosiasi tidak ditemukan: {path}")
 
     open_fn = gzip.open if path.name.endswith(".gz") else open
-    with open_fn(path, "rt", encoding="utf-8", errors="replace") as f:
+    with open_fn(path, "rt", encoding="utf-8", errors="replace", newline="\n") as f:
         # Deteksi delimiter (tab, spasi, koma)
-        first_line = f.readline()
+        first_line = f.readline().replace("\r", "")
         if not first_line:
             return
 
@@ -69,7 +69,8 @@ def iter_normalized_rows(source_file: Path | str) -> Generator[dict[str, Any], N
         idx_map: dict[str, int] = {col: i for i, col in enumerate(header)}
         lower_map: dict[str, int] = {col.lower(): i for i, col in enumerate(header)}
 
-        for line in f:
+        for raw_line in f:
+            line = raw_line.replace("\r", "")
             if not line.strip() or line.startswith("#"):
                 continue
             parts = line.strip().split(delimiter) if delimiter else line.strip().split()

@@ -186,9 +186,9 @@ def run_structure_analysis(
 
         # 7. Siapkan file kovariat PC untuk tahap GWAS
         # File kovariat format GEMMA: Kolom 1 = Intercept (1), Kolom 2..k+1 = PC1..PCk
-        n_cov_pcs = min(cfg.n_pcs, rec_data.get("recommended_pc_covariates", 3))
+        n_cov_pcs = min(cfg.n_pcs, rec_data.get("recommended_pc_covariates", 3), max(0, n_samples - 4))
         gemma_cov_file = workspace / "covariates.txt"
-        with gemma_cov_file.open("w", encoding="utf-8") as f_cov:
+        with gemma_cov_file.open("w", encoding="utf-8", newline="\n") as f_cov:
             for s in pca_data["samples"]:
                 row_vals = ["1"] + [str(s["pcs"][c]) for c in range(n_cov_pcs)]
                 f_cov.write("\t".join(row_vals) + "\n")

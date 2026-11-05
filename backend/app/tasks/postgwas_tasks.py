@@ -189,6 +189,7 @@ def run_postgwas_analysis(
             try:
                 append_log(log_file, f"Menjalankan PLINK2 Clumping: {' '.join(clump_cmd)}")
                 run_cli_command(clump_cmd, cwd=workspace, log_file=log_file, timeout=1800)
+                ran_plink_clump = True
                 clumps_output = workspace / "clumped.clumps"
                 if clumps_output.is_file():
                     # Parse .clumps file (kompatibel PLINK 2 & PLINK 1.9)
@@ -215,11 +216,10 @@ def run_postgwas_analysis(
                                 })
                             except (ValueError, KeyError):
                                 continue
-                    if lead_snps:
-                        ran_plink_clump = True
             except Exception as exc:
-                logger.warning("PLINK2 Clump gagal, beralih ke greedy fallback: %s", exc)
-                append_log(log_file, f"[FALLBACK] PLINK2 Clump gagal ({exc}), menjalankan greedy clumping internal.")
+                logger.error("PLINK2 Clump gagal: %s; menghentikan pipeline.", exc)
+                append_log(log_file, f"[ERROR] PLINK2 Clump gagal ({exc}); proses dihentikan tanpa fallback Python.")
+                raise
 
         if ran_plink_clump and lead_snps and Path(norm_assoc_path).is_file():
             lead_ids = {s["snp"] for s in lead_snps if s.get("snp")}
@@ -240,7 +240,7 @@ def run_postgwas_analysis(
                     except (ValueError, TypeError):
                         pass
 
-        if not ran_plink_clump or len(lead_snps) == 0:
+        if not ran_plink_clump:
             lead_snps = run_greedy_clumping(
                 assoc_file=norm_assoc_path,
                 selected_p=selected_p,

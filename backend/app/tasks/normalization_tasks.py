@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import gzip
 import os
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -41,34 +39,8 @@ def _mark_job(job_id: str, *, status: JobStatus | None = None, error: str | None
 def _friendly_error(exc: Exception) -> str:
     if isinstance(exc, CLIExecutionError):
         tail = "".join(exc.last_lines).strip()
-        return f"Format VCF tidak valid atau rusak. {tail}" if tail else "Format VCF tidak valid atau rusak."
+        return f"Eksekusi bcftools gagal: {tail}" if tail else f"Eksekusi bcftools gagal: {exc}"
     return str(exc)
-
-
-def _fallback_normalize_vcf(input_path: Path, output_path: Path, log_path: Path) -> None:
-    """Validate VCF header in Python and write gzipped output when bcftools is unavailable."""
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    open_fn = gzip.open if input_path.name.endswith(".gz") else open
-    has_header = False
-    with open_fn(input_path, "rt", encoding="utf-8", errors="replace") as src:
-        for _ in range(200):
-            line = src.readline()
-            if not line:
-                break
-            if line.startswith("##fileformat=VCF") or line.startswith("#CHROM"):
-                has_header = True
-                break
-    if not has_header:
-        raise ValueError("Format VCF tidak valid: header #CHROM atau ##fileformat=VCF tidak ditemukan.")
-
-    if input_path.name.endswith(".gz"):
-        shutil.copy2(input_path, output_path)
-    else:
-        with input_path.open("rb") as f_in, gzip.open(output_path, "wb") as f_out:
-            shutil.copyfileobj(f_in, f_out)
-
-    with log_path.open("a", encoding="utf-8") as log:
-        log.write(f"[FALLBACK] bcftools tidak ditemukan di PATH; validasi header & kompresi selesai: {output_path}\n")
 
 
 def _index_normalized_vcf(bcftools_bin: str, output_path: Path, workspace: Path, log_path: Path) -> None:
@@ -175,50 +147,50 @@ def run_vcf_normalization(
                 f"Target      : {output_path}\n"
             )
         bcftools_bin = which_tool("bcftools")
-        if bcftools_bin:
-            try:
-                # Header-only read validates that bcftools recognizes the input as VCF/BCF.
+        if not bcftools_bin:
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write("[ERROR] Tools bcftools tidak ditemukan; proses normalisasi dihentikan.\n")
+            raise RuntimeError("Tools bcftools tidak ditemukan; proses normalisasi dihentikan.")
+
+        sorted_path = workspace / "sorted.vcf.gz"
+        try:
+            # Header-only read validates that bcftools recognizes the input as VCF/BCF.
+            run_cli_command(
+                [bcftools_bin, "view", "--no-version", "-h", str(input_path)],
+                cwd=workspace,
+                log_file=log_path,
+                timeout=NORMALIZATION_TIMEOUT_SECONDS,
+            )
+
+            reference_fasta = params.get("reference_fasta")
+            run_cli_command(
+                [bcftools_bin, "sort", "-Oz", "-o", str(sorted_path), str(input_path)],
+                cwd=workspace,
+                log_file=log_path,
+                timeout=NORMALIZATION_TIMEOUT_SECONDS,
+            )
+
+            if reference_fasta:
                 run_cli_command(
-                    [bcftools_bin, "view", "--no-version", "-h", str(input_path)],
+                    [bcftools_bin, "norm", "-f", str(reference_fasta), "-Oz", "-o", str(output_path), str(sorted_path)],
                     cwd=workspace,
                     log_file=log_path,
                     timeout=NORMALIZATION_TIMEOUT_SECONDS,
                 )
-
-                reference_fasta = params.get("reference_fasta")
-                sorted_path = workspace / "sorted.vcf.gz"
-                run_cli_command(
-                    [bcftools_bin, "sort", "-Oz", "-o", str(sorted_path), str(input_path)],
-                    cwd=workspace,
-                    log_file=log_path,
-                    timeout=NORMALIZATION_TIMEOUT_SECONDS,
+                sorted_path.unlink(missing_ok=True)
+            else:
+                sorted_path.replace(output_path)
+        except Exception as cli_exc:
+            sorted_path.unlink(missing_ok=True)
+            logger.error("bcftools gagal memproses VCF (%s); menghentikan pipeline.", cli_exc)
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(
+                    f"[ERROR] bcftools gagal dieksekusi ({cli_exc}); proses dihentikan tanpa fallback Python.\n"
                 )
+            raise
 
-                if reference_fasta:
-                    run_cli_command(
-                        [bcftools_bin, "norm", "-f", str(reference_fasta), "-Oz", "-o", str(output_path), str(sorted_path)],
-                        cwd=workspace,
-                        log_file=log_path,
-                        timeout=NORMALIZATION_TIMEOUT_SECONDS,
-                    )
-                    sorted_path.unlink(missing_ok=True)
-                else:
-                    sorted_path.replace(output_path)
-            except Exception as cli_exc:
-                logger.warning(
-                    "bcftools gagal memproses VCF (%s); beralih ke Python fallback...",
-                    cli_exc,
-                )
-                with log_path.open("a", encoding="utf-8") as log:
-                    log.write(
-                        f"[FALLBACK] bcftools gagal dieksekusi ({cli_exc}); menjalankan normalisasi Python...\n"
-                    )
-                _fallback_normalize_vcf(input_path, output_path, log_path)
-
-            if output_path.is_file():
-                _index_normalized_vcf(bcftools_bin, output_path, workspace, log_path)
-        else:
-            _fallback_normalize_vcf(input_path, output_path, log_path)
+        if output_path.is_file():
+            _index_normalized_vcf(bcftools_bin, output_path, workspace, log_path)
 
         if not output_path.is_file():
             raise RuntimeError("Normalisasi selesai tetapi file VCF hasil normalisasi tidak ditemukan")

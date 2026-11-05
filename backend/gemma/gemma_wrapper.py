@@ -56,7 +56,7 @@ def main():
         else:
             translated_args.append(arg)
 
-    cmd = ["wsl", wsl_gemma] + translated_args
+    cmd = ["wsl", "--exec", wsl_gemma] + translated_args
     sys.exit(subprocess.call(cmd))
 
 
