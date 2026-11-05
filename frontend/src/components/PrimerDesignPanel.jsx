@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
+import { Pagination } from "./Pagination";
 
 function renderHighlightedFlanking(seqStr) {
   if (!seqStr) return "-";
@@ -28,6 +29,12 @@ function renderHighlightedFlanking(seqStr) {
 export function PrimerDesignPanel({ primersData = null, jobId = null }) {
   const [searchText, setSearchText] = useState("");
   const [viewMode, setViewMode] = useState("both"); // "both" | "primer3" | "table"
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(5);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchText, viewMode]);
 
   const markers = useMemo(() => primersData?.markers || [], [primersData]);
 
@@ -42,6 +49,11 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
       return idMatch || snpMatch || chrMatch || geneMatch;
     });
   }, [markers, searchText]);
+
+  const paginatedMarkers = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredMarkers.slice(start, start + pageSize);
+  }, [filteredMarkers, currentPage, pageSize]);
 
   const handleDownloadPrimer3Txt = () => {
     if (!markers.length) return;
@@ -291,7 +303,7 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
 
       {/* Daftar Sekuens Flanking & Primer per SNP */}
       <div style={{ display: "grid", gap: 14 }}>
-        {filteredMarkers.map((item) => (
+        {paginatedMarkers.map((item) => (
           <div
             key={item.marker_id || item.rank}
             style={{
@@ -449,6 +461,16 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
           </div>
         ))}
       </div>
+
+      <Pagination
+        currentPage={currentPage}
+        totalItems={filteredMarkers.length}
+        pageSize={pageSize}
+        onPageChange={setCurrentPage}
+        onPageSizeChange={setPageSize}
+        pageSizeOptions={[5, 10, 20, 50]}
+        itemLabel="Lokus Target Marker"
+      />
     </div>
   );
 }

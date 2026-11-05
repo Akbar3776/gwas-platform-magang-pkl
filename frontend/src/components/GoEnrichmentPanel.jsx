@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
+import { Pagination } from "./Pagination";
 
 function interpolateColor(t) {
   // Gradien p.adjust: t=0 (p.adjust paling kecil/signifikan) -> merah (#e25856), t=1 -> biru (#2c7bb6)
@@ -13,9 +14,16 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
   const canvasRef = useRef(null);
   const [ontologyFilter, setOntologyFilter] = useState("BP");
   const [hoveredTerm, setHoveredTerm] = useState(null);
+  const [goPage, setGoPage] = useState(1);
+  const [goPageSize, setGoPageSize] = useState(10);
 
   const goTable = useMemo(() => goData?.go_table || [], [goData]);
   const allTerms = useMemo(() => goData?.enrichment_terms || [], [goData]);
+
+  const paginatedGoRows = useMemo(() => {
+    const start = (goPage - 1) * goPageSize;
+    return goTable.slice(start, start + goPageSize);
+  }, [goTable, goPage, goPageSize]);
 
   const displayedTerms = useMemo(() => {
     const filtered =
@@ -350,7 +358,7 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
                 </tr>
               </thead>
               <tbody>
-                {goTable.map((row, idx) => (
+                {paginatedGoRows.map((row, idx) => (
                   <tr
                     key={row.gene_id || idx}
                     onMouseEnter={() => setHoveredTerm(row.gene_id)}
@@ -383,6 +391,15 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
                 ))}
               </tbody>
             </table>
+            <Pagination
+              currentPage={goPage}
+              totalItems={goTable.length}
+              pageSize={goPageSize}
+              onPageChange={setGoPage}
+              onPageSizeChange={setGoPageSize}
+              pageSizeOptions={[5, 10, 20, 50]}
+              itemLabel="Gen GO"
+            />
           </div>
         </div>
       )}

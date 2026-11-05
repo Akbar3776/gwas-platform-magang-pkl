@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
+import { Pagination } from "./Pagination";
 
 function formatP(val) {
   if (val === null || val === undefined || val === "") return "-";
@@ -22,6 +23,18 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
   const [filterType, setFilterType] = useState("all");
   const [searchText, setSearchText] = useState("");
   const [activeModelFilter, setActiveModelFilter] = useState("ALL");
+  const [pvePage, setPvePage] = useState(1);
+  const [pvePageSize, setPvePageSize] = useState(10);
+  const [summaryPage, setSummaryPage] = useState(1);
+  const [summaryPageSize, setSummaryPageSize] = useState(10);
+
+  useEffect(() => {
+    setPvePage(1);
+  }, [activeModelFilter]);
+
+  useEffect(() => {
+    setSummaryPage(1);
+  }, [filterType, searchText]);
 
   const {
     consistent = [],
@@ -83,6 +96,11 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
     );
   }, [multilocusPveRows, activeModelFilter]);
 
+  const paginatedPveRows = useMemo(() => {
+    const start = (pvePage - 1) * pvePageSize;
+    return filteredPveRows.slice(start, start + pvePageSize);
+  }, [filteredPveRows, pvePage, pvePageSize]);
+
   const allRows = useMemo(() => {
     const list = [
       ...(Array.isArray(consistent) ? consistent : []).map((r) => ({ ...r, category: "consistent" })),
@@ -122,6 +140,11 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
       return snpStr.includes(q) || chrStr.includes(q) || methodStr.includes(q) || statusStr.includes(q);
     });
   }, [allRows, filterType, searchText]);
+
+  const paginatedDisplayedRows = useMemo(() => {
+    const start = (summaryPage - 1) * summaryPageSize;
+    return displayedRows.slice(start, start + summaryPageSize);
+  }, [displayedRows, summaryPage, summaryPageSize]);
 
   const modelResults = multilocusSummary?.results || {};
   const hasModels = Object.keys(modelResults).length > 0;
@@ -324,7 +347,7 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
                 </tr>
               </thead>
               <tbody>
-                {filteredPveRows.map((row, rIdx) => (
+                {paginatedPveRows.map((row, rIdx) => (
                   <tr
                     key={`${row.method}-${row.snp}-${rIdx}`}
                     style={{
@@ -364,6 +387,15 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
                 ))}
               </tbody>
             </table>
+            <Pagination
+              currentPage={pvePage}
+              totalItems={filteredPveRows.length}
+              pageSize={pvePageSize}
+              onPageChange={setPvePage}
+              onPageSizeChange={setPvePageSize}
+              pageSizeOptions={[5, 10, 20, 50]}
+              itemLabel="SNP Signifikan"
+            />
           </div>
         </div>
       )}
@@ -558,7 +590,7 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
               </tr>
             </thead>
             <tbody>
-              {displayedRows.map((r, idx) => {
+              {paginatedDisplayedRows.map((r, idx) => {
                 let badgeBg = "#f0fdf4";
                 let badgeColor = "#15803d";
                 if (r.category === "multi_only") {
@@ -625,6 +657,15 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
               })}
             </tbody>
           </table>
+          <Pagination
+            currentPage={summaryPage}
+            totalItems={displayedRows.length}
+            pageSize={summaryPageSize}
+            onPageChange={setSummaryPage}
+            onPageSizeChange={setSummaryPageSize}
+            pageSizeOptions={[5, 10, 20, 50]}
+            itemLabel="Puncak Asosiasi"
+          />
         </div>
       )}
     </div>

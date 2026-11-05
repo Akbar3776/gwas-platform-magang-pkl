@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { downloadJobFile } from "../api/jobsApi";
+import { Pagination } from "./Pagination";
 
 function formatBeta(b) {
   if (b === null || b === undefined) return "-";
@@ -37,6 +38,12 @@ export function LeadSnpTable({
   const [sortField, setSortField] = useState("p");
   const [sortAsc, setSortAsc] = useState(true);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filterText, onlySignificant, sortField, sortAsc]);
 
   const safeLeadSnps = useMemo(() => {
     let rawList = leadSnps;
@@ -105,6 +112,11 @@ export function LeadSnpTable({
         : String(valB || "").localeCompare(String(valA || ""));
     });
   }, [filtered, sortField, sortAsc]);
+
+  const paginatedRows = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return sortedRows.slice(start, start + pageSize);
+  }, [sortedRows, currentPage, pageSize]);
 
   const handleDownloadTsv = async () => {
     if (!jobId) return;
@@ -310,7 +322,7 @@ export function LeadSnpTable({
               </tr>
             </thead>
             <tbody>
-              {sortedRows.map((s, idx) => {
+              {paginatedRows.map((s, idx) => {
                 const isExpanded = expandedSnp === s.snp;
                 const pNum = Number(s.p);
                 const isValidP = !isNaN(pNum) && pNum > 0;
@@ -407,6 +419,15 @@ export function LeadSnpTable({
               })}
             </tbody>
           </table>
+          <Pagination
+            currentPage={currentPage}
+            totalItems={sortedRows.length}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={setPageSize}
+            pageSizeOptions={[10, 25, 50, 100]}
+            itemLabel="Lead SNPs"
+          />
         </div>
       )}
     </div>

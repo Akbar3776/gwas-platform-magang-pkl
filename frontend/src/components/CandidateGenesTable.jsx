@@ -1,10 +1,17 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { GoEnrichmentPanel } from "./GoEnrichmentPanel";
+import { Pagination } from "./Pagination";
 
 export function CandidateGenesTable({ annotationData = null, goEnrichmentData = null, jobId = null }) {
   const [filterText, setFilterText] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("ALL");
   const [expandedSnp, setExpandedSnp] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filterText, categoryFilter]);
 
   const mappings = useMemo(
     () => annotationData?.mappings || annotationData?.rows || [],
@@ -66,6 +73,11 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
       return snpMatch || chrMatch || geneIdMatch || geneNameMatch || descMatch || inWindowMatch;
     });
   }, [mappings, filterText, categoryFilter]);
+
+  const paginatedRows = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, currentPage, pageSize]);
 
   const handleDownloadGoList = () => {
     if (!uniqueGenes.length) return;
@@ -309,7 +321,7 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
               </tr>
             </thead>
             <tbody>
-              {filtered.map((item, idx) => {
+              {paginatedRows.map((item, idx) => {
                 const isExpanded = expandedSnp === item.snp;
                 const closest =
                   item.closest_gene ||
@@ -514,6 +526,15 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
               })}
             </tbody>
           </table>
+          <Pagination
+            currentPage={currentPage}
+            totalItems={filtered.length}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={setPageSize}
+            pageSizeOptions={[10, 25, 50, 100]}
+            itemLabel="Pemetaan SNP-Gen"
+          />
         </div>
       )}
 
