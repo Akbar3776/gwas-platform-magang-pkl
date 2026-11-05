@@ -20,7 +20,7 @@ export function AnnotationUploader({
     if (onAnnotationChanged) {
       onAnnotationChanged(initialAnnotationFilename ? { filename: initialAnnotationFilename } : null);
     }
-  }, [datasetId, initialAnnotationFilename]);
+  }, [datasetId, initialAnnotationFilename, onAnnotationChanged]);
 
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];

@@ -198,7 +198,7 @@ export function BoxPlotChart({
         onMouseLeave={() => setHoveredOutlier(null)}
         style={{ borderRadius: 8, border: "1px solid #e2e8f0" }}
       />
-      {hoveredOutlier !== null && outliers[hoveredOutlier] && (
+      {hoveredOutlier !== null && safeOutliers[hoveredOutlier] && (
         <div
           style={{
             position: "absolute",
@@ -212,8 +212,8 @@ export function BoxPlotChart({
             pointerEvents: "none",
           }}
         >
-          Outlier: <strong>{outliers[hoveredOutlier].iid}</strong> (Nilai:{" "}
-          {outliers[hoveredOutlier].value})
+          Outlier: <strong>{safeOutliers[hoveredOutlier].iid}</strong> (Nilai:{" "}
+          {safeOutliers[hoveredOutlier].value})
         </div>
       )}
     </div>
