@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep
+from app.services.qc_service import MAX_32BIT_POS, filter_vcf_32bit_overflow
 from app.tasks._common import which_tool
 from app.tasks.celery_app import celery_app, get_task_logger
 from app.utils.process import CLIExecutionError, run_cli_command
@@ -152,7 +154,14 @@ def run_vcf_normalization(
                 log.write("[ERROR] Tools bcftools tidak ditemukan; proses normalisasi dihentikan.\n")
             raise RuntimeError("Tools bcftools tidak ditemukan; proses normalisasi dihentikan.")
 
+        clean_vcf_path = workspace / "clean.vcf"
         sorted_path = workspace / "sorted.vcf.gz"
+        overflow_stats = {
+            "total_variants": 0,
+            "kept_variants": 0,
+            "overflow_removed": 0,
+            "max_pos": MAX_32BIT_POS,
+        }
         try:
             # Header-only read validates that bcftools recognizes the input as VCF/BCF.
             run_cli_command(
@@ -162,13 +171,32 @@ def run_vcf_normalization(
                 timeout=NORMALIZATION_TIMEOUT_SECONDS,
             )
 
+            # Fase 0. Additional (QC Overflowing):
+            # zcat namafile_vcf.gz | awk '/^#/ || $2 <= 2147483647' > clean.vcf
+            overflow_stats = filter_vcf_32bit_overflow(
+                input_vcf=input_path,
+                output_vcf=clean_vcf_path,
+                max_pos=MAX_32BIT_POS,
+                compress_output=False,
+            )
+            with (workspace / "qc_overflow_stats.json").open("w", encoding="utf-8") as sf:
+                json.dump(overflow_stats, sf, indent=2)
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(
+                    f"[Fase 0 - QC Overflowing] zcat {input_path.name} | awk '/^#/ || $2 <= {MAX_32BIT_POS}' > clean.vcf\n"
+                    f"[Fase 0 - QC Overflowing] Selesai: total={overflow_stats['total_variants']} varian, "
+                    f"lolos={overflow_stats['kept_variants']} varian (POS <= {MAX_32BIT_POS}), "
+                    f"tereliminasi overflow 32-bit={overflow_stats['overflow_removed']} varian.\n"
+                )
+
             reference_fasta = params.get("reference_fasta")
             run_cli_command(
-                [bcftools_bin, "sort", "-Oz", "-o", str(sorted_path), str(input_path)],
+                [bcftools_bin, "sort", "-Oz", "-o", str(sorted_path), str(clean_vcf_path)],
                 cwd=workspace,
                 log_file=log_path,
                 timeout=NORMALIZATION_TIMEOUT_SECONDS,
             )
+            clean_vcf_path.unlink(missing_ok=True)
 
             if reference_fasta:
                 run_cli_command(
@@ -181,6 +209,7 @@ def run_vcf_normalization(
             else:
                 sorted_path.replace(output_path)
         except Exception as cli_exc:
+            clean_vcf_path.unlink(missing_ok=True)
             sorted_path.unlink(missing_ok=True)
             logger.error("bcftools gagal memproses VCF (%s); menghentikan pipeline.", cli_exc)
             with log_path.open("a", encoding="utf-8") as log:
@@ -211,7 +240,14 @@ def run_vcf_normalization(
             dataset = db.get(Dataset, dataset_id)
             if dataset is not None:
                 dataset.normalized_vcf_path = str(output_path)
-                db.commit()
+            job = db.get(AnalysisJob, job_id)
+            if job is not None:
+                job.parameters = {
+                    **(job.parameters or {}),
+                    "qc_overflow_removed": overflow_stats["overflow_removed"],
+                    "qc_overflow_stats": overflow_stats,
+                }
+            db.commit()
         finally:
             db.close()
         return {
@@ -219,6 +255,8 @@ def run_vcf_normalization(
             "job_id": job_id,
             "dataset_id": dataset_id,
             "normalized_vcf_path": str(output_path),
+            "qc_overflow_removed": overflow_stats["overflow_removed"],
+            "qc_overflow_stats": overflow_stats,
             "log_file": str(log_path),
         }
     except Exception as exc:

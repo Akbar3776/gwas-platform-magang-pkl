@@ -253,12 +253,14 @@ def _bfile_prefix(genotype_path: str, work_dir: Path, log_file: Path) -> str:
         return prefix
     if path.suffix in {".vcf", ".gz"} and (path.name.endswith(".vcf") or path.name.endswith(".vcf.gz")):
         converted_prefix = work_dir / "genotypes"
+        is_plink2 = "plink2" in Path(PLINK_BINARY).name.lower()
+        biallelic_flags = ["--max-alleles", "2"] if is_plink2 else ["--biallelic-only", "strict"]
         cmd = [
             PLINK_BINARY,
             "--vcf",
             str(path),
             "--double-id",
-            "--biallelic-only",
+            *biallelic_flags,
             "--allow-extra-chr",
             "--make-bed",
             "--out",
@@ -608,7 +610,12 @@ def run_gemma_gwas(
         ran_cli_gemma = False
         if has_gemma_binaries:
             try:
-                if candidate_bfile and Path(f"{candidate_bfile}.fam").is_file() and imputation_result.get("imputation_skipped", True):
+                if (
+                    candidate_bfile
+                    and Path(f"{candidate_bfile}.fam").is_file()
+                    and Path(f"{candidate_bfile}.bed").is_file()
+                    and Path(f"{candidate_bfile}.bim").is_file()
+                ):
                     local_bfile = work_dir / "genotypes"
                     for ext in (".bed", ".bim", ".fam"):
                         shutil.copyfile(f"{candidate_bfile}{ext}", f"{local_bfile}{ext}")
@@ -619,7 +626,8 @@ def run_gemma_gwas(
                         if len(line.split()) >= 2
                     ]
                     variants = []
-                    _append_log(log_file, f"[6.1] Menggunakan PLINK binary dari tahap QC: {bfile_prefix}.bed/.bim/.fam")
+                    source_label = "QC" if imputation_result.get("imputation_skipped", True) else "imputasi"
+                    _append_log(log_file, f"[6.1] Menggunakan PLINK binary dari tahap {source_label}: {bfile_prefix}.bed/.bim/.fam")
                 else:
                     bfile_prefix = _bfile_prefix(genotype_path, work_dir, log_file)
                     if Path(f"{bfile_prefix}.fam").is_file():

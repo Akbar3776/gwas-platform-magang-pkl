@@ -4,10 +4,12 @@ import pytest
 
 from app.schemas.pipeline import PopulationType, QCPipelineConfig
 from app.services.qc_service import (
+    MAX_32BIT_POS,
     build_plink19_qc_commands,
     build_plink2_qc_commands,
     build_qc_comparison_from_plink_outputs,
     encode_plink_bed_row,
+    filter_vcf_32bit_overflow,
     resolve_pheno_flags,
     run_python_fallback_qc,
 )
@@ -270,4 +272,48 @@ def test_build_qc_comparison_from_plink_outputs(tmp_path):
     assert len(res["after"]["maf_hist"]["edges"]) == 11
     assert res["snp_loss_fraction"] == pytest.approx(0.3333, abs=0.01)
     assert res["warning"] is None
+
+
+def test_filter_vcf_32bit_overflow_from_gzip_and_plain_vcf(tmp_path):
+    """
+    Fase 0. Additional (QC Overflowing):
+    zcat namafile_vcf.gz | awk '/^#/ || $2 <= 2147483647' > clean.vcf
+    Harus mempertahankan header (#), mempertahankan POS <= 2147483647 (termasuk batas tepat 2147483647),
+    dan menyaring keluar varian dengan POS > 2147483647.
+    """
+    import gzip
+
+    raw_content = (
+        "##fileformat=VCFv4.2\n"
+        "##contig=<ID=Chr1,length=3000000000>\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n"
+        "Chr1\t10500\trs1\tA\tG\t.\tPASS\t.\tGT\t0/0\t0/1\n"
+        f"Chr1\t{MAX_32BIT_POS}\trs_boundary\tC\tT\t.\tPASS\t.\tGT\t0/1\t1/1\n"
+        f"Chr1\t{MAX_32BIT_POS + 1}\trs_overflow1\tG\tA\t.\tPASS\t.\tGT\t1/1\t0/0\n"
+        "Chr1\t2500000000\trs_overflow2\tT\tC\t.\tPASS\t.\tGT\t0/0\t1/1\n"
+    )
+
+    gz_input = tmp_path / "garlic_raw.vcf.gz"
+    with gzip.open(gz_input, "wt", encoding="utf-8") as gz_out:
+        gz_out.write(raw_content)
+
+    clean_vcf = tmp_path / "clean.vcf"
+    stats = filter_vcf_32bit_overflow(gz_input, clean_vcf)
+
+    assert stats["total_variants"] == 4
+    assert stats["kept_variants"] == 2
+    assert stats["overflow_removed"] == 2
+    assert stats["max_pos"] == MAX_32BIT_POS
+
+    clean_lines = clean_vcf.read_text(encoding="utf-8").splitlines()
+    header_lines = [ln for ln in clean_lines if ln.startswith("#")]
+    variant_lines = [ln for ln in clean_lines if not ln.startswith("#")]
+
+    assert len(header_lines) == 3
+    assert len(variant_lines) == 2
+    assert "rs1" in variant_lines[0]
+    assert "rs_boundary" in variant_lines[1]
+    assert "rs_overflow1" not in "\n".join(variant_lines)
+    assert "rs_overflow2" not in "\n".join(variant_lines)
+
 

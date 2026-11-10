@@ -93,6 +93,10 @@ export function QcComparisonPanel({ comparison }) {
         </h4>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
           <div style={{ padding: 8, background: "#f8fafc", borderRadius: 6, border: "1px solid #f1f5f9" }}>
+            <span style={{ fontSize: 11, color: "#64748b" }}>Overflow 32-bit (Fase 0)</span>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#b91c1c" }}>{formatCount(removed.overflow_32bit)}</div>
+          </div>
+          <div style={{ padding: 8, background: "#f8fafc", borderRadius: 6, border: "1px solid #f1f5f9" }}>
             <span style={{ fontSize: 11, color: "#64748b" }}>Filter MAF</span>
             <div style={{ fontSize: 15, fontWeight: 700, color: "#b91c1c" }}>{formatCount(removed.maf)}</div>
           </div>

@@ -16,6 +16,24 @@
 - **Inspect → Validate → Run.** Isi file dicek dulu sebelum mulai
 
 ---
+# Fase 0. Additional (QC Overflowing)
+   ``` bash
+   zcat namafile_vcf.gz | awk '/^#/ || $2 <= 2147483647' > clean.vcf 
+   # Catatan Teknis Imputasi Beagle 5:
+   # 1. Coordinate Overflow:
+   #    Jika pipeline menjalankan imputasi Beagle 5 (Fase 4), Beagle menggunakan algoritma sliding-window
+   #    (default window = 40 cM / ~40 Mb) yang memproyeksikan batas window ke depan (nextEnd = currentEnd + window).
+   #    Agar vcf.PositionMap.basePos Java tidak mengalami integer overflow (exceeds maximum integer value),
+   #    batas aman posisi genetik otomatis disesuaikan ke <= 2.100.000.000 bp (2.10 Gb).
+   # 2. Single-Marker Scaffolds:
+   #    Beagle 5 menghitung peta jarak genetik per contig (vcf.MarkerMap.meanSingleBaseGenDist).
+   #    Scaffold/contig dengan < 2 posisi marker (pos_last == pos_first) tidak dapat difasekan/diimputasi
+   #    karena ketiadaan linkage disequilibrium (memicu java.lang.IllegalArgumentException: Window has only one position).
+   #    Platform memfilter scaffold ber-marker tunggal sebelum Beagle dijalankan agar 100% kromosom utama
+   #    dan scaffold multi-marker difasekan dan diimputasi secara sempurna dengan format BGZF murni.
+```
+- Mengekstrak berkas VCF dan menyaring varian genetik yang koordinat posisinya melebihi batas bilangan bulat 32-bit (serta buffer sliding window Beagle) untuk mencegah tools GWAS mengalami error/merusak data.
+- Organisme genome kecil bisa skip ini karena kemungkinan overflowingnya kecil..
 
 # Fase 1: Inspect data dan cek konsistensi antar file
 
