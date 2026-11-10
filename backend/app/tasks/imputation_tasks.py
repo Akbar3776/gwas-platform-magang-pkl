@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import os
 import re
 from datetime import datetime, timezone
@@ -16,6 +17,7 @@ from app.core.resource_limits import (
 )
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, ResultType
+from app.services.qc_service import MAX_32BIT_POS, _is_gzip_file
 from app.tasks._common import (
     JobCancelledError,
     append_log,
@@ -43,6 +45,108 @@ def _memory_to_mb(value: str) -> int:
         raise ValueError("BEAGLE_MAX_MEMORY harus berbentuk -Xmx512m atau -Xmx8g")
     amount = int(match.group(1))
     return amount * (1024 if match.group(2).lower() == "g" else 1)
+
+
+def _prepare_beagle_safe_vcf(
+    qc_vcf_path: str,
+    workspace: Path,
+    max_pos: int = MAX_32BIT_POS,
+    min_positions_per_chrom: int = 2,
+) -> tuple[str, int, int]:
+    """
+    Menyiapkan berkas VCF yang aman untuk Beagle 5.
+    1. Memeriksa varian dengan POS > max_pos (mencegah Java 32-bit integer overflow).
+    2. Memeriksa kromosom/scaffold dengan < min_positions_per_chrom posisi unik
+       (mencegah java.lang.IllegalArgumentException: Window has only one position pada Beagle 5).
+
+    Varian pada scaffold ber-marker tunggal diabaikan dari imputasi Beagle karena ketiadaan
+    linkage disequilibrium untuk imputasi/phasing. Hal ini memungkinkan seluruh kromosom utama
+    dan scaffold multi-marker diimputasi dengan sempurna dan menghasilkan berkas BGZF murni
+    yang kompatibel dengan PLINK 2.
+
+    Returns:
+        (effective_vcf_path, overflow_removed_count, singles_count)
+    """
+    src = Path(qc_vcf_path)
+    if not src.is_file():
+        return str(qc_vcf_path), 0, 0
+
+    in_open = gzip.open if _is_gzip_file(src) else open
+
+    # Pass 1: Cek posisi unik per contig dan keberadaan overflow secara streaming (O(1) memory)
+    pos_per_chrom: dict[str, set[int]] = {}
+    has_overflow = False
+    with in_open(src, "rt", encoding="utf-8", errors="replace") as fin:
+        for line in fin:
+            if line.startswith("#"):
+                continue
+            tab1 = line.find("\t")
+            if tab1 == -1:
+                continue
+            tab2 = line.find("\t", tab1 + 1)
+            if tab2 == -1:
+                continue
+            chrom = line[:tab1]
+            try:
+                pos = int(line[tab1 + 1:tab2])
+            except ValueError:
+                continue
+
+            if pos > max_pos:
+                has_overflow = True
+                continue
+
+            s = pos_per_chrom.setdefault(chrom, set())
+            if len(s) < min_positions_per_chrom:
+                s.add(pos)
+
+    single_pos_chroms = {c for c, s in pos_per_chrom.items() if len(s) < min_positions_per_chrom}
+
+    # Jika tidak ada overflow dan tidak ada contig ber-marker tunggal, gunakan berkas asli
+    if not has_overflow and not single_pos_chroms:
+        return str(qc_vcf_path), 0, 0
+
+    # Pass 2: Tulis berkas aman untuk Beagle
+    safe_vcf = workspace / "beagle_input_safe.vcf.gz"
+    overflow_removed = 0
+    singles_count = 0
+    beagle_variants_count = 0
+
+    with (
+        in_open(src, "rt", encoding="utf-8", errors="replace") as fin,
+        gzip.open(safe_vcf, "wt", encoding="utf-8") as f_safe,
+    ):
+        for line in fin:
+            if line.startswith("#"):
+                f_safe.write(line)
+                continue
+            tab1 = line.find("\t")
+            if tab1 == -1:
+                continue
+            tab2 = line.find("\t", tab1 + 1)
+            if tab2 == -1:
+                continue
+            chrom = line[:tab1]
+            try:
+                pos = int(line[tab1 + 1:tab2])
+            except ValueError:
+                continue
+
+            if pos > max_pos:
+                overflow_removed += 1
+                continue
+
+            if chrom in single_pos_chroms:
+                singles_count += 1
+            else:
+                f_safe.write(line)
+                beagle_variants_count += 1
+
+    if beagle_variants_count == 0:
+        safe_vcf.unlink(missing_ok=True)
+        return str(qc_vcf_path), overflow_removed, singles_count
+
+    return str(safe_vcf), overflow_removed, singles_count
 
 
 def _beagle_command(
@@ -85,6 +189,10 @@ def _beagle_command(
         command.append(f"chrom={params['chromosome']}")
     if params.get("map_path"):
         command.append(f"map={params['map_path']}")
+    if params.get("window") is not None:
+        command.append(f"window={params['window']}")
+    if params.get("overlap") is not None:
+        command.append(f"overlap={params['overlap']}")
     return command, rlimit
 
 
@@ -178,8 +286,26 @@ def run_imputation(
             imputed_prefix=str(output_prefix),
         )
 
+        effective_vcf_path, overflow_filtered, singles_count = _prepare_beagle_safe_vcf(
+            str(qc_vcf_path), workspace, max_pos=MAX_32BIT_POS
+        )
+        if overflow_filtered > 0:
+            append_log(
+                log_file,
+                f"[INFO] Terdeteksi {overflow_filtered:,} varian dengan POS > {MAX_32BIT_POS:,} bp.\n"
+                f"Varian disaring ke berkas aman ({Path(effective_vcf_path).name}) untuk mencegah "
+                f"Java 32-bit sliding window overflow pada Beagle (vcf.PositionMap.basePos).\n"
+            )
+        if singles_count > 0:
+            append_log(
+                log_file,
+                f"[INFO] Terdeteksi {singles_count:,} varian pada scaffold dengan < 2 posisi marker.\n"
+                f"Scaffold tanpa linkage tidak dapat diproses oleh Beagle 5 (MarkerMap.meanSingleBaseGenDist) "
+                f"dan diabaikan dari imputasi agar Beagle memfasekan seluruh kromosom utama secara optimal.\n"
+            )
+
         command, rlimit_bytes = _beagle_command(
-            qc_vcf_path,
+            effective_vcf_path,
             ref_vcf if mode == "reference" else None,
             str(output_prefix),
             imputation_cfg,
@@ -190,7 +316,7 @@ def run_imputation(
             f"=== TAHAP 4: IMPUTASI GENOTIPE (Beagle 5) ===\n"
             f"Waktu mulai     : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
             f"Mode            : {mode}\n"
-            f"Input QC VCF    : {qc_vcf_path}\n"
+            f"Input QC VCF    : {effective_vcf_path}\n"
             f"Reference Panel : {ref_vcf or '(tanpa reference - reference-free)'}\n"
             f"Command         : {' '.join(command)}\n"
         )
@@ -206,16 +332,29 @@ def run_imputation(
                 )
             except CLIExecutionError as exc:
                 err_text = " ".join(exc.last_lines)
-                if "exceeds the maximum integer value" in err_text or "PositionMap.basePos" in err_text:
+                is_beagle_overflow = (
+                    "exceeds the maximum integer value" in err_text
+                    or "PositionMap.basePos" in err_text
+                )
+                is_single_marker_error = (
+                    "Window has only one position" in err_text
+                    or "MarkerMap.meanSingleBaseGenDist" in err_text
+                )
+                if is_beagle_overflow or is_single_marker_error:
+                    reason = (
+                        "Beagle integer overflow (koordinat genom melebihi batas 2.14 Gb)"
+                        if is_beagle_overflow
+                        else "Beagle single-marker scaffold (scaffold memiliki < 2 posisi marker)"
+                    )
                     append_log(
                         log_file,
-                        "\n[WARNING] Beagle 5 mengalami integer overflow (koordinat genom > 2.14 Gb melebihi limit 32-bit signed integer Java).\n"
-                        "Beagle tidak mendukung kromosom dengan skala koordinat sebesar ini.\n"
+                        f"\n[WARNING] Beagle 5 mengalami kendala topologi genom: {reason}.\n"
+                        "Beagle tidak mendukung kromosom atau konfigurasi scaffold seperti ini.\n"
                         f"Secara otomatis melanjutkan pipeline menggunakan data genotipe hasil QC ({qc_vcf_path}).\n"
                     )
                     write_json(workspace / "skipped.json", {
                         "status": "skipped",
-                        "reason": "Beagle integer overflow (koordinat genom melebihi batas 2.14 Gb)",
+                        "reason": reason,
                     })
                     mark_job(
                         db,
