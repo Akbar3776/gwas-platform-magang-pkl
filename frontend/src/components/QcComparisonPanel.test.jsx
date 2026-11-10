@@ -38,6 +38,7 @@ describe("QcComparisonPanel", () => {
         maf_hist: { edges: [0, 0.05, 0.5], counts: [0, 356262] },
       },
       removed: {
+        overflow_32bit: 185,
         maf: 293307,
         geno: 1380777,
         mind: 14,
@@ -63,6 +64,8 @@ describe("QcComparisonPanel", () => {
 
     // Removal breakdown
     expect(screen.getByText("Rincian Varian & Sampel Terbuang per Kriteria QC:")).toBeInTheDocument();
+    expect(screen.getByText("Overflow 32-bit (Fase 0)")).toBeInTheDocument();
+    expect(screen.getByText("185")).toBeInTheDocument();
     expect(screen.getByText("Missing SNP (GENO)")).toBeInTheDocument();
     expect(screen.getByText("Missing Sampel (MIND)")).toBeInTheDocument();
   });

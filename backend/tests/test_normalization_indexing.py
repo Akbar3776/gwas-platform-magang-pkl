@@ -195,3 +195,73 @@ def test_qc_halts_immediately_on_plink_failure_without_python_fallback(monkeypat
     assert job.overall_status == JobStatus.FAILED
     assert job.failed_step == "qc"
     assert "[ERROR] PLINK2 gagal dieksekusi" in log_path.read_text(encoding="utf-8")
+
+
+def test_normalization_executes_fase0_qc_overflowing_before_bcftools_sort(monkeypatch, tmp_path: Path):
+    """run_vcf_normalization harus menjalankan Fase 0 (POS <= MAX_32BIT_POS) sebelum bcftools sort."""
+    import uuid
+    from app.core.config import settings
+    from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, UploadStatus
+    from app.services.qc_service import MAX_32BIT_POS
+    from app.tasks import normalization_tasks
+    from tests.test_pipeline_e2e import InMemoryDB
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    db = InMemoryDB()
+    monkeypatch.setattr(normalization_tasks, "SessionLocal", lambda: db)
+
+    vcf_file = tmp_path / "garlic.vcf"
+    vcf_file.write_text(
+        "##fileformat=VCFv4.2\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        "Chr1\t1000\trs_ok\tA\tG\t.\tPASS\t.\tGT\t0/1\n"
+        f"Chr1\t{MAX_32BIT_POS}\trs_limit\tC\tT\t.\tPASS\t.\tGT\t0/0\n"
+        f"Chr1\t{MAX_32BIT_POS + 1}\trs_overflow\tG\tA\t.\tPASS\t.\tGT\t1/1\n",
+        encoding="utf-8",
+    )
+
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=uuid.uuid4(),
+        original_filename="garlic.vcf",
+        storage_path=str(vcf_file),
+        file_size_bytes=vcf_file.stat().st_size,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    db.add(ds)
+
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=ds.id,
+        triggered_by=ds.owner_id,
+        pipeline_type="full_pipeline",
+        current_step=PipelineStep.NORMALIZATION,
+        overall_status=JobStatus.RUNNING_NORMALIZATION,
+        parameters={},
+    )
+    db.add(job)
+
+    captured_clean_content = []
+
+    def mock_run_cli(cmd, **kwargs):
+        if "sort" in cmd:
+            clean_arg = Path(cmd[-1])
+            assert clean_arg.name == "clean.vcf"
+            captured_clean_content.append(clean_arg.read_text(encoding="utf-8"))
+            out_idx = cmd.index("-o") + 1
+            Path(cmd[out_idx]).write_bytes(b"sorted_gz")
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("app.tasks.normalization_tasks.which_tool", lambda name: "bcftools")
+    monkeypatch.setattr("app.tasks.normalization_tasks.run_cli_command", mock_run_cli)
+
+    res = normalization_tasks.run_vcf_normalization(job_id=str(job.id), dataset_id=str(ds.id))
+
+    assert len(captured_clean_content) == 1
+    assert "rs_ok" in captured_clean_content[0]
+    assert "rs_limit" in captured_clean_content[0]
+    assert "rs_overflow" not in captured_clean_content[0]
+    assert res["qc_overflow_removed"] == 1
+    assert job.parameters["qc_overflow_removed"] == 1
+    assert not (tmp_path / "jobs" / str(job.id) / "normalization" / "clean.vcf").exists()
+

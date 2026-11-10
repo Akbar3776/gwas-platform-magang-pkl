@@ -5,7 +5,7 @@ import { JobProcessLogs } from "./JobProcessLogs";
 
 const STEPS = [
   { key: "INSPECTION", logKey: "inspection", label: "Inspeksi Data", detail: "Rekonsiliasi sampel & fenotipe" },
-  { key: "NORMALIZATION", logKey: "normalization", label: "Normalisasi VCF", detail: "Sorting & normalisasi bcftools" },
+  { key: "NORMALIZATION", logKey: "normalization", label: "Normalisasi VCF", detail: "Fase 0 (QC Overflow) & bcftools" },
   { key: "QC", logKey: "qc", label: "Quality Control", detail: "Filter varian & sampel PLINK" },
   { key: "IMPUTATION", logKey: "imputation", label: "Imputasi Genotipe", detail: "Beagle 5.4 (Opsional)" },
   { key: "STRUCTURE", logKey: "structure", label: "Struktur & LD", detail: "PCA, Kinship & LD Decay" },

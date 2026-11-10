@@ -13,9 +13,11 @@ from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, ResultType
 from app.schemas.pipeline import QCPipelineConfig
 from app.services.qc_service import (
+    MAX_32BIT_POS,
     build_plink19_qc_commands,
     build_plink2_qc_commands,
     build_qc_comparison_from_plink_outputs,
+    filter_vcf_32bit_overflow,
 )
 from app.services.report_generator import parse_qc_summary_from_log
 from app.tasks._common import (
@@ -138,6 +140,31 @@ def run_qc_pipeline(
             },
         )
 
+        overflow_removed = int(
+            ctx.get("qc_overflow_removed")
+            or (job.parameters or {}).get("qc_overflow_removed")
+            or 0
+        )
+        norm_stats_file = workspace.parent / "normalization" / "qc_overflow_stats.json"
+        if overflow_removed == 0 and norm_stats_file.is_file():
+            try:
+                norm_stats = json.loads(norm_stats_file.read_text(encoding="utf-8"))
+                overflow_removed = int(norm_stats.get("overflow_removed", 0))
+            except Exception:
+                pass
+
+        standalone_clean_vcf: Path | None = None
+        if not ctx.get("normalized_vcf_path") and Path(input_vcf_path).is_file():
+            standalone_clean_vcf = workspace / "clean.vcf"
+            overflow_stats = filter_vcf_32bit_overflow(
+                input_vcf=input_vcf_path,
+                output_vcf=standalone_clean_vcf,
+                max_pos=MAX_32BIT_POS,
+                compress_output=False,
+            )
+            overflow_removed = int(overflow_stats["overflow_removed"])
+            input_vcf_path = str(standalone_clean_vcf)
+
         plink2_bin = which_tool("plink2")
         plink_bin = which_tool("plink")
         has_plink2 = bool(plink2_bin)
@@ -149,6 +176,7 @@ def run_qc_pipeline(
             f"=== TAHAP 3: QUALITY CONTROL ({tool_name}) ===\n"
             f"Waktu mulai      : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
             f"Input VCF        : {input_vcf_path}\n"
+            f"Fase 0 Overflow  : {overflow_removed} varian tereliminasi (POS > {MAX_32BIT_POS} / 32-bit overflow)\n"
             f"Populasi         : {cfg.population_type.value} (HWE: {'Nonaktif' if cfg.population_type.value == 'inbred' else cfg.hwe})\n"
             f"Parameter        : MAF={cfg.maf}, GENO={cfg.geno}, MIND={cfg.mind}\n"
             f"SNP-only/Bi-all  : {cfg.snps_only} / max-alleles={cfg.max_alleles}\n"
@@ -176,6 +204,9 @@ def run_qc_pipeline(
                 logger.error("PLINK2 gagal pada tahap QC: %s; menghentikan pipeline.", exc)
                 append_log(log_file, f"[ERROR] PLINK2 gagal dieksekusi ({exc}); proses dihentikan tanpa fallback Python.")
                 raise
+            finally:
+                if standalone_clean_vcf:
+                    standalone_clean_vcf.unlink(missing_ok=True)
         elif has_plink and plink_bin:
             commands = build_plink19_qc_commands(
                 cfg=cfg,
@@ -195,7 +226,12 @@ def run_qc_pipeline(
                 logger.error("PLINK 1.9 gagal pada tahap QC: %s; menghentikan pipeline.", exc)
                 append_log(log_file, f"[ERROR] PLINK 1.9 gagal dieksekusi ({exc}); proses dihentikan tanpa fallback Python.")
                 raise
+            finally:
+                if standalone_clean_vcf:
+                    standalone_clean_vcf.unlink(missing_ok=True)
         else:
+            if standalone_clean_vcf:
+                standalone_clean_vcf.unlink(missing_ok=True)
             append_log(log_file, "[ERROR] Tools PLINK 2 / PLINK 1.9 tidak ditemukan; proses QC dihentikan.")
             raise RuntimeError("Tools PLINK 2 / PLINK 1.9 tidak ditemukan; proses QC dihentikan.")
 
@@ -212,6 +248,7 @@ def run_qc_pipeline(
             comparison_data = build_qc_comparison_from_plink_outputs(
                 workspace=workspace,
                 max_loss_warning=cfg.max_snp_loss_warning,
+                overflow_removed=overflow_removed,
             )
         except Exception as exc:
             logger.warning("Gagal menyusun perbandingan QC dari artefak output PLINK: %s", exc)
@@ -235,7 +272,15 @@ def run_qc_pipeline(
             comparison_data = {
                 "before": {"n_snps": n_snps_after, "n_samples": n_samples_after},
                 "after": {"n_snps": n_snps_after, "n_samples": n_samples_after},
-                "removed": {"maf": 0, "geno": 0, "mind": 0, "hwe": 0, "non_snp": 0, "multiallelic": 0},
+                "removed": {
+                    "maf": 0,
+                    "geno": 0,
+                    "mind": 0,
+                    "hwe": 0,
+                    "non_snp": 0,
+                    "multiallelic": 0,
+                    "overflow_32bit": overflow_removed,
+                },
                 "snp_loss_fraction": 0.0,
                 "warning": None,
             }

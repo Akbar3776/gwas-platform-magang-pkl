@@ -55,6 +55,8 @@ class ImputationPipelineConfig(BaseModel):
     beagle_max_memory: str | None = Field(default=None, pattern=r"^-Xmx\d+[mMgG]$")
     chromosome: str | None = None
     map_path: str | None = None
+    window: float | None = Field(default=None, gt=0)
+    overlap: float | None = Field(default=None, gt=0)
 
     @model_validator(mode="before")
     @classmethod
