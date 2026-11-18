@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import get_current_user
 from app.db.engine.database import get_db
-from app.db.engine.models import AnalysisJob, Dataset, JobStatus, UploadStatus, User
+from app.db.engine.models import ACTIVE_JOB_STATUSES, AnalysisJob, Dataset, UploadStatus, User
 from app.schemas.upload import (
     ChunkUploadResponse,
     FinalizeUploadResponse,
@@ -241,21 +241,13 @@ def delete_uploaded_dataset(
     if dataset.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload sudah dihapus")
 
-    active_statuses = {
-        JobStatus.RUNNING,
-        JobStatus.RUNNING_NORMALIZATION,
-        JobStatus.RUNNING_QC,
-        JobStatus.RUNNING_IMPUTATION,
-        JobStatus.RUNNING_GWAS,
-        JobStatus.RUNNING_PARSING,
-    }
     related_jobs = (
         db.query(AnalysisJob)
         .filter(AnalysisJob.dataset_id == dataset.id)
         .all()
     )
     for job in related_jobs:
-        if job.deleted_at is None and job.overall_status in active_statuses:
+        if job.deleted_at is None and job.overall_status in ACTIVE_JOB_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="File tidak dapat dihapus karena sedang digunakan oleh job yang sedang berjalan.",
@@ -390,23 +382,9 @@ def delete_phenotype_file(
     dataset = _owned_dataset(file_id, user, db)
 
     # Check active jobs
-    active_statuses = {
-        JobStatus.PENDING,
-        JobStatus.RUNNING,
-        JobStatus.RUNNING_INSPECTION,
-        JobStatus.RUNNING_NORMALIZATION,
-        JobStatus.RUNNING_QC,
-        JobStatus.RUNNING_IMPUTATION,
-        JobStatus.RUNNING_STRUCTURE,
-        JobStatus.RUNNING_GWAS,
-        JobStatus.RUNNING_MULTILOCUS,
-        JobStatus.RUNNING_POSTGWAS,
-        JobStatus.RUNNING_PARSING,
-        JobStatus.RUNNING_ANNOTATION,
-    }
     jobs = db.query(AnalysisJob).filter(AnalysisJob.dataset_id == dataset.id).all()
     for j in jobs:
-        if j.deleted_at is None and j.overall_status in active_statuses:
+        if j.deleted_at is None and j.overall_status in ACTIVE_JOB_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="File fenotipe tidak dapat dihapus karena ada job yang sedang berjalan.",

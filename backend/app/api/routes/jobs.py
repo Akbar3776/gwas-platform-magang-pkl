@@ -23,7 +23,17 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import get_current_user
 from app.db.engine.database import get_db
-from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, Result, ResultType, UploadStatus, User
+from app.db.engine.models import (
+    TERMINAL_JOB_STATUSES,
+    AnalysisJob,
+    Dataset,
+    JobStatus,
+    PipelineStep,
+    Result,
+    ResultType,
+    UploadStatus,
+    User,
+)
 from app.schemas.jobs import JobStatusResponse, JobTriggerResponse, QCJobRequest, StepLogEntry
 from app.services.manhattan_parser import compute_assoc_summary_stats
 from app.tasks.celery_app import celery_app
@@ -682,8 +692,7 @@ def cancel_job(
     if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not _is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
-    terminal_statuses = {JobStatus.COMPLETED, JobStatus.SUCCESS, JobStatus.FAILED, JobStatus.CANCELLED}
-    if job.overall_status in terminal_statuses:
+    if job.overall_status in TERMINAL_JOB_STATUSES:
         return {
             "job_id": str(job.id),
             "overall_status": job.overall_status.value,
@@ -797,8 +806,7 @@ def delete_job(
     if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not _is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
-    terminal_statuses = {JobStatus.COMPLETED, JobStatus.SUCCESS, JobStatus.FAILED, JobStatus.CANCELLED}
-    if job.overall_status not in terminal_statuses:
+    if job.overall_status not in TERMINAL_JOB_STATUSES:
         if job.celery_task_id and hasattr(celery_app, "control"):
             try:
                 celery_app.control.revoke(job.celery_task_id, terminate=True)
