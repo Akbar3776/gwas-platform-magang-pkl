@@ -16,11 +16,16 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import os
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from scipy.stats import hypergeom
+
+
+def _allow_synthetic_annotation() -> bool:
+    return os.getenv("ALLOW_SYNTHETIC_ANNOTATION", "").strip().lower() in ("1", "true", "yes")
 
 
 # Basis pengetahuan kurasi gen kandidat & ortolog tanaman (sesuai HASIL OUTPUT.md & TAIR10/QuickGO)
@@ -363,11 +368,48 @@ def _resolve_gene_go_entry(
     gene_name: str = "",
     description: str = "",
     explicit_go_ids: list[str] | None = None,
+    allow_synthetic: bool | None = None,
 ) -> dict[str, Any]:
     """Memetakan satu gen kandidat ke anotasi GO BP, CC, MF, dan sumber referensi."""
+    if allow_synthetic is None:
+        allow_synthetic = _allow_synthetic_annotation()
+
+    clean_explicit = list(dict.fromkeys(str(eg).strip() for eg in (explicit_go_ids or []) if str(eg).strip()))
+    if clean_explicit:
+        bp_list = [(eg, f"annotated GO term ({eg})") for eg in clean_explicit]
+        return {
+            "gene_id": gene_id,
+            "gene_name": gene_name or gene_id,
+            "ortholog": "-",
+            "bp": bp_list,
+            "cc": [],
+            "mf": [],
+            "go_terms": clean_explicit,
+            "source": "annotation",
+            "source_label": "GFF3 / Annotation",
+            "source_url": f"https://www.ebi.ac.uk/QuickGO/term/{clean_explicit[0]}",
+            "synthetic": False,
+        }
+
+    if not allow_synthetic:
+        return {
+            "gene_id": gene_id,
+            "gene_name": gene_name or gene_id,
+            "ortholog": "-",
+            "bp": [],
+            "cc": [],
+            "mf": [],
+            "go_terms": [],
+            "source": "unavailable",
+            "source_label": "unavailable",
+            "source_url": "",
+            "synthetic": False,
+        }
+
     key = str(gene_id).strip().upper()
     if key in CURATED_GENE_GO_DB:
         cur = CURATED_GENE_GO_DB[key]
+        go_terms = list(dict.fromkeys(gid for gid, _ in (*cur["bp"], *cur["cc"], *cur["mf"])))
         return {
             "gene_id": gene_id,
             "gene_name": gene_name or gene_id,
@@ -375,8 +417,11 @@ def _resolve_gene_go_entry(
             "bp": list(cur["bp"]),
             "cc": list(cur["cc"]),
             "mf": list(cur["mf"]),
+            "go_terms": go_terms,
+            "source": "synthetic",
             "source_label": cur["source_label"],
             "source_url": cur["source_url"],
+            "synthetic": True,
         }
 
     text_blob = f"{gene_id} {gene_name} {description}".lower()
@@ -387,17 +432,12 @@ def _resolve_gene_go_entry(
             break
 
     if chosen_mod is None:
-        # Pemetaan deterministik berbasis hash stabil dari gene_id
+        # Pemetaan deterministik berbasis hash stabil dari gene_id (hanya bila ALLOW_SYNTHETIC_ANNOTATION=true)
         digest = int(hashlib.md5(key.encode("utf-8")).hexdigest()[:8], 16)
         chosen_mod = PLANT_FUNCTIONAL_MODULES[digest % len(PLANT_FUNCTIONAL_MODULES)]
 
     bp_list = list(chosen_mod["bp"])
-    if explicit_go_ids:
-        known_ids = {gid for gid, _ in bp_list}
-        for eg in explicit_go_ids:
-            if eg not in known_ids:
-                bp_list.append((eg, f"annotated biological process ({eg})"))
-
+    go_terms = list(dict.fromkeys(gid for gid, _ in (*bp_list, *chosen_mod["cc"], *chosen_mod["mf"])))
     primary_go = bp_list[0][0] if bp_list else "GO:0008150"
     is_arabidopsis = key.startswith("AT") and len(key) >= 9 and key[3] == "G"
     source_url = (
@@ -414,8 +454,11 @@ def _resolve_gene_go_entry(
         "bp": bp_list,
         "cc": list(chosen_mod["cc"]),
         "mf": list(chosen_mod["mf"]),
+        "go_terms": go_terms,
+        "source": "synthetic",
         "source_label": source_label,
         "source_url": source_url,
+        "synthetic": True,
     }
 
 
@@ -429,6 +472,8 @@ def run_go_enrichment_analysis(
     Menjalankan pemetaan Tabel GO dan analisis pengayaan hipergeometrik (GO Enrichment)
     dari daftar gen kandidat hasil anotasi GFF3 (Fase 5.3).
     """
+    allow_synthetic = _allow_synthetic_annotation()
+
     # 1. Kumpulkan metadata gen unik dari mapped_rows dan candidate_genes_list
     gene_meta_map: dict[str, dict[str, Any]] = {}
     for row in mapped_rows:
@@ -484,6 +529,7 @@ def run_go_enrichment_analysis(
     if not gene_meta_map:
         empty_payload = {
             "status": "empty",
+            "synthetic": False,
             "trait": trait_name,
             "total_genes": 0,
             "go_table": [],
@@ -502,6 +548,7 @@ def run_go_enrichment_analysis(
             gene_name=meta.get("gene_name", gid),
             description=meta.get("description", ""),
             explicit_go_ids=meta.get("go_ids", []),
+            allow_synthetic=allow_synthetic,
         )
         bp_terms = resolved["bp"]
         cc_terms = resolved["cc"]
@@ -517,8 +564,11 @@ def run_go_enrichment_analysis(
             "bp_ids": [i for i, _ in bp_terms],
             "cc_ids": [i for i, _ in cc_terms],
             "mf_ids": [i for i, _ in mf_terms],
+            "go_terms": resolved["go_terms"],
+            "source": resolved["source"],
             "source_label": resolved["source_label"],
             "source_url": resolved["source_url"],
+            "synthetic": resolved["synthetic"],
             "snp": meta.get("snp", "-"),
             "category": meta.get("category", "Genik"),
         })
@@ -532,8 +582,11 @@ def run_go_enrichment_analysis(
                         "description": desc,
                         "ontology": ontology_code,
                         "genes": [],
+                        "synthetic": resolved["synthetic"],
                     },
                 )
+                if resolved["synthetic"]:
+                    entry["synthetic"] = True
                 if gid not in entry["genes"]:
                     entry["genes"].append(gid)
 
@@ -561,6 +614,7 @@ def run_go_enrichment_analysis(
             "pvalue": pval,
             "genes": info["genes"],
             "gene_id_str": "/".join(info["genes"]),
+            "synthetic": bool(info.get("synthetic")),
         })
 
     # Koreksi FDR Benjamini-Hochberg (p.adjust)
@@ -579,8 +633,10 @@ def run_go_enrichment_analysis(
     # Prioritaskan Biological Process (BP) lalu urutkan berdasarkan gene_ratio menurun & p_adjust naik
     raw_terms.sort(key=lambda x: (0 if x["ontology"] == "BP" else 1, -x["gene_ratio"], x["p_adjust"]))
 
+    has_synthetic = any(bool(row.get("synthetic")) for row in go_table)
     result_payload = {
-        "status": "completed",
+        "status": "unavailable" if (not raw_terms and not allow_synthetic) else "completed",
+        "synthetic": has_synthetic,
         "trait": trait_name,
         "total_genes": len(go_table),
         "go_table": go_table,
@@ -639,7 +695,7 @@ def run_go_enrichment_analysis(
                     row["biological_process"],
                     row["cellular_component"],
                     row["molecular_function"],
-                    row["source_url"],
+                    row["source_url"] or row.get("source", "unavailable"),
                 ])
 
     return result_payload

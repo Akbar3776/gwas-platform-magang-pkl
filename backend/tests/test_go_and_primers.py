@@ -57,7 +57,64 @@ def test_multilocus_pve_and_fdr_extraction(tmp_path: Path):
     assert "H&B.P.Value" in header
 
 
-def test_go_enrichment_and_ortholog_mapping(tmp_path: Path):
+def test_go_enrichment_disabled_by_default_and_uses_real_go_ids(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("ALLOW_SYNTHETIC_ANNOTATION", raising=False)
+    mapped_without_go = [
+        {
+            "snp": "chr6:358757461",
+            "chr": "6",
+            "pos": 358757461,
+            "p": 4.31e-6,
+            "nearest_gene": "Asa6G01390",
+            "nearest_gene_name": "Asa6G01390",
+            "category": "Near-gen",
+            "genes_in_window": [
+                {"gene_id": "UnknownGene1", "gene_name": "UnknownGene1", "distance": 25000},
+            ],
+        }
+    ]
+    res_unavail = run_go_enrichment_analysis(
+        mapped_rows=mapped_without_go,
+        candidate_genes_list=["Asa6G01390", "UnknownGene1"],
+        trait_name="Clove Weight",
+        output_dir=tmp_path / "unavail",
+    )
+    assert res_unavail["status"] == "unavailable"
+    assert res_unavail["synthetic"] is False
+    assert res_unavail["enrichment_terms"] == []
+    assert res_unavail["total_genes"] == 2
+    for row in res_unavail["go_table"]:
+        assert row["go_terms"] == []
+        assert row["source"] == "unavailable"
+        assert row["synthetic"] is False
+
+    mapped_with_real_go = [
+        {
+            "snp": "chr1:1000",
+            "chr": "1",
+            "pos": 1000,
+            "p": 1e-8,
+            "nearest_gene": "GeneA",
+            "nearest_gene_name": "GeneA",
+            "category": "Genik",
+            "closest_gene": {"gene_id": "GeneA", "go_ids": ["GO:0006357", "GO:0009651"]},
+            "genes_in_window": [],
+        }
+    ]
+    res_real = run_go_enrichment_analysis(
+        mapped_rows=mapped_with_real_go,
+        trait_name="Real Trait",
+        output_dir=tmp_path / "real",
+    )
+    assert res_real["status"] == "completed"
+    assert res_real["synthetic"] is False
+    assert res_real["go_table"][0]["go_terms"] == ["GO:0006357", "GO:0009651"]
+    assert res_real["go_table"][0]["source"] != "unavailable"
+    assert len(res_real["enrichment_terms"]) == 2
+
+
+def test_go_enrichment_synthetic_opt_in_marks_entries(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ALLOW_SYNTHETIC_ANNOTATION", "true")
     mapped_rows = [
         {
             "snp": "chr6:358757461",
@@ -80,9 +137,12 @@ def test_go_enrichment_and_ortholog_mapping(tmp_path: Path):
         output_dir=tmp_path,
     )
     assert res["status"] == "completed"
+    assert res["synthetic"] is True
     assert res["total_genes"] == 3
     assert len(res["go_table"]) == 3
+    assert all(row.get("synthetic") is True for row in res["go_table"])
     assert len(res["enrichment_terms"]) > 0
+    assert all(term.get("synthetic") is True for term in res["enrichment_terms"])
     first_term = res["enrichment_terms"][0]
     assert "gene_ratio" in first_term
     assert "p_adjust" in first_term
@@ -91,35 +151,64 @@ def test_go_enrichment_and_ortholog_mapping(tmp_path: Path):
     assert (tmp_path / "Tabel_GO_Kandidat.csv").is_file()
 
 
-def test_flanking_201bp_and_primer3_design(tmp_path: Path):
-    # Test curated SNP #1 from HASIL OUTPUT.md (clove_weight_6_358807461)
-    bracketed, raw_seq = extract_or_build_flanking_sequence("6", 358807461, allele="C")
-    assert len(raw_seq) == 201
-    assert "[C]" in bracketed
+def test_flanking_and_primers_require_fasta_unless_synthetic_enabled(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("ALLOW_SYNTHETIC_ANNOTATION", raising=False)
+    bracketed, raw_seq = extract_or_build_flanking_sequence("6", 358807461, allele="C", fasta_path=None)
+    assert bracketed == ""
+    assert raw_seq == ""
 
-    pairs = design_primers_for_flanking(raw_seq, snp_index_0based=100, max_pairs=5)
-    assert len(pairs) >= 1
-    assert 100 <= pairs[0]["product_size"] <= 190
-
-    # Test curated SNP #10 from HASIL OUTPUT.md (AT-rich sequence -> no primers found)
-    _, raw_at_rich = extract_or_build_flanking_sequence("4", 1766400024, allele="C")
-    pairs_at = design_primers_for_flanking(raw_at_rich, snp_index_0based=100, max_pairs=5)
-    assert pairs_at == []
-
-    # Test full batch generation & file outputs
     lead_snps = [
         {"snp": "chr6:358807461", "chr": "6", "pos": 358807461, "a1": "C", "p": 4.31e-6, "nearest_gene": "Asa6G01390"},
-        {"snp": "chr4:1766400024", "chr": "4", "pos": 1766400024, "a1": "C", "p": 8.12e-6, "nearest_gene": "Asa4G06376"},
     ]
-    payload = generate_flanking_and_primers(
+    no_ref_payload = generate_flanking_and_primers(
         lead_snps=lead_snps,
         trait_name="clove_weight",
-        output_dir=tmp_path,
+        fasta_path=None,
+        output_dir=tmp_path / "no_ref",
     )
-    assert payload["total_markers"] == 2
-    assert payload["markers_with_primers"] == 1
-    assert payload["markers"][0]["marker_id"] == "clove_weight_6_358807461"
-    assert "LEFT PRIMER" in payload["markers"][0]["primer3_output"]
-    assert payload["markers"][1]["primer3_output"] == "no primers found"
-    assert (tmp_path / "Flanking_dan_Primer3.txt").is_file()
-    assert (tmp_path / "Desain_Primer_Kandidat.csv").is_file()
+    assert no_ref_payload["status"] == "no_reference"
+    assert no_ref_payload["synthetic"] is False
+    assert no_ref_payload["markers_with_primers"] == 0
+    assert no_ref_payload["markers"][0]["status"] == "no_reference"
+    assert no_ref_payload["markers"][0]["flanking_sequence"] == ""
+    assert no_ref_payload["markers"][0]["primer_pairs"] == []
+
+    # With a real FASTA file, flanking extraction succeeds even when synthetic is disabled
+    fasta_file = tmp_path / "ref.fa"
+    real_seq = (
+        "TACCGCTGTTTCTTAAAGAAAAACACACAACGGAACAAACATAAGTACCAAAGTATGATGTAGAAGAAAGATATAAATGTAACAGTTTTAGCATAAGGTC"
+        "C"
+        "TACTCTAAGATGTAATAAATATATGGATTTTATCTAGCTAATGGAATGATGTAAATGTAACAGTTTTAGCAAGAACAGCCTCCTGATTGTTGTTGATCCT"
+    )
+    fasta_file.write_text(f">6\n{real_seq}\n", encoding="utf-8")
+    pairs = design_primers_for_flanking(real_seq, snp_index_0based=100, max_pairs=5)
+    assert len(pairs) >= 1
+    assert 100 <= pairs[0]["product_size"] <= 190
+    real_payload = generate_flanking_and_primers(
+        lead_snps=[{"snp": "chr6:101", "chr": "6", "pos": 101, "a1": "C", "p": 1e-7, "nearest_gene": "G1"}],
+        trait_name="clove_weight",
+        fasta_path=fasta_file,
+        output_dir=tmp_path / "real_ref",
+    )
+    assert real_payload["status"] == "completed"
+    assert real_payload["synthetic"] is False
+    assert real_payload["markers_with_primers"] == 1
+    assert real_payload["markers"][0]["sequence_length"] == 201
+    assert "LEFT PRIMER" in real_payload["markers"][0]["primer3_output"]
+
+    # When synthetic flag is enabled explicitly without FASTA, synthetic markers are labeled synthetic=True
+    monkeypatch.setenv("ALLOW_SYNTHETIC_ANNOTATION", "true")
+    synth_payload = generate_flanking_and_primers(
+        lead_snps=[
+            {"snp": "chr6:358807461", "chr": "6", "pos": 358807461, "a1": "C", "p": 4.31e-6, "nearest_gene": "Asa6G01390"},
+            {"snp": "chr4:1766400024", "chr": "4", "pos": 1766400024, "a1": "C", "p": 8.12e-6, "nearest_gene": "Asa4G06376"},
+        ],
+        trait_name="clove_weight",
+        output_dir=tmp_path / "synth",
+    )
+    assert synth_payload["synthetic"] is True
+    assert synth_payload["total_markers"] == 2
+    assert synth_payload["markers_with_primers"] == 1
+    assert all(m.get("synthetic") is True for m in synth_payload["markers"])
+    assert "LEFT PRIMER" in synth_payload["markers"][0]["primer3_output"]
+    assert synth_payload["markers"][1]["primer3_output"] == "no primers found"

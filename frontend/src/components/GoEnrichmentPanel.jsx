@@ -242,13 +242,50 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
     URL.revokeObjectURL(url);
   };
 
-  if (!goData || (!goTable.length && !allTerms.length)) {
+  const isSynthetic = Boolean(
+    goData?.synthetic ||
+      goTable.some((r) => Boolean(r?.synthetic)) ||
+      allTerms.some((t) => Boolean(t?.synthetic))
+  );
+
+  if (!goData || (!goTable.length && !allTerms.length && !isSynthetic)) {
     return null;
   }
 
   return (
     <div style={{ display: "grid", gap: 18, marginTop: 12 }}>
+      {isSynthetic && (
+        <div
+          role="note"
+          style={{
+            background: "#fffbeb",
+            border: "1px solid #f59e0b",
+            color: "#92400e",
+            borderRadius: 8,
+            padding: "10px 14px",
+            fontSize: 12.5,
+            fontWeight: 600,
+          }}
+        >
+          ⚠️ Data simulasi — bukan hasil analisis. Hasil GO di bawah dibangkitkan untuk mode demo (`ALLOW_SYNTHETIC_ANNOTATION=true`).
+        </div>
+      )}
+
       {/* Bagian 1: Dotplot GO Enrichment (Fase 5.3) */}
+      {allTerms.length === 0 ? (
+        <div
+          style={{
+            background: "#f8fafc",
+            border: "1px dashed #cbd5e1",
+            borderRadius: 8,
+            padding: 16,
+            color: "#475569",
+            fontSize: 12.5,
+          }}
+        >
+          Anotasi Gene Ontology (GO) asli tidak tersedia untuk kandidat gen pada job ini (`source: unavailable`). Unggah file GFF3 yang memiliki atribut `Ontology_term` atau file pemetaan GO.
+        </div>
+      ) : (
       <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0", display: "grid", gap: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
           <div>
@@ -314,6 +351,7 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
           />
         </div>
       </div>
+      )}
 
       {/* Bagian 2: Tabel GO per Gen Kandidat (Biological Process, Cellular Component, Molecular Function, Source) */}
       {goTable.length > 0 && (
@@ -383,6 +421,8 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
                         >
                           {row.source_label || "Referensi GO"}
                         </a>
+                      ) : row.source === "unavailable" ? (
+                        <span style={{ color: "#64748b", fontSize: 11 }}>unavailable</span>
                       ) : (
                         "-"
                       )}

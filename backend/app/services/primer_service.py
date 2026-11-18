@@ -11,11 +11,16 @@ from __future__ import annotations
 import csv
 import hashlib
 import math
+import os
 import re
 from pathlib import Path
 from typing import Any
 
 from app.tasks._common import chr_label
+
+
+def _allow_synthetic_annotation() -> bool:
+    return os.getenv("ALLOW_SYNTHETIC_ANNOTATION", "").strip().lower() in ("1", "true", "yes")
 
 
 # Parameter termodinamika Nearest-Neighbor SantaLucia (1998) (dH dalam cal/mol, dS dalam cal/(K·mol))
@@ -154,22 +159,21 @@ def extract_or_build_flanking_sequence(
     allele: str = "C",
     flank_len: int = 100,
     fasta_path: str | Path | None = None,
+    allow_synthetic: bool | None = None,
 ) -> tuple[str, str]:
     """
     Mengekstrak sekuens flanking `flank_len` bp di kiri dan kanan SNP (`201 bp` total).
-    Mengembalikan `(bracketed_sequence, raw_201bp_sequence)`.
+    Mengembalikan `(bracketed_sequence, raw_201bp_sequence)` atau `("", "")` jika FASTA
+    referensi tidak tersedia dan `ALLOW_SYNTHETIC_ANNOTATION` nonaktif.
     """
+    if allow_synthetic is None:
+        allow_synthetic = _allow_synthetic_annotation()
+
     norm_chr = re.sub(r"^(chromosome|chrom|chr)[\s_]*", "", str(chr_name).strip(), flags=re.IGNORECASE).upper()
     if norm_chr.isdigit():
         norm_chr = str(int(norm_chr))
 
-    # 1. Cek di database kurasi HASIL OUTPUT.md
-    if (norm_chr, int(pos)) in CURATED_FLANKING_SEQUENCES:
-        bracketed = CURATED_FLANKING_SEQUENCES[(norm_chr, int(pos))]
-        raw_seq = re.sub(r"\[([ACGTN])\]", r"\1", bracketed, flags=re.IGNORECASE)
-        return bracketed, raw_seq
-
-    # 2. Jika file FASTA referensi diberikan dan ada di disk, baca langsung
+    # 1. Jika file FASTA referensi diberikan dan ada di disk, baca langsung
     if fasta_path and Path(fasta_path).is_file():
         try:
             seq_chr = _read_fasta_region(Path(fasta_path), norm_chr, pos - flank_len, pos + flank_len)
@@ -181,7 +185,16 @@ def extract_or_build_flanking_sequence(
         except Exception:
             pass
 
-    # 3. Generator sekuens konteks genomik deterministik berbasis (chr, pos, allele)
+    if not allow_synthetic:
+        return "", ""
+
+    # 2. Mode simulasi eksplisit: cek database kurasi lalu generator deterministik
+    if (norm_chr, int(pos)) in CURATED_FLANKING_SEQUENCES:
+        bracketed = CURATED_FLANKING_SEQUENCES[(norm_chr, int(pos))]
+        raw_seq = re.sub(r"\[([ACGTN])\]", r"\1", bracketed, flags=re.IGNORECASE)
+        return bracketed, raw_seq
+
+    # 3. Generator sekuens konteks genomik deterministik berbasis (chr, pos, allele) (hanya bila ALLOW_SYNTHETIC_ANNOTATION=true)
     # Menghasilkan komposisi GC ~42% yang bebas homopolimer panjang agar desain primer stabil
     clean_allele = (allele or "C").strip().upper()
     if not clean_allele or clean_allele[0] not in "ACGT":
@@ -431,6 +444,7 @@ def generate_flanking_and_primers(
     """
     clean_trait = re.sub(r"\s+", "_", str(trait_name or "trait").strip().lower())
     selected_snps = list(lead_snps)[:max_snps]
+    allow_synthetic = _allow_synthetic_annotation()
 
     items: list[dict[str, Any]] = []
     for idx, s in enumerate(selected_snps, start=1):
@@ -445,7 +459,42 @@ def generate_flanking_and_primers(
             allele=allele,
             flank_len=100,
             fasta_path=fasta_path,
+            allow_synthetic=False,
         )
+        is_synthetic_item = False
+        if not raw_201_seq and allow_synthetic:
+            bracketed_seq, raw_201_seq = extract_or_build_flanking_sequence(
+                chr_name=raw_chr,
+                pos=pos,
+                allele=allele,
+                flank_len=100,
+                fasta_path=None,
+                allow_synthetic=True,
+            )
+            is_synthetic_item = bool(raw_201_seq)
+
+        if not raw_201_seq:
+            items.append({
+                "rank": idx,
+                "marker_id": marker_label,
+                "snp": s.get("snp") or f"chr{raw_chr}:{pos}",
+                "chr": raw_chr,
+                "pos": pos,
+                "allele": allele,
+                "p": s.get("p"),
+                "nearest_gene": s.get("nearest_gene", "-"),
+                "category": s.get("category", "-"),
+                "flanking_sequence": "",
+                "sequence_length": 0,
+                "gc_percent": 0.0,
+                "primer_pairs_count": 0,
+                "primer_pairs": [],
+                "primer3_output": "",
+                "status": "no_reference",
+                "synthetic": False,
+            })
+            continue
+
         pairs = design_primers_for_flanking(raw_201_seq, snp_index_0based=100, max_pairs=5)
         block_text = format_primer3_block(pairs)
 
@@ -466,10 +515,17 @@ def generate_flanking_and_primers(
             "primer_pairs": pairs,
             "primer3_output": block_text,
             "status": "primers_found" if pairs else "no_primers_found",
+            "synthetic": is_synthetic_item,
         })
 
+    has_synthetic = any(bool(it.get("synthetic")) for it in items)
+    all_no_reference = (
+        (not items and not (fasta_path and Path(fasta_path).is_file()) and not allow_synthetic)
+        or (bool(items) and all(it["status"] == "no_reference" for it in items))
+    )
     payload = {
-        "status": "completed",
+        "status": "no_reference" if all_no_reference else "completed",
+        "synthetic": has_synthetic,
         "trait": trait_name,
         "total_markers": len(items),
         "markers_with_primers": sum(1 for it in items if it["primer_pairs_count"] > 0),
@@ -485,8 +541,12 @@ def generate_flanking_and_primers(
         txt_blocks: list[str] = []
         for it in items:
             txt_blocks.append(f"### {it['rank']}. {it['marker_id']} ({it['snp']})")
-            txt_blocks.append(f"> {it['flanking_sequence']}\n")
-            txt_blocks.append(it["primer3_output"])
+            if it["status"] == "no_reference":
+                txt_blocks.append("> [no reference FASTA]")
+                txt_blocks.append("no reference FASTA")
+            else:
+                txt_blocks.append(f"> {it['flanking_sequence']}\n")
+                txt_blocks.append(it["primer3_output"])
             txt_blocks.append("")
         txt_file.write_text("\n".join(txt_blocks), encoding="utf-8")
 
@@ -514,7 +574,27 @@ def generate_flanking_and_primers(
                 "Flanking_201bp",
             ])
             for it in items:
-                if not it["primer_pairs"]:
+                if it["status"] == "no_reference":
+                    writer.writerow([
+                        it["marker_id"],
+                        it["snp"],
+                        it["chr"],
+                        it["pos"],
+                        0,
+                        "-",
+                        "-",
+                        "-",
+                        "-",
+                        "no reference FASTA",
+                        "-",
+                        "-",
+                        "-",
+                        "-",
+                        "no reference FASTA",
+                        "-",
+                        "",
+                    ])
+                elif not it["primer_pairs"]:
                     writer.writerow([
                         it["marker_id"],
                         it["snp"],

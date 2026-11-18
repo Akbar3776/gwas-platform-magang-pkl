@@ -55,7 +55,7 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
     return filteredMarkers.slice(start, start + pageSize);
   }, [filteredMarkers, currentPage, pageSize]);
 
-  const handleDownloadPrimer3Txt = () => {
+  const handleDownloadPrimerTxt = () => {
     if (!markers.length) return;
     const blocks = markers.map(
       (m) => `### ${m.rank}. ${m.marker_id}\n\n> ${m.flanking_sequence}\n\n\`\`\`\n${m.primer3_output}\n\`\`\`\n`
@@ -64,7 +64,7 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Flanking_dan_Primer3_${jobId || "gwas"}.txt`;
+    a.download = `Flanking_Primer_Heuristik_${jobId || "gwas"}.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -163,7 +163,14 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
     URL.revokeObjectURL(url);
   };
 
-  if (!primersData || !markers.length) {
+  const isSynthetic = Boolean(
+    primersData?.synthetic || markers.some((m) => Boolean(m?.synthetic))
+  );
+  const isNoReference = primersData?.status === "no_reference" || (
+    markers.length > 0 && markers.every((m) => m.status === "no_reference")
+  );
+
+  if ((!primersData || !markers.length || isNoReference) && !isSynthetic) {
     return (
       <div
         style={{
@@ -177,10 +184,12 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
       >
         <div style={{ fontSize: 24, marginBottom: 8 }}>🧪</div>
         <div style={{ fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-          Sekuens Flanking &amp; Desain Primer PCR (Primer3) Belum Tersedia
+          Sekuens Flanking &amp; Desain Primer Heuristik Belum Tersedia
         </div>
-        <p style={{ margin: 0, fontSize: 13, maxWidth: 500, marginInline: "auto" }}>
-          Tidak ditemukan Lead SNP kandidat pada job ini untuk ekstraksi sekuens flanking 201 bp dan desain primer.
+        <p style={{ margin: 0, fontSize: 13, maxWidth: 540, marginInline: "auto" }}>
+          {isNoReference
+            ? "Referensi FASTA tidak tersedia; unggah berkas FASTA referensi untuk mengekstrak sekuens flanking 201 bp dan desain primer heuristik."
+            : "Tidak ditemukan Lead SNP kandidat pada job ini untuk ekstraksi sekuens flanking 201 bp dan desain primer heuristik."}
         </p>
       </div>
     );
@@ -188,11 +197,28 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
+      {isSynthetic && (
+        <div
+          role="note"
+          style={{
+            background: "#fffbeb",
+            border: "1px solid #f59e0b",
+            color: "#92400e",
+            borderRadius: 8,
+            padding: "10px 14px",
+            fontSize: 12.5,
+            fontWeight: 600,
+          }}
+        >
+          ⚠️ Data simulasi — bukan hasil analisis. Sekuens flanking dan desain primer di bawah berasal dari mode demo (`ALLOW_SYNTHETIC_ANNOTATION=true`).
+        </div>
+      )}
+
       {/* Header & Tombol Ekspor */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <div>
           <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#0f172a" }}>
-            Ekstraksi Sekuens Flanking (201 bp) &amp; Desain Primer PCR (Primer3) — Fase 5.4 / Fase 6–8
+            Ekstraksi Sekuens Flanking (201 bp) &amp; Desain Primer Heuristik — Fase 5.4 / Fase 6–8
           </h4>
           <p style={{ margin: "3px 0 0", fontSize: 12, color: "#64748b" }}>
             Sekuens 100 bp upstream + `[Alel Target]` + 100 bp downstream beserta pasangan `LEFT PRIMER` &amp; `RIGHT PRIMER`.
@@ -202,7 +228,7 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             type="button"
-            onClick={handleDownloadPrimer3Txt}
+            onClick={handleDownloadPrimerTxt}
             style={{
               background: "#2563eb",
               color: "#fff",
@@ -214,7 +240,7 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
               cursor: "pointer",
             }}
           >
-            📥 Unduh Laporan Primer3 (.txt)
+            📥 Unduh Laporan Desain Primer (.txt)
           </button>
           <button
             type="button"
@@ -261,8 +287,8 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
         <div style={{ display: "flex", gap: 6 }}>
           {[
-            { id: "both", label: "Blok Primer3 + Tabel" },
-            { id: "primer3", label: "Format Blok Primer3" },
+            { id: "both", label: "Blok Desain Primer + Tabel" },
+            { id: "primer3", label: "Format Blok Desain Primer" },
             { id: "table", label: "Tabel Oligo" },
           ].map((opt) => (
             <button
