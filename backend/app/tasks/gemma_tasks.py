@@ -8,7 +8,7 @@ import math
 import os
 from pathlib import Path
 import shutil
-from typing import Any
+from typing import Any, Callable
 import uuid
 
 import numpy as np
@@ -17,9 +17,15 @@ from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, Result, ResultType
 from app.services.manhattan_parser import compute_assoc_summary_stats, generate_manhattan_cache
-from app.tasks._common import JobCancelledError, ensure_not_cancelled, guard_status_change, which_tool
+from app.tasks._common import (
+    JobCancelledError,
+    ensure_not_cancelled,
+    guard_status_change,
+    is_job_cancelled,
+    which_tool,
+)
 from app.tasks.celery_app import celery_app, get_task_logger
-from app.utils.process import CLIExecutionError, SubprocessFailed, run_cli_command
+from app.utils.process import CLICancelledError, CLIExecutionError, SubprocessFailed, run_cli_command
 
 logger = get_task_logger(__name__)
 
@@ -249,7 +255,13 @@ def _ensure_fam_phenotypes(bfile_prefix: str, pheno_vec: np.ndarray, log_file: P
     _append_log(log_file, f"[6.2] Kolom fenotipe pada {fam_path.name} diperbarui untuk {len(updated)} sampel.")
 
 
-def _bfile_prefix(genotype_path: str, work_dir: Path, log_file: Path) -> str:
+def _bfile_prefix(
+    genotype_path: str,
+    work_dir: Path,
+    log_file: Path,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+) -> str:
     path = Path(genotype_path)
     if path.suffix == ".bed":
         prefix = str(path.with_suffix(""))
@@ -280,6 +292,7 @@ def _bfile_prefix(genotype_path: str, work_dir: Path, log_file: Path) -> str:
             cwd=work_dir,
             log_file=log_file,
             timeout=GEMMA_TIMEOUT_SECONDS,
+            cancel_check=cancel_check,
         )
         return str(converted_prefix)
     raise ValueError("genotype_path harus berupa .vcf/.vcf.gz atau prefix/file .bed dengan .bim dan .fam")
@@ -555,6 +568,9 @@ def run_gemma_gwas(
             ensure_not_cancelled(job_id, check_db)
         finally:
             check_db.close()
+
+        def _cancel_check() -> bool:
+            return is_job_cancelled(job_id)
         params = params or {}
         genotype_path = imputation_result.get("output_vcf") or imputation_result.get("genotype_vcf_path")
         if not genotype_path:
@@ -642,7 +658,7 @@ def run_gemma_gwas(
                     source_label = "QC" if imputation_result.get("imputation_skipped", True) else "imputasi"
                     _append_log(log_file, f"[6.1] Menggunakan PLINK binary dari tahap {source_label}: {bfile_prefix}.bed/.bim/.fam")
                 else:
-                    bfile_prefix = _bfile_prefix(genotype_path, work_dir, log_file)
+                    bfile_prefix = _bfile_prefix(genotype_path, work_dir, log_file, cancel_check=_cancel_check)
                     if Path(f"{bfile_prefix}.fam").is_file():
                         samples = [
                             line.split()[1]
@@ -680,7 +696,13 @@ def run_gemma_gwas(
                         "kinship",
                     ]
                     _append_log(log_file, f"[6.3] Menjalankan GEMMA Kinship Matrix: {' '.join(kinship_command)}")
-                    run_cli_command(kinship_command, cwd=work_dir, log_file=log_file, timeout=GEMMA_TIMEOUT_SECONDS)
+                    run_cli_command(
+                        kinship_command,
+                        cwd=work_dir,
+                        log_file=log_file,
+                        timeout=GEMMA_TIMEOUT_SECONDS,
+                        cancel_check=_cancel_check,
+                    )
                     _merge_gemma_log_file(output_dir_gemma / "kinship.log.txt", log_file, "Log GEMMA Kinship")
                     if not kinship_path.is_file():
                         raise RuntimeError(f"Matriks kinship tidak ditemukan: {kinship_path}")
@@ -711,7 +733,13 @@ def run_gemma_gwas(
                 if cov_path and Path(cov_path).is_file():
                     association_command.extend(["-c", str(cov_path)])
                 _append_log(log_file, f"[6.4] Menjalankan GEMMA Association: {' '.join(association_command)}")
-                run_cli_command(association_command, cwd=work_dir, log_file=log_file, timeout=GEMMA_TIMEOUT_SECONDS)
+                run_cli_command(
+                    association_command,
+                    cwd=work_dir,
+                    log_file=log_file,
+                    timeout=GEMMA_TIMEOUT_SECONDS,
+                    cancel_check=_cancel_check,
+                )
                 _merge_gemma_log_file(output_dir_gemma / "association.log.txt", log_file, "Log GEMMA Association")
 
                 if not assoc_path.is_file():
@@ -724,6 +752,8 @@ def run_gemma_gwas(
                     log_file,
                     f"[6.5] GEMMA CLI berhasil menganalisis {len(lines) - 1} SNP -> {assoc_path}",
                 )
+            except (JobCancelledError, CLICancelledError):
+                raise
             except (SubprocessFailed, CLIExecutionError, FileNotFoundError, RuntimeError) as cli_exc:
                 _append_log(
                     log_file,
@@ -792,7 +822,7 @@ def run_gemma_gwas(
             "normalized_assoc_path": str(norm_path),
             "log_file": str(log_file),
         }
-    except JobCancelledError:
+    except (JobCancelledError, CLICancelledError):
         logger.info("GEMMA GWAS dibatalkan: job=%s", job_id)
         raise
     except Exception as exc:

@@ -25,6 +25,7 @@ from app.tasks._common import (
     append_log,
     ensure_not_cancelled,
     guard_status_change,
+    is_job_cancelled,
     mark_job,
     stage_dir,
     upsert_result,
@@ -32,7 +33,7 @@ from app.tasks._common import (
     write_json,
 )
 from app.tasks.celery_app import SoftTimeLimitExceeded, celery_app, get_task_logger
-from app.utils.process import CLIExecutionError, SubprocessFailed, run_cli_command
+from app.utils.process import CLICancelledError, CLIExecutionError, SubprocessFailed, run_cli_command
 
 logger = get_task_logger(__name__)
 QC_TIMEOUT_SECONDS = int(os.getenv("QC_TIMEOUT_SECONDS", str(6 * 60 * 60)))
@@ -187,6 +188,9 @@ def run_qc_pipeline(
 
         comparison_data: dict[str, Any] = {}
 
+        def _cancel_check() -> bool:
+            return is_job_cancelled(job_id)
+
         if has_plink2 and plink2_bin:
             commands = build_plink2_qc_commands(
                 cfg=cfg,
@@ -201,7 +205,15 @@ def run_qc_pipeline(
                 for cmd in commands:
                     ensure_not_cancelled(job_id, db)
                     append_log(log_file, f"Menjalankan: {' '.join(cmd)}")
-                    run_cli_command(cmd, cwd=workspace, log_file=log_file, timeout=QC_TIMEOUT_SECONDS)
+                    run_cli_command(
+                        cmd,
+                        cwd=workspace,
+                        log_file=log_file,
+                        timeout=QC_TIMEOUT_SECONDS,
+                        cancel_check=_cancel_check,
+                    )
+            except (JobCancelledError, CLICancelledError):
+                raise
             except (SubprocessFailed, CLIExecutionError, OSError) as exc:
                 logger.error("PLINK2 gagal pada tahap QC: %s; menghentikan pipeline.", exc)
                 append_log(log_file, f"[ERROR] PLINK2 gagal dieksekusi ({exc}); proses dihentikan tanpa fallback Python.")
@@ -223,7 +235,15 @@ def run_qc_pipeline(
                 for cmd in commands:
                     ensure_not_cancelled(job_id, db)
                     append_log(log_file, f"Menjalankan: {' '.join(cmd)}")
-                    run_cli_command(cmd, cwd=workspace, log_file=log_file, timeout=QC_TIMEOUT_SECONDS)
+                    run_cli_command(
+                        cmd,
+                        cwd=workspace,
+                        log_file=log_file,
+                        timeout=QC_TIMEOUT_SECONDS,
+                        cancel_check=_cancel_check,
+                    )
+            except (JobCancelledError, CLICancelledError):
+                raise
             except (SubprocessFailed, CLIExecutionError, OSError) as exc:
                 logger.error("PLINK 1.9 gagal pada tahap QC: %s; menghentikan pipeline.", exc)
                 append_log(log_file, f"[ERROR] PLINK 1.9 gagal dieksekusi ({exc}); proses dihentikan tanpa fallback Python.")
@@ -342,7 +362,7 @@ def run_qc_pipeline(
             "log_file": str(log_file),
         }
 
-    except JobCancelledError:
+    except (JobCancelledError, CLICancelledError):
         logger.info("QC pipeline dibatalkan oleh user: job=%s", job_id)
         raise
     except SoftTimeLimitExceeded as exc:

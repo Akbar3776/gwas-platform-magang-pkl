@@ -6,16 +6,22 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 import uuid
 
 from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep
 from app.services.qc_service import MAX_32BIT_POS, filter_vcf_32bit_overflow
-from app.tasks._common import JobCancelledError, ensure_not_cancelled, guard_status_change, which_tool
+from app.tasks._common import (
+    JobCancelledError,
+    ensure_not_cancelled,
+    guard_status_change,
+    is_job_cancelled,
+    which_tool,
+)
 from app.tasks.celery_app import celery_app, get_task_logger
-from app.utils.process import CLIExecutionError, run_cli_command
+from app.utils.process import CLICancelledError, CLIExecutionError, run_cli_command
 
 logger = get_task_logger(__name__)
 NORMALIZATION_TIMEOUT_SECONDS = int(os.getenv("NORMALIZATION_TIMEOUT_SECONDS", str(2 * 60 * 60)))
@@ -53,7 +59,14 @@ def _friendly_error(exc: Exception) -> str:
     return str(exc)
 
 
-def _index_normalized_vcf(bcftools_bin: str, output_path: Path, workspace: Path, log_path: Path) -> None:
+def _index_normalized_vcf(
+    bcftools_bin: str,
+    output_path: Path,
+    workspace: Path,
+    log_path: Path,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+) -> None:
     """Index VCF using TBI, with automatic fallback to CSI for large chromosomes (>512Mb)."""
     try:
         run_cli_command(
@@ -61,7 +74,10 @@ def _index_normalized_vcf(bcftools_bin: str, output_path: Path, workspace: Path,
             cwd=workspace,
             log_file=log_path,
             timeout=600,
+            cancel_check=cancel_check,
         )
+    except (JobCancelledError, CLICancelledError):
+        raise
     except Exception as tbi_exc:
         logger.warning(
             "Index TBI gagal (%s), beralih membuat index CSI (mendukung koordinat >512Mb)...",
@@ -77,7 +93,10 @@ def _index_normalized_vcf(bcftools_bin: str, output_path: Path, workspace: Path,
                 cwd=workspace,
                 log_file=log_path,
                 timeout=600,
+                cancel_check=cancel_check,
             )
+        except (JobCancelledError, CLICancelledError):
+            raise
         except Exception as csi_exc:
             logger.warning(
                 "Index CSI juga gagal (%s); melanjutkan pipeline tanpa index.",
@@ -172,6 +191,10 @@ def run_vcf_normalization(
             "overflow_removed": 0,
             "max_pos": MAX_32BIT_POS,
         }
+
+        def _cancel_check() -> bool:
+            return is_job_cancelled(job_id)
+
         try:
             # Header-only read validates that bcftools recognizes the input as VCF/BCF.
             run_cli_command(
@@ -179,6 +202,7 @@ def run_vcf_normalization(
                 cwd=workspace,
                 log_file=log_path,
                 timeout=NORMALIZATION_TIMEOUT_SECONDS,
+                cancel_check=_cancel_check,
             )
 
             # Fase 0. Additional (QC Overflowing):
@@ -205,6 +229,7 @@ def run_vcf_normalization(
                 cwd=workspace,
                 log_file=log_path,
                 timeout=NORMALIZATION_TIMEOUT_SECONDS,
+                cancel_check=_cancel_check,
             )
             clean_vcf_path.unlink(missing_ok=True)
 
@@ -214,10 +239,15 @@ def run_vcf_normalization(
                     cwd=workspace,
                     log_file=log_path,
                     timeout=NORMALIZATION_TIMEOUT_SECONDS,
+                    cancel_check=_cancel_check,
                 )
                 sorted_path.unlink(missing_ok=True)
             else:
                 sorted_path.replace(output_path)
+        except (JobCancelledError, CLICancelledError):
+            clean_vcf_path.unlink(missing_ok=True)
+            sorted_path.unlink(missing_ok=True)
+            raise
         except Exception as cli_exc:
             clean_vcf_path.unlink(missing_ok=True)
             sorted_path.unlink(missing_ok=True)
@@ -229,7 +259,13 @@ def run_vcf_normalization(
             raise
 
         if output_path.is_file():
-            _index_normalized_vcf(bcftools_bin, output_path, workspace, log_path)
+            _index_normalized_vcf(
+                bcftools_bin,
+                output_path,
+                workspace,
+                log_path,
+                cancel_check=_cancel_check,
+            )
 
         if not output_path.is_file():
             raise RuntimeError("Normalisasi selesai tetapi file VCF hasil normalisasi tidak ditemukan")
@@ -269,7 +305,7 @@ def run_vcf_normalization(
             "qc_overflow_stats": overflow_stats,
             "log_file": str(log_path),
         }
-    except JobCancelledError:
+    except (JobCancelledError, CLICancelledError):
         logger.info("Normalisasi VCF dibatalkan: job=%s", job_id)
         raise
     except Exception as exc:

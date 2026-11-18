@@ -22,6 +22,7 @@ from app.tasks._common import (
     JobCancelledError,
     append_log,
     ensure_not_cancelled,
+    is_job_cancelled,
     mark_job,
     stage_dir,
     upsert_result,
@@ -29,7 +30,7 @@ from app.tasks._common import (
     write_json,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
-from app.utils.process import CLIExecutionError, run_cli_command
+from app.utils.process import CLICancelledError, CLIExecutionError, run_cli_command
 
 logger = get_task_logger(__name__)
 
@@ -322,6 +323,9 @@ def run_imputation(
         )
 
         if can_run_beagle:
+            def _cancel_check() -> bool:
+                return is_job_cancelled(job_id)
+
             try:
                 run_cli_command(
                     command,
@@ -329,7 +333,10 @@ def run_imputation(
                     log_file=log_file,
                     timeout=IMPUTATION_TIMEOUT_SECONDS,
                     preexec_fn=make_memory_limited_preexec_fn(rlimit_bytes) if os.name != "nt" else None,
+                    cancel_check=_cancel_check,
                 )
+            except (JobCancelledError, CLICancelledError):
+                raise
             except CLIExecutionError as exc:
                 err_text = " ".join(exc.last_lines)
                 is_beagle_overflow = (
@@ -389,7 +396,13 @@ def run_imputation(
                     "--out", str(output_prefix),
                 ]
                 append_log(log_file, f"Konversi balik PLINK bed: {' '.join(conv_cmd)}")
-                run_cli_command(conv_cmd, cwd=workspace, log_file=log_file, timeout=IMPUTATION_TIMEOUT_SECONDS)
+                run_cli_command(
+                    conv_cmd,
+                    cwd=workspace,
+                    log_file=log_file,
+                    timeout=IMPUTATION_TIMEOUT_SECONDS,
+                    cancel_check=_cancel_check,
+                )
 
             append_log(log_file, f"[SUCCESS] Imputasi selesai: {output_vcf} ({output_vcf.stat().st_size} bytes).\n")
             upsert_result(db, job_id, ResultType.IMPUTED_VCF, str(output_vcf))
@@ -439,7 +452,7 @@ def run_imputation(
                 "log_file": str(log_file),
             }
 
-    except JobCancelledError:
+    except (JobCancelledError, CLICancelledError):
         logger.info("Imputasi dibatalkan: job=%s", job_id)
         raise
     except Exception as exc:

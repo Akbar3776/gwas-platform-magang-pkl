@@ -24,6 +24,7 @@ from app.tasks._common import (
     append_log,
     ensure_not_cancelled,
     guard_status_change,
+    is_job_cancelled,
     mark_job,
     stage_dir,
     upsert_result,
@@ -31,7 +32,7 @@ from app.tasks._common import (
     write_json,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
-from app.utils.process import CLIExecutionError, SubprocessFailed, run_cli_command
+from app.utils.process import CLICancelledError, CLIExecutionError, SubprocessFailed, run_cli_command
 
 logger = get_task_logger(__name__)
 
@@ -190,7 +191,13 @@ def run_postgwas_analysis(
             ]
             try:
                 append_log(log_file, f"Menjalankan PLINK2 Clumping: {' '.join(clump_cmd)}")
-                run_cli_command(clump_cmd, cwd=workspace, log_file=log_file, timeout=1800)
+                run_cli_command(
+                    clump_cmd,
+                    cwd=workspace,
+                    log_file=log_file,
+                    timeout=1800,
+                    cancel_check=lambda: is_job_cancelled(job_id),
+                )
                 ran_plink_clump = True
                 clumps_output = workspace / "clumped.clumps"
                 if clumps_output.is_file():
@@ -218,6 +225,8 @@ def run_postgwas_analysis(
                                 })
                             except (ValueError, KeyError):
                                 continue
+            except (JobCancelledError, CLICancelledError):
+                raise
             except Exception as exc:
                 logger.error("PLINK2 Clump gagal: %s; menghentikan pipeline.", exc)
                 append_log(log_file, f"[ERROR] PLINK2 Clump gagal ({exc}); proses dihentikan tanpa fallback Python.")
@@ -382,7 +391,7 @@ def run_postgwas_analysis(
             "thresholds_json_path": str(thresholds_file),
         }
 
-    except JobCancelledError:
+    except (JobCancelledError, CLICancelledError):
         logger.info("Post-GWAS dibatalkan: job=%s", job_id)
         raise
     except Exception as exc:

@@ -98,6 +98,16 @@ def guard_status_change(db: Any, job_id: Any, new_status: JobStatus | None) -> b
     raise JobCancelledError(f"Job {job_id} telah dibatalkan oleh pengguna.")
 
 
+def is_job_cancelled(job_id: str) -> bool:
+    """Return True if the persisted job status is CANCELLED; DB errors return False."""
+    try:
+        with SessionLocal() as db:
+            return current_status(db, job_id) == JobStatus.CANCELLED
+    except Exception as exc:
+        logger.warning("Cek pembatalan gagal untuk job %s: %s", job_id, exc)
+        return False
+
+
 def mark_job(
     target: Any,
     job_or_none: Any = None,

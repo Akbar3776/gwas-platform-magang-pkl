@@ -91,6 +91,45 @@ class CLITimeoutError(CLIExecutionError):
         )
 
 
+class CLICancelledError(CLIExecutionError):
+    """Raised when a CLI process is terminated because its job was cancelled."""
+
+    def __init__(
+        self,
+        cmd: Sequence[str],
+        log_file: Path,
+        last_lines: Sequence[str] = (),
+    ) -> None:
+        tail = "".join(last_lines).strip()
+        detail = f" Pesan terakhir: {tail}" if tail else ""
+        super().__init__(
+            cmd,
+            f"Command dibatalkan oleh pengguna: {' '.join(map(str, cmd))}.{detail} "
+            f"Log lengkap: {log_file}",
+            returncode=None,
+            log_file=log_file,
+            last_lines=last_lines,
+        )
+
+
+def _drain_output_queue(
+    output_queue: queue.Queue[tuple[str, str | None]],
+    log,
+    recent_lines: deque[str],
+    on_line: LineCallback | None,
+) -> None:
+    while True:
+        try:
+            kind, line = output_queue.get_nowait()
+        except queue.Empty:
+            break
+        if kind == "line" and line is not None:
+            log.write(line)
+            recent_lines.append(line)
+            if on_line is not None:
+                on_line(line.rstrip("\r\n"))
+
+
 def _reader(stream, output_queue: queue.Queue[tuple[str, str | None]]) -> None:
     try:
         for line in iter(stream.readline, ""):
@@ -146,6 +185,8 @@ def run_cli_command(
     env: Mapping[str, str] | None = None,
     tail_lines: int = 40,
     preexec_fn: Callable[[], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    cancel_poll_seconds: float = 5.0,
 ) -> CLIExecutionResult:
     """Run a CLI command while streaming output to a log file.
 
@@ -158,6 +199,8 @@ def run_cli_command(
         raise ValueError("command harus berupa list argumen string yang tidak kosong")
     if timeout is not None and timeout <= 0:
         raise ValueError("timeout harus lebih besar dari 0")
+    if cancel_poll_seconds <= 0:
+        raise ValueError("cancel_poll_seconds harus lebih besar dari 0")
 
     command = tuple(command)
     log_path = Path(log_file)
@@ -197,21 +240,22 @@ def run_cli_command(
     with log_path.open("a", encoding="utf-8", buffering=1) as log:
         log.write(f"\n$ {' '.join(command)}\n")
         stream_closed = False
+        last_cancel_check = started_at
         while not stream_closed or process.poll() is None:
-            if timeout is not None and time.monotonic() - started_at > timeout:
+            now = time.monotonic()
+            if timeout is not None and now - started_at > timeout:
                 _terminate_process(process)
-                while True:
-                    try:
-                        kind, line = output_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    if kind == "line" and line is not None:
-                        log.write(line)
-                        recent_lines.append(line)
-                        if on_line is not None:
-                            on_line(line.rstrip("\r\n"))
+                _drain_output_queue(output_queue, log, recent_lines, on_line)
                 log.write(f"\n[TIMEOUT] Proses dihentikan setelah {timeout:g} detik\n")
                 raise CLITimeoutError(command, timeout, log_path, tuple(recent_lines))
+
+            if cancel_check is not None and now - last_cancel_check >= cancel_poll_seconds:
+                last_cancel_check = now
+                if cancel_check():
+                    _terminate_process(process)
+                    _drain_output_queue(output_queue, log, recent_lines, on_line)
+                    log.write("\n[CANCELLED] Proses dihentikan karena job dibatalkan\n")
+                    raise CLICancelledError(command, log_path, tuple(recent_lines))
 
             try:
                 kind, line = output_queue.get(timeout=0.1)
