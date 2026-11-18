@@ -31,6 +31,7 @@ from app.services.phenotype_service import (
     load_phenotype_table,
     read_vcf_sample_ids,
 )
+from app.tasks._common import is_under_storage, remove_job_storage
 from app.tasks.upload_tasks import assemble_dataset_task
 
 router = APIRouter(prefix="/upload", tags=["upload"])
@@ -44,13 +45,7 @@ def _owned_dataset(file_id: uuid.UUID, user: User, db: Session) -> Dataset:
 
 
 def _under_storage(p: Path) -> bool:
-    root = Path(settings.STORAGE_ROOT).resolve()
-    try:
-        resolved = p.resolve()
-        resolved.relative_to(root)
-        return resolved != root
-    except ValueError:
-        return False
+    return is_under_storage(p)
 
 
 @router.get("/datasets")
@@ -278,34 +273,38 @@ def delete_uploaded_dataset(
                 detail="File tidak dapat dihapus karena sedang digunakan oleh job yang sedang berjalan.",
             )
 
-    # Hapus file fisik dataset dan direktori staging
-    if dataset.storage_path:
-        raw_path = Path(dataset.storage_path)
+    raw_path_str = dataset.storage_path
+    norm_path_str = dataset.normalized_vcf_path
+    staging_dir = Path(settings.STORAGE_ROOT) / "staging" / str(dataset.id)
+    job_cleanup_targets = [(job.id, job.work_dir) for job in related_jobs]
+
+    now = datetime.now(timezone.utc)
+    dataset.deleted_at = now
+    dataset.storage_path = ""
+    for job in related_jobs:
+        job.deleted_at = now
+        job.work_dir = None
+
+    db.commit()
+
+    # Hapus file fisik dataset, staging, dan seluruh direktori job setelah commit DB
+    if raw_path_str:
+        raw_path = Path(raw_path_str)
         if _under_storage(raw_path):
             raw_path.unlink(missing_ok=True)
             if raw_path.parent.is_dir() and raw_path.parent.name == str(dataset.id) and _under_storage(raw_path.parent):
                 shutil.rmtree(raw_path.parent, ignore_errors=True)
 
-    if dataset.normalized_vcf_path:
-        norm_path = Path(dataset.normalized_vcf_path)
+    if norm_path_str:
+        norm_path = Path(norm_path_str)
         if _under_storage(norm_path):
             norm_path.unlink(missing_ok=True)
 
-    staging_dir = Path(settings.STORAGE_ROOT) / "staging" / str(dataset.id)
     if staging_dir.is_dir() and _under_storage(staging_dir):
         shutil.rmtree(staging_dir, ignore_errors=True)
 
-    now = datetime.now(timezone.utc)
-    dataset.deleted_at = now
-    dataset.storage_path = ""
-
-    for job in related_jobs:
-        job.deleted_at = now
-        job_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job.id)
-        if job_dir.is_dir() and _under_storage(job_dir):
-            shutil.rmtree(job_dir, ignore_errors=True)
-
-    db.commit()
+    for job_id, work_dir in job_cleanup_targets:
+        remove_job_storage(job_id, work_dir)
     return {
         "file_id": str(dataset.id),
         "original_filename": dataset.original_filename,

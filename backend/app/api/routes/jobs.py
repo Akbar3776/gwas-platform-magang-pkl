@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 import gzip
 import os
 from pathlib import Path
-import shutil
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -37,6 +36,7 @@ from app.db.engine.models import (
 )
 from app.schemas.jobs import JobStatusResponse, JobTriggerResponse, QCJobRequest, StepLogEntry
 from app.services.manhattan_parser import compute_assoc_summary_stats
+from app.tasks._common import remove_job_storage
 from app.tasks.celery_app import celery_app
 from app.tasks.qc_tasks import run_qc_pipeline
 
@@ -737,17 +737,18 @@ def cancel_job(
             "detail": f"Job sudah berstatus {job.overall_status.value}.",
         }
 
-    if job.celery_task_id and hasattr(celery_app, "control"):
-        try:
-            celery_app.control.revoke(job.celery_task_id, terminate=True)
-        except Exception:
-            pass
-
+    celery_task_id = job.celery_task_id
     now = datetime.now(timezone.utc)
     job.overall_status = JobStatus.CANCELLED
     job.completed_at = now
     job.error_message = "Job dihentikan oleh pengguna."
     db.commit()
+
+    if celery_task_id and hasattr(celery_app, "control"):
+        try:
+            celery_app.control.revoke(celery_task_id, terminate=True)
+        except Exception:
+            pass
 
     return {
         "job_id": str(job.id),
@@ -866,12 +867,10 @@ def delete_job(
     if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
+    celery_task_id = job.celery_task_id
+    work_dir = job.work_dir
+
     if job.overall_status not in TERMINAL_JOB_STATUSES:
-        if job.celery_task_id and hasattr(celery_app, "control"):
-            try:
-                celery_app.control.revoke(job.celery_task_id, terminate=True)
-            except Exception:
-                pass
         job.overall_status = JobStatus.CANCELLED
         job.error_message = "Job dihentikan dan dihapus oleh pengguna."
 
@@ -879,13 +878,23 @@ def delete_job(
     job.deleted_at = now
     if job.completed_at is None:
         job.completed_at = now
+    job.work_dir = None
 
-    job_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job.id)
-    if job_dir.is_dir():
-        shutil.rmtree(job_dir, ignore_errors=True)
-
+    # Commit deleted state before revoking/cleaning so active workers immediately see deleted_at.
     db.commit()
+
+    if celery_task_id and hasattr(celery_app, "control"):
+        try:
+            celery_app.control.revoke(celery_task_id, terminate=True)
+        except Exception:
+            pass
+
+    job_id_str = str(job.id)
+    for cache_key in [key for key in _FILE_COUNT_CACHE if key[0] == job_id_str]:
+        _FILE_COUNT_CACHE.pop(cache_key, None)
+
+    remove_job_storage(job.id, work_dir)
     return {
-        "job_id": str(job.id),
+        "job_id": job_id_str,
         "deleted": True,
     }

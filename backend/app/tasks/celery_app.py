@@ -17,13 +17,21 @@ from typing import Any, Callable
 from app.core.config import settings
 
 try:
-    from celery import Celery, Task, chain
+    from celery import Celery, Task as _CeleryTask, chain
     from celery.canvas import Signature
     from celery.exceptions import SoftTimeLimitExceeded
     from celery.schedules import crontab
+    from celery.signals import task_postrun
     from celery.utils.log import get_task_logger
 
     _HAS_CELERY = True
+
+    class Task(_CeleryTask):  # type: ignore[no-redef]
+        def __call__(self, *args: Any, **kwargs: Any) -> Any:
+            try:
+                return super().__call__(*args, **kwargs)
+            finally:
+                _cleanup_deleted_job_after_task(kwargs.get("job_id"))
 except ImportError:  # pragma: no cover - local fallback when celery is not installed
     _HAS_CELERY = False
 
@@ -86,9 +94,12 @@ except ImportError:  # pragma: no cover - local fallback when celery is not inst
             functools.update_wrapper(self, func)
 
         def __call__(self, *args: Any, **kwargs: Any) -> Any:
-            if self._bind:
-                return self._func(self._self_obj, *args, **kwargs)
-            return self._func(*args, **kwargs)
+            try:
+                if self._bind:
+                    return self._func(self._self_obj, *args, **kwargs)
+                return self._func(*args, **kwargs)
+            finally:
+                _cleanup_deleted_job_after_task(kwargs.get("job_id"))
 
         def delay(self, *args: Any, **kwargs: Any) -> _AsyncResult:
             return self.s(*args, **kwargs).apply_async()
@@ -130,6 +141,7 @@ celery_app = Celery(
     "gwas_pipeline",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
+    task_cls=Task,
     include=[
         "app.tasks.upload_tasks",
         "app.tasks.inspection_tasks",
@@ -170,3 +182,22 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(hour=0, minute=0),
     },
 }
+
+
+def _cleanup_deleted_job_after_task(job_id: Any) -> None:
+    """Sweeps residual files on disk if a job was deleted while a worker stage was active."""
+    if not job_id:
+        return
+    try:
+        from app.tasks._common import cleanup_if_job_deleted
+
+        cleanup_if_job_deleted(str(job_id))
+    except Exception:
+        pass
+
+
+if _HAS_CELERY:
+    @task_postrun.connect
+    def _on_celery_task_postrun(kwargs=None, **_extra: Any) -> None:
+        if isinstance(kwargs, dict):
+            _cleanup_deleted_job_after_task(kwargs.get("job_id"))

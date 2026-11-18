@@ -24,6 +24,91 @@ class JobCancelledError(RuntimeError):
     """Raised when an active task detects that the job was cancelled by the user."""
 
 
+def is_under_storage(path: Path) -> bool:
+    """Return True when resolved path is strictly inside settings.STORAGE_ROOT."""
+    root = Path(settings.STORAGE_ROOT).resolve()
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(root)
+        return resolved != root
+    except (OSError, ValueError):
+        return False
+
+
+def remove_tree_under_storage(path: Path) -> int:
+    """Safely remove a directory strictly under STORAGE_ROOT and return freed bytes."""
+    if not is_under_storage(path) or not path.is_dir():
+        return 0
+    try:
+        size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+        shutil.rmtree(path)
+        return size
+    except OSError as exc:
+        logger.warning("Gagal menghapus direktori storage %s: %s", path, exc)
+        return 0
+
+
+def _is_deleted_value(value: Any) -> bool:
+    """Only treat an explicit datetime/timestamp (not MagicMock placeholders) as deleted."""
+    return isinstance(value, (datetime, str)) and bool(value)
+
+
+def remove_job_storage(job_id: uuid.UUID | str, work_dir: str | None = None) -> int:
+    """Remove STORAGE_ROOT/jobs/<job_id> and any additional work_dir inside STORAGE_ROOT."""
+    freed = remove_tree_under_storage(Path(settings.STORAGE_ROOT) / "jobs" / str(job_id))
+    if work_dir and isinstance(work_dir, (str, Path)):
+        wd = Path(work_dir)
+        storage_root = Path(settings.STORAGE_ROOT).resolve()
+        try:
+            wd_resolved = wd.resolve()
+        except OSError:
+            return freed
+        if wd_resolved.parent != storage_root and wd.exists():
+            freed += remove_tree_under_storage(wd)
+    return freed
+
+
+def cleanup_if_job_deleted(job_id: str | None, db: Any = None) -> int:
+    """Remove residual job storage directory if the job record is marked deleted in DB."""
+    if not job_id:
+        return 0
+    try:
+        target_id = uuid.UUID(str(job_id))
+    except (ValueError, TypeError):
+        return 0
+    close_db = False
+    if db is None:
+        db = SessionLocal()
+        close_db = True
+    try:
+        try:
+            row = (
+                db.query(AnalysisJob.deleted_at, AnalysisJob.work_dir)
+                .filter(AnalysisJob.id == target_id)
+                .first()
+            )
+        except Exception:
+            job = db.get(AnalysisJob, target_id)
+            row = (
+                (getattr(job, "deleted_at", None), getattr(job, "work_dir", None))
+                if job is not None
+                else None
+            )
+        if row is None:
+            return 0
+        deleted_at = row[0] if isinstance(row, tuple) else getattr(row, "deleted_at", None)
+        work_dir = row[1] if isinstance(row, tuple) else getattr(row, "work_dir", None)
+        if not _is_deleted_value(deleted_at):
+            return 0
+        return remove_job_storage(target_id, work_dir)
+    except Exception as exc:
+        logger.warning("Cek hapus storage job %s gagal: %s", job_id, exc)
+        return 0
+    finally:
+        if close_db:
+            db.close()
+
+
 def stage_dir(job_id: str, stage: str) -> Path:
     """Return and create the working directory for a given pipeline stage."""
     target = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / stage
@@ -62,6 +147,9 @@ def ensure_not_cancelled(job_id: str, db: Any = None, run_id: str | None = None)
             job = db.get(AnalysisJob, target_id)
         if job is None:
             return
+        if _is_deleted_value(getattr(job, "deleted_at", None)):
+            remove_job_storage(job_id, getattr(job, "work_dir", None))
+            raise JobCancelledError(f"Job {job_id} telah dihapus oleh pengguna.")
         status_val = job.overall_status.value if hasattr(job.overall_status, "value") else str(job.overall_status)
         if status_val == JobStatus.CANCELLED.value:
             raise JobCancelledError(f"Job {job_id} telah dibatalkan oleh pengguna.")
@@ -75,28 +163,51 @@ def ensure_not_cancelled(job_id: str, db: Any = None, run_id: str | None = None)
             db.close()
 
 
-def current_status(db: Any, job_id: Any) -> JobStatus | None:
+def _job_guard_state(db: Any, job_id: Any) -> tuple[JobStatus | None, bool, str | None]:
     try:
         target_id = uuid.UUID(str(job_id))
     except (ValueError, TypeError):
-        return None
-    q = db.query(AnalysisJob.overall_status).filter(AnalysisJob.id == target_id)
-    if hasattr(q, "with_for_update") and hasattr(q, "scalar"):
-        return q.with_for_update().scalar()
-    job = db.get(AnalysisJob, str(job_id))
-    return getattr(job, "overall_status", None) if job is not None else None
+        return None, False, None
+    q = db.query(AnalysisJob.overall_status, AnalysisJob.deleted_at, AnalysisJob.work_dir).filter(
+        AnalysisJob.id == target_id
+    )
+    if hasattr(q, "with_for_update") and hasattr(q, "first"):
+        row = q.with_for_update().first()
+        if row is None:
+            return None, False, None
+        return row[0], _is_deleted_value(row[1]), row[2]
+    job = db.get(AnalysisJob, target_id)
+    if job is None:
+        return None, False, None
+    return (
+        getattr(job, "overall_status", None),
+        _is_deleted_value(getattr(job, "deleted_at", None)),
+        getattr(job, "work_dir", None),
+    )
+
+
+def current_status(db: Any, job_id: Any) -> JobStatus | None:
+    status_val, _, _ = _job_guard_state(db, job_id)
+    return status_val
 
 
 def guard_status_change(db: Any, job_id: Any, new_status: JobStatus | None) -> bool:
     """
     Kembalikan True jika status boleh ditulis.
+    - Job sudah dihapus -> bersihkan sisa folder job, return False untuk FAILED/CANCELLED, atau raise JobCancelledError
     - Job sudah CANCELLED + new_status FAILED/CANCELLED -> False (biarkan CANCELLED, jangan raise)
     - Job sudah CANCELLED + new_status lain (RUNNING_*, COMPLETED, ...) -> raise JobCancelledError
     - Selain itu -> True
     """
+    status_val, is_deleted, work_dir = _job_guard_state(db, job_id)
+    if is_deleted:
+        remove_job_storage(job_id, work_dir)
+        if new_status is None or new_status in {JobStatus.FAILED, JobStatus.CANCELLED}:
+            return False
+        raise JobCancelledError(f"Job {job_id} telah dihapus oleh pengguna.")
     if new_status is None:
         return True
-    if current_status(db, job_id) != JobStatus.CANCELLED:
+    if status_val != JobStatus.CANCELLED:
         return True
     if new_status in {JobStatus.FAILED, JobStatus.CANCELLED}:
         return False
@@ -104,7 +215,7 @@ def guard_status_change(db: Any, job_id: Any, new_status: JobStatus | None) -> b
 
 
 def is_job_cancelled(job_id: str, run_id: str | None = None) -> bool:
-    """Return True if persisted job is CANCELLED or has a different run_id; DB errors return False."""
+    """Return True if persisted job is CANCELLED, deleted, or has a different run_id; DB errors return False."""
     try:
         with SessionLocal() as db:
             try:
@@ -112,14 +223,16 @@ def is_job_cancelled(job_id: str, run_id: str | None = None) -> bool:
             except (ValueError, TypeError):
                 return False
             row = (
-                db.query(AnalysisJob.overall_status, AnalysisJob.parameters)
+                db.query(AnalysisJob.overall_status, AnalysisJob.parameters, AnalysisJob.deleted_at)
                 .filter(AnalysisJob.id == target_id)
                 .first()
             )
             if row is None:
                 return False
-            status_val, params = row[0], row[1]
-            if status_val == JobStatus.CANCELLED:
+            status_val = row[0]
+            params = row[1]
+            deleted_at = row[2] if len(row) > 2 else None
+            if _is_deleted_value(deleted_at) or status_val == JobStatus.CANCELLED:
                 return True
             if run_id is not None and isinstance(params, dict):
                 stored_run_id = params.get("run_id")
