@@ -453,6 +453,7 @@ def trigger_qc_job(
             ),
         )
 
+    run_id = str(uuid.uuid4())
     job = AnalysisJob(
         dataset_id=dataset.id,
         triggered_by=user.id,
@@ -464,13 +465,14 @@ def trigger_qc_job(
             "geno": payload.geno,
             "mind": payload.mind,
             "hwe": payload.hwe,
+            "run_id": run_id,
         },
     )
     db.add(job)
     db.commit()
     db.refresh(job)
 
-    task = run_qc_pipeline.delay(None, str(job.id), str(dataset.id), job.parameters)
+    task = run_qc_pipeline.delay(None, str(job.id), str(dataset.id), job.parameters, run_id=run_id)
 
     return JobTriggerResponse(
         job_id=job.id,
@@ -765,6 +767,10 @@ def retry_job(
     if from_scratch or job.started_at is None:
         job.started_at = datetime.now(timezone.utc)
 
+    run_id = str(uuid.uuid4())
+    job.parameters = {**(job.parameters or {}), "run_id": run_id}
+    db.commit()
+
     task_id, start_idx, start_stage = trigger_retry_pipeline(
         job_id=str(job.id),
         dataset_id=str(dataset.id),
@@ -772,6 +778,7 @@ def retry_job(
         job_parameters=job.parameters or {},
         failed_step=previous_failed_step,
         from_scratch=from_scratch,
+        run_id=run_id,
     )
 
     new_status, new_step = STAGE_TO_JOB_STATE.get(

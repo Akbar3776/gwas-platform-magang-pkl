@@ -50,6 +50,7 @@ def run_postgwas_analysis(
     dataset_id: str,
     threshold_params: dict[str, Any] | None = None,
     clump_params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Menjalankan kalkulasi pasca-GWAS:
@@ -60,7 +61,7 @@ def run_postgwas_analysis(
     db = SessionLocal()
     ctx: dict[str, Any] = dict(gwas_result or {})
     try:
-        ensure_not_cancelled(job_id, db)
+        ensure_not_cancelled(job_id, db, run_id=run_id)
         job = db.get(AnalysisJob, job_id)
         if job is None:
             raise ValueError(f"AnalysisJob {job_id} tidak ditemukan")
@@ -196,7 +197,7 @@ def run_postgwas_analysis(
                     cwd=workspace,
                     log_file=log_file,
                     timeout=1800,
-                    cancel_check=lambda: is_job_cancelled(job_id),
+                    cancel_check=lambda: is_job_cancelled(job_id, run_id=run_id),
                 )
                 ran_plink_clump = True
                 clumps_output = workspace / "clumped.clumps"

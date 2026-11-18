@@ -43,6 +43,7 @@ def run_inspection(
     job_id: str | None = None,
     dataset_id: str | None = None,
     phenotype_cfg: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute Phase 1 Data Inspection and sample ID reconciliation."""
     ctx = ctx or {}
@@ -53,7 +54,7 @@ def run_inspection(
     if not job_id:
         raise ValueError("run_inspection membutuhkan job_id")
 
-    ensure_not_cancelled(job_id)
+    ensure_not_cancelled(job_id, run_id=run_id)
 
     db = SessionLocal()
     try:

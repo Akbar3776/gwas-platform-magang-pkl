@@ -45,6 +45,7 @@ def run_annotation(
     job_id: str,
     dataset_id: str,
     annotation_params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Menjalankan pemetaan Lead SNPs ke gen kandidat terdekat dan gen-gen dalam jendela LD decay
@@ -54,7 +55,7 @@ def run_annotation(
     db = SessionLocal()
     ctx: dict[str, Any] = dict(prev_result or {})
     try:
-        ensure_not_cancelled(job_id, db)
+        ensure_not_cancelled(job_id, db, run_id=run_id)
         job = db.get(AnalysisJob, job_id)
         dataset = db.get(Dataset, dataset_id)
         if job is None:

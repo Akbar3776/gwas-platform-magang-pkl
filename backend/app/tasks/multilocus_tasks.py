@@ -596,6 +596,7 @@ def run_multilocus_gwas(
     job_id: str,
     dataset_id: str,
     params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Menjalankan analisis Multi-Locus GWAS (FarmCPU, BLINK, dan MLMM) bila diaktifkan;
@@ -604,7 +605,7 @@ def run_multilocus_gwas(
     db = SessionLocal()
     ctx: dict[str, Any] = dict(gwas_result or {})
     try:
-        ensure_not_cancelled(job_id, db)
+        ensure_not_cancelled(job_id, db, run_id=run_id)
         job = db.get(AnalysisJob, job_id)
         if job is None:
             raise ValueError(f"AnalysisJob {job_id} tidak ditemukan")

@@ -72,6 +72,7 @@ def run_qc_pipeline(
     job_id: str,
     dataset_id: str,
     qc_params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Run PLINK 2 / PLINK 1.9 Quality Control for one dataset.
@@ -81,7 +82,7 @@ def run_qc_pipeline(
     db = SessionLocal()
     ctx: dict[str, Any] = dict(normalization_result or {})
     try:
-        ensure_not_cancelled(job_id, db)
+        ensure_not_cancelled(job_id, db, run_id=run_id)
         job = db.get(AnalysisJob, job_id)
         dataset = db.get(Dataset, dataset_id)
         if job is None:
@@ -189,7 +190,7 @@ def run_qc_pipeline(
         comparison_data: dict[str, Any] = {}
 
         def _cancel_check() -> bool:
-            return is_job_cancelled(job_id)
+            return is_job_cancelled(job_id, run_id=run_id)
 
         if has_plink2 and plink2_bin:
             commands = build_plink2_qc_commands(
@@ -203,7 +204,7 @@ def run_qc_pipeline(
             )
             try:
                 for cmd in commands:
-                    ensure_not_cancelled(job_id, db)
+                    ensure_not_cancelled(job_id, db, run_id=run_id)
                     append_log(log_file, f"Menjalankan: {' '.join(cmd)}")
                     run_cli_command(
                         cmd,
@@ -233,7 +234,7 @@ def run_qc_pipeline(
             )
             try:
                 for cmd in commands:
-                    ensure_not_cancelled(job_id, db)
+                    ensure_not_cancelled(job_id, db, run_id=run_id)
                     append_log(log_file, f"Menjalankan: {' '.join(cmd)}")
                     run_cli_command(
                         cmd,

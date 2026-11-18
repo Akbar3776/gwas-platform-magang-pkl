@@ -560,17 +560,18 @@ def run_gemma_gwas(
     phenotype_path: str = "",
     model: str = "lmm",
     params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, str]:
     """Run GEMMA kinship and association analysis for an imputed dataset."""
     try:
         check_db = SessionLocal()
         try:
-            ensure_not_cancelled(job_id, check_db)
+            ensure_not_cancelled(job_id, check_db, run_id=run_id)
         finally:
             check_db.close()
 
         def _cancel_check() -> bool:
-            return is_job_cancelled(job_id)
+            return is_job_cancelled(job_id, run_id=run_id)
         params = params or {}
         genotype_path = imputation_result.get("output_vcf") or imputation_result.get("genotype_vcf_path")
         if not genotype_path:

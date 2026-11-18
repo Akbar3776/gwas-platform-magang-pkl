@@ -212,6 +212,7 @@ def run_imputation(
     job_id: str,
     reference_vcf_path: str | None = None,
     params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Run Beagle imputation with explicit JVM and memory bounds.
@@ -220,7 +221,7 @@ def run_imputation(
     db = SessionLocal()
     ctx: dict[str, Any] = dict(qc_result or {})
     try:
-        ensure_not_cancelled(job_id, db)
+        ensure_not_cancelled(job_id, db, run_id=run_id)
         job = db.get(AnalysisJob, job_id)
         if job is None:
             raise ValueError(f"AnalysisJob {job_id} tidak ditemukan")
@@ -324,7 +325,7 @@ def run_imputation(
 
         if can_run_beagle:
             def _cancel_check() -> bool:
-                return is_job_cancelled(job_id)
+                return is_job_cancelled(job_id, run_id=run_id)
 
             try:
                 run_cli_command(

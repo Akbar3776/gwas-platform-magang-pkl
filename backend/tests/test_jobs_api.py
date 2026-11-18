@@ -54,8 +54,9 @@ def test_trigger_qc_creates_pending_job_and_enqueues_task(monkeypatch):
     class FakeTask:
         id = "celery-task-123"
 
-    def fake_delay(*args):
+    def fake_delay(*args, **kwargs):
         task_call["args"] = args
+        task_call["kwargs"] = kwargs
         return FakeTask()
 
     monkeypatch.setattr(jobs.run_qc_pipeline, "delay", fake_delay)

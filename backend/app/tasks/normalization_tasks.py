@@ -123,6 +123,7 @@ def run_vcf_normalization(
     job_id: str | None = None,
     dataset_id: str | None = None,
     params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Validate, sort, optionally normalize, and index one uploaded VCF."""
     if isinstance(prev_result, dict):
@@ -141,7 +142,7 @@ def run_vcf_normalization(
     try:
         db = SessionLocal()
         try:
-            ensure_not_cancelled(job_id, db)
+            ensure_not_cancelled(job_id, db, run_id=run_id)
             job = db.get(AnalysisJob, job_id)
             dataset = db.get(Dataset, dataset_id)
             if job is None:
@@ -193,7 +194,7 @@ def run_vcf_normalization(
         }
 
         def _cancel_check() -> bool:
-            return is_job_cancelled(job_id)
+            return is_job_cancelled(job_id, run_id=run_id)
 
         try:
             # Header-only read validates that bcftools recognizes the input as VCF/BCF.

@@ -70,6 +70,7 @@ def start_pipeline_endpoint(
             imputation_params["map_path"] = map_path
 
     job_id = uuid.uuid4()
+    run_id = str(uuid.uuid4())
     job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
     parameters = {
         "phenotype": payload.phenotype.model_dump(),
@@ -80,6 +81,7 @@ def start_pipeline_endpoint(
         "threshold": payload.threshold.model_dump(),
         "clump": payload.clump.model_dump(),
         "annotation": payload.annotation.model_dump(),
+        "run_id": run_id,
     }
     job = AnalysisJob(
         id=job_id,
@@ -121,6 +123,7 @@ def start_pipeline_endpoint(
             clump_params=payload.clump.model_dump(),
             multilocus_params=multilocus_config,
             annotation_params=payload.annotation.model_dump(),
+            run_id=run_id,
         )
     except Exception as exc:
         db.rollback()

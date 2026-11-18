@@ -45,8 +45,8 @@ def append_log(log_file: Path, message: str, with_timestamp: bool = False) -> No
         logger.warning("Gagal menulis ke log file %s: %s", log_file, exc)
 
 
-def ensure_not_cancelled(job_id: str, db: Any = None) -> None:
-    """Check if the job has been cancelled by the user; raise JobCancelledError if so."""
+def ensure_not_cancelled(job_id: str, db: Any = None, run_id: str | None = None) -> None:
+    """Check if the job has been cancelled or superseded by a newer run_id; raise JobCancelledError if so."""
     close_db = False
     if db is None:
         db = SessionLocal()
@@ -65,6 +65,11 @@ def ensure_not_cancelled(job_id: str, db: Any = None) -> None:
         status_val = job.overall_status.value if hasattr(job.overall_status, "value") else str(job.overall_status)
         if status_val == JobStatus.CANCELLED.value:
             raise JobCancelledError(f"Job {job_id} telah dibatalkan oleh pengguna.")
+        if run_id is not None:
+            job_params = getattr(job, "parameters", None)
+            stored_run_id = job_params.get("run_id") if isinstance(job_params, dict) else None
+            if stored_run_id and str(stored_run_id) != str(run_id):
+                raise JobCancelledError(f"Eksekusi usang: job {job_id} sudah di-retry.")
     finally:
         if close_db:
             db.close()
@@ -98,11 +103,29 @@ def guard_status_change(db: Any, job_id: Any, new_status: JobStatus | None) -> b
     raise JobCancelledError(f"Job {job_id} telah dibatalkan oleh pengguna.")
 
 
-def is_job_cancelled(job_id: str) -> bool:
-    """Return True if the persisted job status is CANCELLED; DB errors return False."""
+def is_job_cancelled(job_id: str, run_id: str | None = None) -> bool:
+    """Return True if persisted job is CANCELLED or has a different run_id; DB errors return False."""
     try:
         with SessionLocal() as db:
-            return current_status(db, job_id) == JobStatus.CANCELLED
+            try:
+                target_id = uuid.UUID(str(job_id))
+            except (ValueError, TypeError):
+                return False
+            row = (
+                db.query(AnalysisJob.overall_status, AnalysisJob.parameters)
+                .filter(AnalysisJob.id == target_id)
+                .first()
+            )
+            if row is None:
+                return False
+            status_val, params = row[0], row[1]
+            if status_val == JobStatus.CANCELLED:
+                return True
+            if run_id is not None and isinstance(params, dict):
+                stored_run_id = params.get("run_id")
+                if stored_run_id and str(stored_run_id) != str(run_id):
+                    return True
+            return False
     except Exception as exc:
         logger.warning("Cek pembatalan gagal untuk job %s: %s", job_id, exc)
         return False

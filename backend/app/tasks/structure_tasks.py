@@ -49,6 +49,7 @@ def run_structure_analysis(
     job_id: str,
     dataset_id: str,
     structure_params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Menjalankan analisis Struktur Populasi (LD pruning + PCA), Kekerabatan (Kinship + KING),
@@ -57,7 +58,7 @@ def run_structure_analysis(
     db = SessionLocal()
     ctx: dict[str, Any] = dict(imputation_or_qc_result or {})
     try:
-        ensure_not_cancelled(job_id, db)
+        ensure_not_cancelled(job_id, db, run_id=run_id)
         job = db.get(AnalysisJob, job_id)
         dataset = db.get(Dataset, dataset_id)
         if job is None:
