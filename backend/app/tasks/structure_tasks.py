@@ -24,12 +24,15 @@ from app.tasks._common import (
     append_log,
     ensure_not_cancelled,
     guard_status_change,
+    is_job_cancelled,
     mark_job,
     stage_dir,
     upsert_result,
+    which_tool,
     write_json,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
+from app.utils.process import CLICancelledError, run_cli_command
 
 logger = get_task_logger(__name__)
 
@@ -105,15 +108,77 @@ def run_structure_analysis(
             f"=== TAHAP 5: STRUKTUR POPULASI, KINSHIP & LD DECAY ===\n"
             f"Waktu mulai        : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
             f"Input Genotipe     : {bfile_prefix}\n"
-            f"Pruning window/r2  : {cfg.prune_window} SNP / r2={cfg.prune_r2}\n"
+            f"Pruning window/r2  : {cfg.prune_window} SNP / step={cfg.prune_step} / r2={cfg.prune_r2}\n"
             f"Jumlah PC          : {cfg.n_pcs}\n"
             f"Jendela LD Decay   : {cfg.ld_decay_window_kb} kb (bin {cfg.ld_decay_bin_kb} kb, cutoff {cfg.ld_decay_r2_cutoff})\n"
         )
 
-        # 1. Baca data PLINK biner
-        samples, variants, G = read_plink_binary(bfile_prefix)
+        # 1. LD pruning via PLINK sebelum PCA/kinship agar hemat memori & tidak bias LD
+        plink_bin = which_tool("plink") or which_tool("plink2")
+        if not plink_bin:
+            raise RuntimeError(
+                "Binary PLINK tidak ditemukan; LD pruning sebelum analisis struktur membutuhkan PLINK."
+            )
+
+        prune_prefix = workspace / "ld_prune"
+        pruned_bfile = workspace / "pruned"
+        prune_cmd = [
+            plink_bin,
+            "--bfile",
+            str(bfile_prefix),
+            "--allow-extra-chr",
+            "--indep-pairwise",
+            str(cfg.prune_window),
+            str(cfg.prune_step),
+            str(cfg.prune_r2),
+            "--out",
+            str(prune_prefix),
+        ]
+        fam_path = Path(f"{bfile_prefix}.fam")
+        if "plink2" in Path(plink_bin).stem.lower() and fam_path.is_file():
+            n_fam = sum(
+                1 for line in fam_path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()
+            )
+            if n_fam < 50:
+                append_log(
+                    log_file,
+                    f"[WARNING] Jumlah sampel ({n_fam}) < 50; menambahkan --bad-ld untuk PLINK 2.",
+                )
+                prune_cmd.append("--bad-ld")
+
+        extract_cmd = [
+            plink_bin,
+            "--bfile",
+            str(bfile_prefix),
+            "--allow-extra-chr",
+            "--extract",
+            f"{prune_prefix}.prune.in",
+            "--make-bed",
+            "--out",
+            str(pruned_bfile),
+        ]
+
+        def _cancel_check() -> bool:
+            return is_job_cancelled(job_id, run_id=run_id)
+
+        for cmd in (prune_cmd, extract_cmd):
+            ensure_not_cancelled(job_id, db, run_id=run_id)
+            append_log(log_file, f"Menjalankan LD pruning PLINK: {' '.join(cmd)}")
+            run_cli_command(
+                cmd,
+                cwd=workspace,
+                log_file=log_file,
+                timeout=1800,
+                cancel_check=_cancel_check,
+            )
+
+        if not Path(f"{pruned_bfile}.bed").is_file():
+            raise FileNotFoundError(f"Output bfile hasil LD pruning tidak ditemukan: {pruned_bfile}")
+
+        # 2. Baca data PLINK biner hasil pruning
+        samples, variants, G = read_plink_binary(str(pruned_bfile))
         n_samples, n_variants = G.shape
-        append_log(log_file, f"Memuat data genotipe: {n_samples} individu x {n_variants} varian.")
+        append_log(log_file, f"Memuat data genotipe hasil pruning: {n_samples} individu x {n_variants} varian.")
 
         # 2. PCA Decomposition
         append_log(log_file, "Menjalankan Principal Component Analysis (PCA)...")
@@ -240,7 +305,7 @@ def run_structure_analysis(
             "ld_decay_data": ld_decay_data,
         }
 
-    except JobCancelledError:
+    except (JobCancelledError, CLICancelledError):
         logger.info("Analisis struktur dibatalkan: job=%s", job_id)
         raise
     except Exception as exc:

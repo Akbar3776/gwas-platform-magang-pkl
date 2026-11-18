@@ -92,6 +92,27 @@ def read_plink_binary(bfile_prefix: str | Path) -> tuple[list[str], list[dict[st
     return samples, variants, G
 
 
+def _impute_and_center_float32(G: np.ndarray, *, standardize: bool = False) -> np.ndarray:
+    """Impute missing genotypes (-1) per column and center (optionally scale) in-place as float32."""
+    M = G.astype(np.float32)
+    missing_mask = G < 0
+    n_variants = G.shape[1]
+    for j in range(n_variants):
+        miss = missing_mask[:, j]
+        if np.any(miss):
+            valid = M[~miss, j]
+            mean_val = float(np.mean(valid)) if len(valid) > 0 else 0.0
+            M[miss, j] = np.float32(mean_val)
+
+    col_means = np.mean(M, axis=0, dtype=np.float32)
+    M -= col_means
+    if standardize:
+        col_stds = np.std(M, axis=0, dtype=np.float32)
+        col_stds[col_stds < 1e-6] = np.float32(1.0)
+        M /= col_stds
+    return M
+
+
 def run_pca_decomposition(
     G: np.ndarray,
     sample_ids: list[str],
@@ -100,7 +121,7 @@ def run_pca_decomposition(
     """
     Melakukan Principal Component Analysis (PCA) pada matriks genotipe:
     - Mengimputasi missing genotypes dengan mean alel.
-    - Menstandarisasi genotipe (center & scale).
+    - Menstandarisasi genotipe (center & scale) secara in-place dalam float32.
     - Menghitung SVD (Singular Value Decomposition).
     - Menghitung eigenvalues, PVE (Proportion of Variance Explained), dan PVE kumulatif.
     - Melakukan k-means clustering sederhana untuk visualisasi sub-populasi.
@@ -118,20 +139,7 @@ def run_pca_decomposition(
         }
 
     k = min(n_pcs, n_samples - 1, n_variants)
-
-    # Imputasi missing values dengan mean kolom
-    M = G.astype(np.float64)
-    missing_mask = (G < 0)
-    for j in range(n_variants):
-        valid = M[~missing_mask[:, j], j]
-        mean_val = float(np.mean(valid)) if len(valid) > 0 else 0.0
-        M[missing_mask[:, j], j] = mean_val
-
-    # Center & standardize
-    col_means = np.mean(M, axis=0)
-    col_stds = np.std(M, axis=0)
-    col_stds[col_stds < 1e-6] = 1.0  # hindari pembagian nol untuk monomorfik
-    M_norm = (M - col_means) / col_stds
+    M_norm = _impute_and_center_float32(G, standardize=True)
 
     # SVD: M_norm = U * S * Vt
     try:
@@ -215,30 +223,21 @@ def compute_centered_kinship(G: np.ndarray) -> np.ndarray:
     """
     Menghitung matriks kekerabatan (GEMMA centered relatedness matrix):
     K = (1 / p) * W * W^T
-    dengan W adalah matriks genotipe yang dipusatkan (centered by mean allele frequency).
+    dengan W adalah matriks genotipe yang dipusatkan in-place dalam float32.
     """
     n_samples, n_variants = G.shape
     if n_variants == 0 or n_samples == 0:
-        return np.eye(n_samples)
+        return np.eye(n_samples, dtype=np.float32)
 
-    M = G.astype(np.float64)
-    missing_mask = (G < 0)
-    for j in range(n_variants):
-        valid = M[~missing_mask[:, j], j]
-        mean_val = float(np.mean(valid)) if len(valid) > 0 else 0.0
-        M[missing_mask[:, j], j] = mean_val
-
-    # W = M - mean
-    col_means = np.mean(M, axis=0)
-    W = M - col_means
+    W = _impute_and_center_float32(G, standardize=False)
 
     # K = W * W.T / p
-    K = np.dot(W, W.T) / max(n_variants, 1)
+    K = np.dot(W, W.T) / np.float32(max(n_variants, 1))
 
     # Normalisasi diagonal rata-rata ke 1
-    mean_diag = np.mean(np.diag(K))
+    mean_diag = float(np.mean(np.diag(K)))
     if mean_diag > 1e-6:
-        K = K / mean_diag
+        K = K / np.float32(mean_diag)
 
     return K
 
@@ -349,18 +348,7 @@ def compute_ld_decay_curve(
     counts = np.zeros(n_bins, dtype=np.int64)
 
     if n_variants >= 2 and n_samples >= 4:
-        # Precompute variance & centered genotypes untuk SNP
-        M = G.astype(np.float64)
-        missing_mask = (G < 0)
-        for j in range(n_variants):
-            valid = M[~missing_mask[:, j], j]
-            mean_val = float(np.mean(valid)) if len(valid) > 0 else 0.0
-            M[missing_mask[:, j], j] = mean_val
-
-        col_means = np.mean(M, axis=0)
-        col_stds = np.std(M, axis=0)
-        col_stds[col_stds < 1e-6] = 1.0
-        M_std = (M - col_means) / col_stds
+        M_std = _impute_and_center_float32(G, standardize=True)
 
         # Group variants by chromosome
         chr_map: dict[str, list[int]] = {}
