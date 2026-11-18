@@ -22,6 +22,7 @@ export function PhenotypeUploader({
 
   const [selectedIdCol, setSelectedIdCol] = useState("IID");
   const [selectedTrait, setSelectedTrait] = useState("");
+  const fileInputRef = useRef(null);
 
   const initialColumnsRef = useRef(initialColumns);
   const initialNumericTraitsRef = useRef(initialNumericTraits);
@@ -146,15 +147,25 @@ export function PhenotypeUploader({
           }}
         >
           <input
+            ref={fileInputRef}
             type="file"
             id="pheno-file-input"
             accept=".txt,.tsv,.csv,.pheno"
             onChange={handleUpload}
             disabled={isUploading || !datasetId}
-            style={{ display: "none" }}
+            className="sr-only"
           />
           <label
             htmlFor="pheno-file-input"
+            role="button"
+            tabIndex={datasetId && !isUploading ? 0 : -1}
+            aria-disabled={isUploading || !datasetId}
+            onKeyDown={(e) => {
+              if (datasetId && !isUploading && (e.key === "Enter" || e.key === " ")) {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
             style={{
               display: "inline-block",
               padding: "8px 16px",

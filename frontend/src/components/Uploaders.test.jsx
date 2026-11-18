@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React, { useState } from "react";
 import { AnnotationUploader } from "./AnnotationUploader";
 import { PhenotypeUploader } from "./PhenotypeUploader";
+import { VcfUploader } from "./VcfUploader";
 import { fetchInspection, uploadAnnotation, uploadPhenotype } from "../api/jobsApi";
 
 jest.mock("../api/jobsApi", () => ({
@@ -100,5 +101,34 @@ describe("Uploaders persist uploaded state across parent re-renders (A11)", () =
     fireEvent.click(screen.getByRole("button", { name: /Re-render/i }));
     expect(screen.getByText("genes.gff3")).toBeInTheDocument();
     expect(screen.getByTestId("has-anno")).toHaveTextContent("true");
+  });
+
+  test("all three file inputs are keyboard-focusable via sr-only and labeled (A13)", () => {
+    const { container } = render(
+      <div>
+        <VcfUploader onDatasetReady={jest.fn()} />
+        <PhenotypeUploader datasetId="ds-1" />
+        <AnnotationUploader datasetId="ds-1" />
+      </div>
+    );
+
+    const vcfInput = screen.getByLabelText(/file VCF/i);
+    const phenoInput = screen.getByLabelText(/File Fenotipe/i);
+    const gffInput = screen.getByLabelText(/File GFF3/i);
+
+    for (const input of [vcfInput, phenoInput, gffInput]) {
+      expect(input).toHaveClass("sr-only");
+      expect(window.getComputedStyle(input).display).not.toBe("none");
+      input.focus();
+      expect(document.activeElement).toBe(input);
+    }
+
+    const vcfTrigger = container.querySelector('[role="button"]');
+    expect(vcfTrigger).toHaveAttribute("tabindex", "0");
+    const clickSpy = jest.spyOn(vcfInput, "click");
+    fireEvent.keyDown(vcfTrigger, { key: "Enter" });
+    fireEvent.keyDown(vcfTrigger, { key: " " });
+    expect(clickSpy).toHaveBeenCalledTimes(2);
+    clickSpy.mockRestore();
   });
 });

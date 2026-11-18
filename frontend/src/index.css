@@ -237,6 +237,22 @@ body {
 .font-medium { font-weight: 600; }
 .uppercase { text-transform: uppercase; }
 .cursor-pointer, button { cursor: pointer; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.upload-dropzone:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
 @media (min-width: 640px) {
   .sm\:flex-row { flex-direction: row; }
 }

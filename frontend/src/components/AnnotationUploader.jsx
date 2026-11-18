@@ -12,6 +12,7 @@ export function AnnotationUploader({
   const [isUploading, setIsUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState(null);
+  const fileInputRef = useRef(null);
 
   const onAnnotationChangedRef = useRef(onAnnotationChanged);
   onAnnotationChangedRef.current = onAnnotationChanged;
@@ -86,15 +87,25 @@ export function AnnotationUploader({
           </div>
           <div>
             <input
+              ref={fileInputRef}
               type="file"
               id="gff-file-input"
               accept=".gff3,.gff,.gff3.gz"
               onChange={handleUpload}
               disabled={isUploading || !datasetId}
-              style={{ display: "none" }}
+              className="sr-only"
             />
             <label
               htmlFor="gff-file-input"
+              role="button"
+              tabIndex={datasetId && !isUploading ? 0 : -1}
+              aria-disabled={isUploading || !datasetId}
+              onKeyDown={(e) => {
+                if (datasetId && !isUploading && (e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  fileInputRef.current?.click();
+                }
+              }}
               style={{
                 display: "inline-block",
                 padding: "6px 14px",

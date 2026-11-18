@@ -73,13 +73,27 @@ export function VcfUploader({ onDatasetReady }) {
   return (
     <div>
       <div
+        role="button"
+        tabIndex={isBusy ? -1 : 0}
+        aria-disabled={isBusy}
+        className="upload-dropzone"
         onDragOver={(e) => {
           e.preventDefault();
           setIsDraggingOver(true);
         }}
         onDragLeave={() => setIsDraggingOver(false)}
         onDrop={handleDrop}
-        onClick={() => !isBusy && fileInputRef.current?.click()}
+        onClick={(e) => {
+          if (!isBusy && e.target !== fileInputRef.current) {
+            fileInputRef.current?.click();
+          }
+        }}
+        onKeyDown={(e) => {
+          if (!isBusy && e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            fileInputRef.current?.click();
+          }
+        }}
         style={{
           border: `2px dashed ${isDraggingOver ? "#2563eb" : "#d1d5db"}`,
           borderRadius: 12,
@@ -90,13 +104,17 @@ export function VcfUploader({ onDatasetReady }) {
           transition: "all 0.15s ease",
         }}
       >
+        <label htmlFor="vcf-file-input" className="sr-only">
+          Pilih file VCF
+        </label>
         <input
+          id="vcf-file-input"
           ref={fileInputRef}
           type="file"
           accept=".vcf,.vcf.gz"
           onChange={handleFileInputChange}
           disabled={isBusy}
-          style={{ display: "none" }}
+          className="sr-only"
         />
 
         {stage === UPLOAD_STAGE.IDLE && (
