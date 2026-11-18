@@ -1,13 +1,15 @@
 from pathlib import Path
+from unittest.mock import MagicMock
 import pytest
 import numpy as np
 
 from app.schemas.pipeline import GWASPipelineConfig
+from app.tasks import multilocus_tasks
 from app.tasks.multilocus_tasks import (
-    SUPPORTED_MULTILOCUS_MODELS,
     _run_python_multilocus_engine,
     generate_peak_comparison,
 )
+from app.utils.process import CLICancelledError
 
 
 def test_gwas_pipeline_config_multilocus_models():
@@ -64,14 +66,14 @@ def test_generate_peak_comparison_with_mlmm(tmp_path):
 
 
 def test_python_multilocus_engine_execution(tmp_path):
-    # Setup mock workspace
+    # Mock workspace (Python fallback phenotype from inspection/pheno_plink.txt)
     job_dir = tmp_path / "jobs" / "test_job_123"
     multilocus_dir = job_dir / "multilocus"
     norm_dir = job_dir / "normalization"
-    gwas_dir = job_dir / "gwas"
+    inspect_dir = job_dir / "inspection"
     multilocus_dir.mkdir(parents=True)
     norm_dir.mkdir(parents=True)
-    gwas_dir.mkdir(parents=True)
+    inspect_dir.mkdir(parents=True)
 
     log_file = multilocus_dir / "multilocus.log"
 
@@ -88,7 +90,7 @@ def test_python_multilocus_engine_execution(tmp_path):
     vcf_path.write_text(vcf_content, encoding="utf-8")
 
     # Mock Phenotype
-    pheno_path = gwas_dir / "phenotype.txt"
+    pheno_path = inspect_dir / "pheno_plink.txt"
     pheno_content = (
         "FID\tIID\tPHENO1\n"
         "S1\tS1\t12.5\n"
@@ -118,3 +120,141 @@ def test_python_multilocus_engine_execution(tmp_path):
     assert (multilocus_dir / "farmcpu_results.tsv").is_file()
     assert (multilocus_dir / "blink_results.tsv").is_file()
     assert (multilocus_dir / "mlmm_results.tsv").is_file()
+
+
+def test_write_gapit_inputs_formats_y_gd_gm_and_imputes_missing(tmp_path, monkeypatch):
+    job_dir = tmp_path / "jobs" / "gapit_job"
+    workspace = job_dir / "multilocus"
+    inspect_dir = job_dir / "inspection"
+    workspace.mkdir(parents=True)
+    inspect_dir.mkdir(parents=True)
+    log_file = workspace / "multilocus.log"
+
+    (inspect_dir / "pheno_plink.txt").write_text(
+        "FID\tIID\tTRAIT\n"
+        "S1\tS1\t10.5\n"
+        "S2\tS2\tNA\n"
+        "S3\tS3\t14.0\n"
+        "S4\tS4\t12.0\n",
+        encoding="utf-8",
+    )
+
+    samples = ["S1", "S2", "S3", "S4"]
+    variants = [
+        {"chrom": "Gm01", "rsid": "rs1", "pos": 100, "a1": "A", "a2": "G"},
+        {"chrom": "Gm01", "rsid": "rs_all_miss", "pos": 200, "a1": "C", "a2": "T"},
+        {"chrom": "Gm02", "rsid": "rs2", "pos": 300, "a1": "G", "a2": "T"},
+    ]
+    g_mat = np.array(
+        [
+            [0, -1, 1],
+            [-1, -1, 2],
+            [2, -1, 0],
+            [2, -1, 1],
+        ],
+        dtype=np.int8,
+    )
+    monkeypatch.setattr(
+        "app.services.structure_service.read_plink_binary",
+        lambda prefix: (samples, variants, g_mat),
+    )
+
+    y_path, gd_path, gm_path = multilocus_tasks._write_gapit_inputs(workspace, log_file)
+
+    y_lines = y_path.read_text(encoding="utf-8").splitlines()
+    assert y_lines[0] == "Taxa\tTRAIT"
+    assert "S2\tNA" in y_lines
+
+    gd_lines = gd_path.read_text(encoding="utf-8").splitlines()
+    assert gd_lines[0] == "taxa\trs1\trs2"
+    for row in gd_lines[1:]:
+        vals = row.split("\t")[1:]
+        assert "-1" not in vals
+        assert len(vals) == 2
+
+    gm_lines = gm_path.read_text(encoding="utf-8").splitlines()
+    assert gm_lines[0] == "SNP\tChromosome\tPosition"
+    gm_rows = [line.split("\t") for line in gm_lines[1:]]
+    assert [r[0] for r in gm_rows] == ["rs1", "rs2"]
+    chr_by_snp = {r[0]: int(r[1]) for r in gm_rows}
+    assert chr_by_snp["rs1"] != chr_by_snp["rs2"]
+
+
+def _setup_gapit_fixture(workspace_root: Path, monkeypatch):
+    workspace = workspace_root / "multilocus"
+    inspect_dir = workspace_root / "inspection"
+    workspace.mkdir(parents=True)
+    inspect_dir.mkdir(parents=True)
+    log_file = workspace / "multilocus.log"
+    runner_script = workspace_root / "gapit_runner.R"
+    runner_script.write_text("# runner", encoding="utf-8")
+
+    (inspect_dir / "pheno_plink.txt").write_text(
+        "FID\tIID\tTRAIT\nS1\tS1\t1.0\nS2\tS2\t2.0\nS3\tS3\t3.0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "app.services.structure_service.read_plink_binary",
+        lambda prefix: (
+            ["S1", "S2", "S3"],
+            [{"chrom": "1", "rsid": "rs1", "pos": 100, "a1": "A", "a2": "G"}],
+            np.array([[0], [1], [2]], dtype=np.int8),
+        ),
+    )
+    return workspace, log_file, runner_script
+
+
+def test_run_gapit_models_passes_gd_gm_timeout_cancel_and_returns_only_produced_csvs(tmp_path, monkeypatch):
+    workspace, log_file, runner_script = _setup_gapit_fixture(tmp_path / "jobs" / "gapit_run", monkeypatch)
+
+    recorded = {}
+
+    def fake_run_cli(cmd, **kwargs):
+        recorded["cmd"] = cmd
+        recorded["kwargs"] = kwargs
+        (workspace / "GAPIT.Association.GWAS_Results.FarmCPU.TRAIT.csv").write_text(
+            "SNP,Chromosome,Position,P.value,maf,nobs,Effect\nrs1,1,100,1e-6,0.3,3,0.4\n",
+            encoding="utf-8",
+        )
+        return MagicMock(returncode=0)
+
+    def _never_cancel():
+        return False
+
+    monkeypatch.setattr(multilocus_tasks, "run_cli_command", fake_run_cli)
+
+    results = multilocus_tasks._run_gapit_models(
+        rscript="/usr/bin/Rscript",
+        runner_script=runner_script,
+        methods=["FarmCPU", "BLINK"],
+        workspace=workspace,
+        log_file=log_file,
+        cancel_check=_never_cancel,
+    )
+
+    assert "--gd" in recorded["cmd"]
+    assert "--gm" in recorded["cmd"]
+    assert "timeout" in recorded["kwargs"]
+    assert recorded["kwargs"]["cancel_check"] is _never_cancel
+    assert set(results.keys()) == {"FARMCPU"}
+    assert results["FARMCPU"]["engine"] == "gapit"
+    assert (workspace / "farmcpu_results.tsv").is_file()
+
+
+def test_run_gapit_models_propagates_cli_cancelled_error(tmp_path, monkeypatch):
+    workspace, log_file, runner_script = _setup_gapit_fixture(tmp_path / "jobs" / "gapit_cancel", monkeypatch)
+
+    def raise_cancelled(cmd, **kwargs):
+        raise CLICancelledError(cmd, log_file)
+
+    monkeypatch.setattr(multilocus_tasks, "run_cli_command", raise_cancelled)
+
+    with pytest.raises(CLICancelledError):
+        multilocus_tasks._run_gapit_models(
+            rscript="/usr/bin/Rscript",
+            runner_script=runner_script,
+            methods=["FarmCPU"],
+            workspace=workspace,
+            log_file=log_file,
+            cancel_check=lambda: True,
+        )
