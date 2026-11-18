@@ -44,10 +44,11 @@ def _ensure_sqlite_columns(bind_engine) -> None:
 
 
 def _init_database() -> None:
-    """Ensure tables exist and seed default reference panels when starting up."""
+    """Ensure tables exist on SQLite dev DB and seed default reference panels when starting up."""
     try:
-        Base.metadata.create_all(bind=engine)
-        _ensure_sqlite_columns(engine)
+        if engine.dialect.name == "sqlite":
+            Base.metadata.create_all(bind=engine)
+            _ensure_sqlite_columns(engine)
         db = SessionLocal()
         try:
             if db.query(ReferencePanel).count() == 0:

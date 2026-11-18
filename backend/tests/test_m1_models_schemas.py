@@ -102,3 +102,53 @@ def test_database_sqlite_models_and_column_migration():
     saved_res = session.get(Result, res.id)
     assert saved_res.result_type == ResultType.INSPECTION_REPORT
     session.close()
+
+
+def test_init_database_runs_create_all_only_for_sqlite(monkeypatch):
+    from types import SimpleNamespace
+    import app.main as main_mod
+
+    calls = []
+    monkeypatch.setattr(Base.metadata, "create_all", lambda bind: calls.append(bind.dialect.name))
+
+    class _DummyQuery:
+        def count(self):
+            return 1
+
+    class _DummySession:
+        def query(self, *args, **kwargs):
+            return _DummyQuery()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main_mod, "SessionLocal", lambda: _DummySession())
+
+    monkeypatch.setattr(main_mod, "engine", SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
+    main_mod._init_database()
+    assert calls == []
+
+    monkeypatch.setattr(main_mod, "engine", SimpleNamespace(dialect=SimpleNamespace(name="sqlite")))
+    monkeypatch.setattr(main_mod, "_ensure_sqlite_columns", lambda _eng: None)
+    main_mod._init_database()
+    assert calls == ["sqlite"]
+
+
+def test_alembic_migrations_cover_all_orm_enum_member_names():
+    import ast
+    from pathlib import Path
+
+    versions_dir = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+    enum_literals: set[str] = set()
+    for mig_file in versions_dir.glob("*.py"):
+        tree = ast.parse(mig_file.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                enum_literals.add(node.value)
+
+    missing_steps = {e.name for e in PipelineStep} - enum_literals
+    missing_statuses = {e.name for e in JobStatus} - enum_literals
+    missing_results = {e.name for e in ResultType} - enum_literals
+    assert missing_steps == set()
+    assert missing_statuses == set()
+    assert missing_results == set()
