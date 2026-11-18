@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import gzip
 from pathlib import Path
+import re
 import shutil
 import uuid
 
@@ -353,7 +354,7 @@ def upload_phenotype_file(
             non_missing = [v for v in sample_vals if v not in {"", ".", "NA", "-9", "nan"}]
             if non_missing:
                 # If at least 70% of non-missing values are parseable as float
-                valid_num = sum(1 for v in non_missing if re.match(r"^-?\d+(\.\d+)?([eE][+-]?\d+)?$", v))
+                valid_num = sum(1 for v in non_missing if re.match(r"^-?\d+(\.\d+)?([eE][+-]?\d+)?$", str(v)))
                 if valid_num / len(non_missing) >= 0.7:
                     numeric_cols.append(c)
         except Exception:

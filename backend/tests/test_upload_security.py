@@ -1,7 +1,9 @@
+import io
 import uuid
 
 import pytest
 from pydantic import ValidationError
+from starlette.datastructures import UploadFile
 
 from app.api.routes import upload as upload_routes
 from app.db.engine.models import AnalysisJob, Dataset, UploadStatus, User, UserRole
@@ -103,3 +105,26 @@ def test_delete_uploaded_dataset_refuses_to_unlink_outside_storage(tmp_path, mon
     res = upload_routes.delete_uploaded_dataset(file_id=ds.id, db=fake_db, user=owner)
     assert res["deleted"] is True
     assert outside_file.exists(), "File di luar STORAGE_ROOT tidak boleh terhapus!"
+
+
+def test_upload_phenotype_file_detects_numeric_columns(tmp_path, monkeypatch):
+    monkeypatch.setattr(upload_routes.settings, "STORAGE_ROOT", str(tmp_path))
+    owner = User(
+        id=uuid.uuid4(),
+        email="owner@example.com",
+        hashed_password="x",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=owner.id,
+        original_filename="cohort.vcf.gz",
+        storage_path="",
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    fake_db = _FakeSession(dataset)
+    f = UploadFile(file=io.BytesIO(b"FID\tIID\tHeight\n1\tA\t10.5\n2\tB\t11.2\n3\tC\t9.8\n"), filename="pheno.tsv")
+
+    res = upload_routes.upload_phenotype_file(file_id=dataset.id, file=f, db=fake_db, user=owner)
+    assert res["numeric_columns"] == ["Height"]

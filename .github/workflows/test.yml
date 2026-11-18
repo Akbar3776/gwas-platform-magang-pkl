@@ -2,9 +2,8 @@ name: Test GWAS Platform
 
 on:
   pull_request:
-    branches: [main]
   push:
-    branches: [main]
+    branches: ["**"]
 
 jobs:
   backend:

@@ -6,6 +6,7 @@ untuk dirender pada visualisasi interaktif frontend.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 import uuid
@@ -21,6 +22,7 @@ from app.db.engine.models import AnalysisJob, Dataset, JobStatus, Result, Result
 from app.schemas.results import ManhattanDataResponse
 from app.services.manhattan_parser import generate_manhattan_cache, load_manhattan_cache
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/results", tags=["results"], dependencies=[Depends(require_job_owner)])
 
 

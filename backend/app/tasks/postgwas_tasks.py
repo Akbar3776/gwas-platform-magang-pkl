@@ -7,6 +7,7 @@ import json
 import math
 from datetime import datetime, timezone
 from pathlib import Path
+import shutil
 from typing import Any
 
 from app.core.config import settings
@@ -351,12 +352,6 @@ def run_postgwas_analysis(
                     shutil.copyfile(peak_json, ml_peak_target)
                 except Exception:
                     pass
-        ml_dir = workspace.parent / "multilocus"
-        if ml_dir.is_dir():
-            try:
-                shutil.copyfile(peak_json, ml_dir / "peak_comparison.json")
-            except Exception:
-                pass
 
         # 6. Upsert Results ke database
         upsert_result(db, job_id, ResultType.THRESHOLDS, str(thresholds_file), thresholds)
