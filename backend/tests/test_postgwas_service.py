@@ -166,3 +166,35 @@ def test_lead_snps_http_endpoint_wraps_json_array(tmp_path, monkeypatch):
     assert body["count"] == 1
     assert len(body["snps"]) == 1
     assert body["snps"][0]["snp"] == "6:896078569"
+
+
+def test_run_greedy_clumping_preserves_ca_and_contig_chr_labels(tmp_path):
+    assoc_file = tmp_path / "gwas_results.normalized.tsv"
+    rows = [
+        "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn",
+        "Ca1\t1000\trs_ca\tA\tG\t0.3\t0.5\t0.08\t1e-8\t100",
+        "chrC\t2000\trs_c\tC\tT\t0.2\t0.4\t0.09\t2e-8\t100",
+        "contig_12\t3000\trs_ctg\tG\tA\t0.25\t0.3\t0.07\t3e-8\t100",
+    ]
+    assoc_file.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    lead_snps = run_greedy_clumping(
+        assoc_file=assoc_file,
+        selected_p=1e-6,
+        clump_p2=1e-3,
+        clump_kb=250,
+    )
+    by_snp = {s["snp"]: s["chr"] for s in lead_snps}
+    assert by_snp == {
+        "rs_ca": "Ca1",
+        "rs_c": "C",
+        "rs_ctg": "contig_12",
+    }
+
+    from app.tasks._common import chr_label
+
+    assert chr_label("Ca1") == "Ca1"
+    assert chr_label("contig_12") == "contig_12"
+    assert chr_label("chrC") == "C"
+    assert chr_label("Chr01") == "01"
+    assert chr_label("chrchr1") == "chr1"

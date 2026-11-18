@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import shutil
 from typing import Any
 import uuid
@@ -477,3 +478,9 @@ def read_json(path: Path | str) -> Any:
     """Read a JSON file."""
     with Path(path).open("r", encoding="utf-8", errors="replace") as f:
         return json.load(f)
+
+
+def chr_label(raw: str) -> str:
+    """Label kromosom apa adanya, hanya prefix 'chr' (case-insensitive) yang dibuang."""
+    label = re.sub(r"^chr", "", str(raw).strip(), flags=re.IGNORECASE)
+    return label or "0"

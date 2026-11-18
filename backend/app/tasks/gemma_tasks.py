@@ -7,7 +7,6 @@ import gzip
 import math
 import os
 from pathlib import Path
-import re
 import shutil
 from typing import Any, Callable
 
@@ -20,6 +19,7 @@ from app.services.manhattan_parser import compute_assoc_summary_stats
 from app.tasks._common import (
     JobCancelledError,
     append_log,
+    chr_label,
     ensure_not_cancelled,
     guard_status_change,
     is_job_cancelled,
@@ -64,10 +64,7 @@ def _upsert_result(
             existing.summary_stats = summary_stats
 
 
-def _chr_label(raw: str) -> str:
-    """Label kromosom apa adanya, hanya prefix 'chr' (case-insensitive) yang dibuang."""
-    label = re.sub(r"^chr", "", str(raw).strip(), flags=re.IGNORECASE)
-    return label or "0"
+_chr_label = chr_label
 
 
 def _parse_vcf_genotypes(vcf_path: Path) -> tuple[list[str], list[dict[str, Any]]]:

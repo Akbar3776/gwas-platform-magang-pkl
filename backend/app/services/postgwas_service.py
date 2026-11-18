@@ -23,6 +23,8 @@ from typing import Any
 import numpy as np
 from scipy import stats
 
+from app.tasks._common import chr_label
+
 
 def calculate_unclamped_lambda_gc(p_values: list[float] | np.ndarray) -> float:
     """
@@ -152,7 +154,7 @@ def run_greedy_clumping(
                 if p_val > max_keep_p:
                     continue
                 pos = int(row["pos"])
-                chrom = str(row["chr"]).lstrip("chrCHR")
+                chrom = chr_label(row["chr"])
                 rs = str(row["rs"])
                 beta = float(row.get("beta") or 0.0)
                 se = float(row.get("se") or 0.0)
@@ -180,7 +182,7 @@ def run_greedy_clumping(
                     if p_val > retry_keep_p:
                         continue
                     variants.append({
-                        "chr": str(row["chr"]).lstrip("chrCHR"),
+                        "chr": chr_label(row["chr"]),
                         "pos": int(row["pos"]),
                         "rs": str(row["rs"]),
                         "p": p_val,

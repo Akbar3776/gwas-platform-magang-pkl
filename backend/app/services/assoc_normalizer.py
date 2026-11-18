@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import csv
 import gzip
-import re
 from pathlib import Path
 from typing import Any, Generator
+
+from app.tasks._common import chr_label
 
 
 CANONICAL_COLUMNS = ["chr", "pos", "rs", "a1", "a0", "af", "beta", "se", "p", "n"]
@@ -109,7 +110,7 @@ def iter_normalized_rows(source_file: Path | str) -> Generator[dict[str, Any], N
                         continue
 
                     row_out = {
-                        "chr": str(p_chr).lstrip("chrCHR"),
+                        "chr": chr_label(p_chr),
                         "pos": int(float(p_pos)),
                         "rs": str(p_rs),
                         "a1": str(p_a1),
@@ -145,7 +146,7 @@ def iter_normalized_rows(source_file: Path | str) -> Generator[dict[str, Any], N
                         continue
 
                     row_out = {
-                        "chr": str(p_chr).lstrip("chrCHR"),
+                        "chr": chr_label(p_chr),
                         "pos": int(float(p_pos)),
                         "rs": str(p_rs),
                         "a1": str(p_a1),
@@ -172,7 +173,7 @@ def iter_normalized_rows(source_file: Path | str) -> Generator[dict[str, Any], N
                         continue
 
                     row_out = {
-                        "chr": re.sub(r"^chr", "", str(p_chr).strip(), flags=re.IGNORECASE),
+                        "chr": chr_label(p_chr),
                         "pos": int(float(p_pos)),
                         "rs": str(p_rs),
                         "a1": "A1",
@@ -202,7 +203,7 @@ def iter_normalized_rows(source_file: Path | str) -> Generator[dict[str, Any], N
                         continue
 
                     row_out = {
-                        "chr": str(p_chr).lstrip("chrCHR"),
+                        "chr": chr_label(p_chr),
                         "pos": int(float(p_pos)),
                         "rs": str(p_rs),
                         "a1": str(p_a1),

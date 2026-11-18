@@ -117,3 +117,52 @@ def test_normalize_gapit_4_1_headers_and_chr_prefix(tmp_path):
     assert rows[0]["n"] == "80"
 
     assert rows[1]["chr"] == "H1"
+
+
+def test_normalize_assoc_preserves_non_chr_prefixes_across_formats(tmp_path):
+    from app.services.assoc_normalizer import normalize_association_results
+
+    gemma_assoc = tmp_path / "gemma.assoc.txt"
+    gemma_assoc.write_text(
+        "\t".join(["chr", "rs", "ps", "n_miss", "allele1", "allele0", "af", "beta", "se", "p_wald"]) + "\n"
+        + "\n".join([
+            "Ca1\trs_ca1\t100\t0\tA\tG\t0.2\t0.5\t0.1\t1e-8",
+            "contig_12\trs_ctg\t200\t0\tC\tT\t0.3\t0.4\t0.1\t2e-7",
+            "chrC\trs_chrc\t300\t0\tG\tA\t0.1\t0.3\t0.1\t3e-6",
+            "Chr01\trs_chr01\t400\t0\tT\tC\t0.4\t0.2\t0.1\t4e-5",
+            "chrUn_001\trs_un\t500\t0\tA\tT\t0.25\t0.1\t0.1\t5e-4",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    out_path = tmp_path / "norm.tsv"
+    rows_written = normalize_association_results(gemma_assoc, out_path)
+    assert rows_written == 5
+
+    lines = out_path.read_text(encoding="utf-8").splitlines()
+    chrs = [line.split("\t")[0] for line in lines[1:]]
+    assert chrs == ["Ca1", "contig_12", "C", "01", "Un_001"]
+
+    plink_assoc = tmp_path / "plink2.glm.linear"
+    plink_assoc.write_text(
+        "\t".join(["#CHROM", "POS", "ID", "REF", "ALT", "A1", "A1_FREQ", "BETA", "SE", "P", "OBS_CT"]) + "\n"
+        + "Ca1\t100\trs_ca1\tG\tA\tA\t0.2\t0.5\t0.1\t1e-8\t100\n"
+        + "chrC\t300\trs_chrc\tA\tG\tG\t0.1\t0.3\t0.1\t3e-6\t100\n",
+        encoding="utf-8",
+    )
+    plink_out = tmp_path / "plink_norm.tsv"
+    assert normalize_association_results(plink_assoc, plink_out) == 2
+    plink_chrs = [line.split("\t")[0] for line in plink_out.read_text(encoding="utf-8").splitlines()[1:]]
+    assert plink_chrs == ["Ca1", "C"]
+
+    canon_assoc = tmp_path / "canon.tsv"
+    canon_assoc.write_text(
+        "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn\n"
+        "Ca1\t100\trs_ca1\tA\tG\t0.2\t0.5\t0.1\t1e-8\t100\n"
+        "chrH1\t200\trs_h1\tC\tT\t0.3\t0.4\t0.1\t2e-7\t100\n",
+        encoding="utf-8",
+    )
+    canon_out = tmp_path / "canon_norm.tsv"
+    assert normalize_association_results(canon_assoc, canon_out) == 2
+    canon_chrs = [line.split("\t")[0] for line in canon_out.read_text(encoding="utf-8").splitlines()[1:]]
+    assert canon_chrs == ["Ca1", "H1"]
