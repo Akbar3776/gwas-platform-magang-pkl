@@ -38,11 +38,8 @@ from app.core.config import settings
 from app.db.engine.database import get_db
 from app.db.engine.models import AnalysisJob, User, UserRole
 
-try:
-    from jose import JWTError, jwt
-except ImportError:  # pragma: no cover - fallback to PyJWT when python-jose is absent
-    import jwt  # type: ignore[no-redef]
-    from jwt.exceptions import PyJWTError as JWTError  # type: ignore[no-redef]
+import jwt
+from jwt import PyJWTError as JWTError
 
 try:
     from passlib.context import CryptContext

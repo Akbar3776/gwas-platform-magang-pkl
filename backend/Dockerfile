@@ -82,11 +82,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-# Dependency tambahan untuk export ZIP dan report PDF.
-COPY app/requirements-addition.txt /tmp/requirements-addition.txt
-RUN pip install --no-cache-dir -r /tmp/requirements-addition.txt \
-    && rm -f /tmp/requirements-addition.txt
-
 COPY ./app ./app
 
 # ------------------------------------------------------------------------------
