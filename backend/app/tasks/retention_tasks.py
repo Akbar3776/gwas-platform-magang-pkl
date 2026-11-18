@@ -94,6 +94,20 @@ def _dir_latest_mtime(path: Path) -> float:
     return latest
 
 
+def _normalize_db_scheme(name: str) -> str:
+    base = name.split(":", 1)[0].split("+", 1)[0].strip().lower()
+    return "postgresql" if base == "postgres" else base
+
+
+def _db_dialect_matches_config(db: Session) -> tuple[bool, str, str]:
+    configured = _normalize_db_scheme(settings.DATABASE_URL or "")
+    bind = db.get_bind() if hasattr(db, "get_bind") else getattr(db, "bind", None)
+    actual = _normalize_db_scheme(getattr(getattr(bind, "dialect", None), "name", "") or "")
+    if not configured or not actual:
+        return True, configured, actual
+    return configured == actual, configured, actual
+
+
 def purge_orphan_storage_dirs(
     db: Session,
     *,
@@ -104,14 +118,24 @@ def purge_orphan_storage_dirs(
     now_ts = time.time()
     purged_count = 0
     freed_bytes = 0
+    dialect_ok, configured_scheme, actual_dialect = _db_dialect_matches_config(db)
+    if not dialect_ok:
+        logger.warning(
+            "Sweep folder yatim dilewati: dialect DB aktif (%s) berbeda dengan DATABASE_URL (%s).",
+            actual_dialect,
+            configured_scheme,
+        )
 
     for bucket_name, model in (("jobs", AnalysisJob), ("datasets", Dataset)):
         bucket_dir = storage_root / bucket_name
         if not bucket_dir.is_dir():
             continue
-        for entry in list(bucket_dir.iterdir()):
-            if not entry.is_dir():
-                continue
+        entries = [entry for entry in bucket_dir.iterdir() if entry.is_dir()]
+        if not entries:
+            continue
+
+        unreferenced: list[Path] = []
+        for entry in entries:
             record = None
             try:
                 uid = uuid.UUID(entry.name)
@@ -124,6 +148,28 @@ def purge_orphan_storage_dirs(
                     freed_bytes += remove_tree_under_storage(entry)
                     purged_count += 1
                 continue
+            unreferenced.append(entry)
+
+        if not unreferenced or not dialect_ok:
+            continue
+        if db.query(model.id).first() is None:
+            logger.warning(
+                "Sweep folder yatim di '%s' dilewati: tabel %s kosong padahal terdapat %d folder.",
+                bucket_name,
+                model.__tablename__,
+                len(entries),
+            )
+            continue
+        if len(unreferenced) * 2 > len(entries):
+            logger.warning(
+                "Sweep folder yatim di '%s' dilewati: %d dari %d folder (>50%%) tampak yatim.",
+                bucket_name,
+                len(unreferenced),
+                len(entries),
+            )
+            continue
+
+        for entry in unreferenced:
             try:
                 age_seconds = now_ts - _dir_latest_mtime(entry)
             except OSError:

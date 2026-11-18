@@ -185,6 +185,7 @@ def test_task_postrun_cleans_deleted_job_directory_after_cancellation(tmp_path, 
 def test_purge_expired_records_removes_full_job_root_soft_deleted_and_old_orphans(tmp_path, monkeypatch):
     storage_root = tmp_path / "storage"
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(storage_root))
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{tmp_path / 'storage_cleanup.db'}")
     Session = _make_session(tmp_path)
     monkeypatch.setattr(retention_tasks, "SessionLocal", Session)
     monkeypatch.setattr(retention_tasks, "HARD_DELETE_DB_ROW", False)
@@ -244,3 +245,118 @@ def test_purge_expired_records_removes_full_job_root_soft_deleted_and_old_orphan
     assert not old_orphan.exists()
     assert active_root.exists()
     assert fresh_orphan.exists()
+
+
+def _make_stale_orphan(bucket_dir, name: str):
+    orphan = bucket_dir / name
+    (orphan / "qc").mkdir(parents=True)
+    log_file = orphan / "qc" / "plink.log"
+    log_file.write_text("stale", encoding="utf-8")
+    stale_ts = time.time() - 7200
+    os.utime(log_file, (stale_ts, stale_ts))
+    os.utime(orphan / "qc", (stale_ts, stale_ts))
+    os.utime(orphan, (stale_ts, stale_ts))
+    return orphan
+
+
+def test_orphan_sweep_skips_when_table_empty(tmp_path, monkeypatch, caplog):
+    storage_root = tmp_path / "storage"
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(storage_root))
+    db_path = tmp_path / "storage_cleanup.db"
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{db_path}")
+    Session = _make_session(tmp_path)
+
+    jobs_dir = storage_root / "jobs"
+    orphans = [_make_stale_orphan(jobs_dir, str(uuid.uuid4())) for _ in range(3)]
+
+    db = Session()
+    try:
+        with caplog.at_level("WARNING"):
+            purged, freed = retention_tasks.purge_orphan_storage_dirs(db)
+    finally:
+        db.close()
+
+    assert purged == 0
+    assert freed == 0
+    assert all(p.exists() for p in orphans)
+    assert any("WARNING" == rec.levelname for rec in caplog.records)
+
+
+def test_orphan_sweep_skips_on_dialect_mismatch(tmp_path, monkeypatch, caplog):
+    storage_root = tmp_path / "storage"
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(storage_root))
+    monkeypatch.setattr(settings, "DATABASE_URL", "postgresql+psycopg2://gwas_user:pw@db:5432/gwas_db")
+    Session = _make_session(tmp_path)
+
+    db = Session()
+    try:
+        for _ in range(10):
+            _, _, job = _seed_job(db, status=JobStatus.COMPLETED)
+            d = storage_root / "jobs" / str(job.id)
+            d.mkdir(parents=True)
+            (d / "ok.txt").write_text("1", encoding="utf-8")
+        orphan = _make_stale_orphan(storage_root / "jobs", "mismatch-orphan")
+        with caplog.at_level("WARNING"):
+            purged, freed = retention_tasks.purge_orphan_storage_dirs(db)
+    finally:
+        db.close()
+
+    assert purged == 0
+    assert freed == 0
+    assert orphan.exists()
+    assert any("WARNING" == rec.levelname for rec in caplog.records)
+
+
+def test_orphan_sweep_skips_when_more_than_half_unreferenced(tmp_path, monkeypatch, caplog):
+    storage_root = tmp_path / "storage"
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(storage_root))
+    db_path = tmp_path / "storage_cleanup.db"
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{db_path}")
+    Session = _make_session(tmp_path)
+
+    db = Session()
+    try:
+        active_dirs = []
+        for _ in range(2):
+            _, _, job = _seed_job(db, status=JobStatus.COMPLETED)
+            d = storage_root / "jobs" / str(job.id)
+            d.mkdir(parents=True)
+            (d / "ok.txt").write_text("1", encoding="utf-8")
+            active_dirs.append(d)
+        orphans = [_make_stale_orphan(storage_root / "jobs", f"orphan-{i}") for i in range(3)]
+        with caplog.at_level("WARNING"):
+            purged, _ = retention_tasks.purge_orphan_storage_dirs(db)
+    finally:
+        db.close()
+
+    assert purged == 0
+    assert all(p.exists() for p in orphans)
+    assert all(p.exists() for p in active_dirs)
+    assert any("WARNING" == rec.levelname for rec in caplog.records)
+
+
+def test_orphan_sweep_removes_single_stale_orphan_with_10_valid_jobs(tmp_path, monkeypatch):
+    storage_root = tmp_path / "storage"
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(storage_root))
+    db_path = tmp_path / "storage_cleanup.db"
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{db_path}")
+    Session = _make_session(tmp_path)
+
+    db = Session()
+    try:
+        active_dirs = []
+        for _ in range(10):
+            _, _, job = _seed_job(db, status=JobStatus.COMPLETED)
+            d = storage_root / "jobs" / str(job.id)
+            d.mkdir(parents=True)
+            (d / "ok.txt").write_text("1", encoding="utf-8")
+            active_dirs.append(d)
+        orphan = _make_stale_orphan(storage_root / "jobs", "single-old-orphan")
+        purged, freed = retention_tasks.purge_orphan_storage_dirs(db)
+    finally:
+        db.close()
+
+    assert purged == 1
+    assert freed > 0
+    assert not orphan.exists()
+    assert all(p.exists() for p in active_dirs)
