@@ -395,3 +395,39 @@ def test_run_structure_analysis_respects_user_n_pc_covariates(tmp_path, monkeypa
     assert all(line == "1" for line in gemma_cov_zero)
     plink_cov_zero = Path(out0["plink_covariates_path"]).read_text(encoding="utf-8").splitlines()
     assert plink_cov_zero[0].split("\t") == ["#FID", "IID"]
+
+
+def test_king_robust_formula_duplicate_sibling_and_unrelated():
+    rng = np.random.default_rng(12345)
+    n_snps = 4000
+    maf = 0.45
+
+    def _draw_ind():
+        return rng.binomial(1, maf, size=n_snps) + rng.binomial(1, maf, size=n_snps)
+
+    # Parents of full siblings
+    mom = np.vstack([rng.binomial(1, maf, size=n_snps), rng.binomial(1, maf, size=n_snps)])
+    dad = np.vstack([rng.binomial(1, maf, size=n_snps), rng.binomial(1, maf, size=n_snps)])
+
+    def _meiosis():
+        m_pick = rng.integers(0, 2, size=n_snps)
+        d_pick = rng.integers(0, 2, size=n_snps)
+        return mom[m_pick, np.arange(n_snps)] + dad[d_pick, np.arange(n_snps)]
+
+    sib1 = _meiosis()
+    sib2 = _meiosis()
+    sib1_dup = sib1.copy()
+    unrelated = _draw_ind()
+
+    # Check pairwise subsets individually so unrelated != duplicate confusion
+    res_dup = compute_king_robust_table(np.vstack([sib1, sib1_dup]), ["A", "A_dup"])
+    assert res_dup["pairs_summary"]["duplicate"] == 1
+    assert abs(res_dup["top_pairs"][0]["kinship"] - 0.5) < 1e-3
+
+    res_sib = compute_king_robust_table(np.vstack([sib1, sib2]), ["Sib1", "Sib2"])
+    assert res_sib["pairs_summary"]["first_degree"] == 1
+    assert 0.19 <= res_sib["top_pairs"][0]["kinship"] <= 0.31
+
+    res_unrel = compute_king_robust_table(np.vstack([sib1, unrelated]), ["Sib1", "Unrel"])
+    assert res_unrel["pairs_summary"]["unrelated"] == 1
+    assert res_unrel["top_pairs"] == []

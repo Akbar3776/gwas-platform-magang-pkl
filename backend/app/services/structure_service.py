@@ -286,13 +286,14 @@ def compute_king_robust_table(
 
             n_het_i = int(np.sum(vi == 1))
             n_het_j = int(np.sum(vj == 1))
+            n_het_het = int(np.sum((vi == 1) & (vj == 1)))
             n_ibs0 = int(np.sum((vi == 0) & (vj == 2)) + np.sum((vi == 2) & (vj == 0)))
 
-            # Formula KING-robust:
-            # phi = (N_het_het - 2 * N_IBS0) / (N_het_i + N_het_j) + 0.5 * (N_het_i + N_het_j) / ...
+            # Rumus KING-robust antar keluarga (Manichaikul et al., 2010):
+            # phi = (N_het,het - 2 * N_IBS0) / (N_het_i + N_het_j)
             denom = n_het_i + n_het_j
             if denom > 0:
-                phi = float((n_het_i + n_het_j - 4 * n_ibs0) / (2.0 * denom))
+                phi = float((n_het_het - 2 * n_ibs0) / denom)
             else:
                 phi = 0.0
 
