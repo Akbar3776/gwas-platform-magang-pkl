@@ -258,7 +258,7 @@ def discover_resume_state(
         (
             "multilocus",
             (job_root / "multilocus" / "multilocus_summary.json").is_file()
-            or (job_root / "multilocus" / "multilocus.log").is_file(),
+            or (job_root / "multilocus" / "skipped.json").is_file(),
             {
                 "multilocus_summary_path": str((job_root / "multilocus" / "multilocus_summary.json").resolve()),
             },

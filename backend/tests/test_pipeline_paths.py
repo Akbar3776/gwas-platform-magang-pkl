@@ -160,3 +160,117 @@ def test_start_pipeline_resolves_reference_panel_server_side_and_rejects_missing
     assert captured["imputation_params"]["reference_vcf_path"] == "/data/ref/active.vcf.gz"
     assert captured["imputation_params"]["map_path"] == "/data/ref/active.map"
     assert captured["imputation_params"]["reference_panel_id"] == str(active_panel.id)
+
+
+def test_discover_resume_state_requires_multilocus_summary_or_skipped(tmp_path, monkeypatch):
+    from app.core.config import settings
+    from app.tasks.pipeline_orchestrator import discover_resume_state
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = str(uuid.uuid4())
+    dataset_id = str(uuid.uuid4())
+    job_root = tmp_path / "jobs" / job_id
+
+    for rel in (
+        "inspection/pheno_plink.txt",
+        "inspection/keep_ids.txt",
+        "normalization/normalized.vcf.gz",
+        "qc/plink_qc.bed",
+        "qc/plink_qc.vcf.gz",
+        "imputation/skipped.json",
+        "structure/kinship.cXX.txt",
+        "structure/model_recommendation.json",
+        "gwas/gwas_results.normalized.tsv",
+        "gwas/output/association.assoc.txt",
+        "multilocus/multilocus.log",
+    ):
+        target = job_root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("stub", encoding="utf-8")
+
+    _, stage, _ = discover_resume_state(job_id=job_id, dataset_id=dataset_id)
+    assert stage == "multilocus"
+
+    (job_root / "multilocus" / "multilocus_summary.json").write_text("{}", encoding="utf-8")
+    _, stage_after_summary, _ = discover_resume_state(job_id=job_id, dataset_id=dataset_id)
+    assert stage_after_summary == "postgwas"
+
+    (job_root / "multilocus" / "multilocus_summary.json").unlink()
+    (job_root / "multilocus" / "skipped.json").write_text("{}", encoding="utf-8")
+    _, stage_after_skip, _ = discover_resume_state(job_id=job_id, dataset_id=dataset_id)
+    assert stage_after_skip == "postgwas"
+
+
+def test_normalization_norm_uses_tmp_and_removes_final_on_cancel(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    from app.core.config import settings
+    from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep
+    from app.tasks import normalization_tasks
+    from app.utils.process import CLICancelledError
+    from tests.test_pipeline_e2e import InMemoryDB
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    db = InMemoryDB()
+    monkeypatch.setattr(normalization_tasks, "SessionLocal", lambda: db)
+
+    vcf_file = tmp_path / "cohort.vcf"
+    vcf_file.write_text(
+        "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        "1\t100\trs1\tA\tG\t.\tPASS\t.\tGT\t0/1\n",
+        encoding="utf-8",
+    )
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=uuid.uuid4(),
+        original_filename="cohort.vcf",
+        storage_path=str(vcf_file),
+        file_size_bytes=vcf_file.stat().st_size,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=ds.id,
+        triggered_by=ds.owner_id,
+        pipeline_type="full_pipeline",
+        current_step=PipelineStep.NORMALIZATION,
+        overall_status=JobStatus.RUNNING_NORMALIZATION,
+        parameters={},
+    )
+    db.add(ds)
+    db.add(job)
+
+    norm_dir = tmp_path / "jobs" / str(job.id) / "normalization"
+    norm_dir.mkdir(parents=True)
+    stale_final = norm_dir / "normalized.vcf.gz"
+    stale_final.write_bytes(b"stale")
+    seen_norm_out = []
+
+    def mock_run_cli(cmd, **kwargs):
+        if "sort" in cmd:
+            out_path = cmd[cmd.index("-o") + 1]
+            with open(out_path, "wb") as f:
+                f.write(b"sorted")
+            return MagicMock(returncode=0)
+        if "norm" in cmd:
+            out_path = cmd[cmd.index("-o") + 1]
+            seen_norm_out.append(out_path)
+            with open(out_path, "wb") as f:
+                f.write(b"partial-norm")
+            raise CLICancelledError(cmd, kwargs.get("log_file"), ())
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("app.tasks.normalization_tasks.which_tool", lambda name: "bcftools")
+    monkeypatch.setattr("app.tasks.normalization_tasks.run_cli_command", mock_run_cli)
+
+    with pytest.raises(CLICancelledError):
+        normalization_tasks.run_vcf_normalization(
+            job_id=str(job.id),
+            dataset_id=str(ds.id),
+            params={"reference_fasta": "/ref.fa"},
+        )
+
+    assert len(seen_norm_out) == 1
+    assert seen_norm_out[0].endswith("normalized.vcf.gz.tmp")
+    assert not (norm_dir / "normalized.vcf.gz.tmp").exists()
+    assert not stale_final.exists()
+

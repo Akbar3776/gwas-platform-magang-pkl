@@ -161,6 +161,7 @@ def run_vcf_normalization(
 
         clean_vcf_path = workspace / "clean.vcf"
         sorted_path = workspace / "sorted.vcf.gz"
+        norm_tmp_path = workspace / "normalized.vcf.gz.tmp"
         overflow_stats = {
             "total_variants": 0,
             "kept_variants": 0,
@@ -211,37 +212,42 @@ def run_vcf_normalization(
 
             if reference_fasta:
                 run_cli_command(
-                    [bcftools_bin, "norm", "-f", str(reference_fasta), "-Oz", "-o", str(output_path), str(sorted_path)],
+                    [bcftools_bin, "norm", "-f", str(reference_fasta), "-Oz", "-o", str(norm_tmp_path), str(sorted_path)],
                     cwd=workspace,
                     log_file=log_path,
                     timeout=NORMALIZATION_TIMEOUT_SECONDS,
                     cancel_check=_cancel_check,
                 )
                 sorted_path.unlink(missing_ok=True)
+                norm_tmp_path.replace(output_path)
             else:
                 sorted_path.replace(output_path)
+
+            if output_path.is_file():
+                _index_normalized_vcf(
+                    bcftools_bin,
+                    output_path,
+                    workspace,
+                    log_path,
+                    cancel_check=_cancel_check,
+                )
         except (JobCancelledError, CLICancelledError):
             clean_vcf_path.unlink(missing_ok=True)
             sorted_path.unlink(missing_ok=True)
+            norm_tmp_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
             raise
         except Exception as cli_exc:
             clean_vcf_path.unlink(missing_ok=True)
             sorted_path.unlink(missing_ok=True)
+            norm_tmp_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
             logger.error("bcftools gagal memproses VCF (%s); menghentikan pipeline.", cli_exc)
             with log_path.open("a", encoding="utf-8") as log:
                 log.write(
                     f"[ERROR] bcftools gagal dieksekusi ({cli_exc}); proses dihentikan tanpa fallback Python.\n"
                 )
             raise
-
-        if output_path.is_file():
-            _index_normalized_vcf(
-                bcftools_bin,
-                output_path,
-                workspace,
-                log_path,
-                cancel_check=_cancel_check,
-            )
 
         if not output_path.is_file():
             raise RuntimeError("Normalisasi selesai tetapi file VCF hasil normalisasi tidak ditemukan")
