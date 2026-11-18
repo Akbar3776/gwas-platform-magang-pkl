@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     STORAGE_ROOT: str = _raw_storage
 
     # -- Security (dipakai modul auth, disiapkan di sini agar terpusat) --
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me-in-production")
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "")
     JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
     CORS_ORIGINS: list[str] = [

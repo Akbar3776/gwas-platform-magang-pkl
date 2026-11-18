@@ -50,6 +50,8 @@ Platform bioinformatika berbasis web (*full-stack*) untuk mengotomatisasi analis
    ```
    *Service yang berjalan: FastAPI (`:8000`), PostgreSQL (`:5432`), Redis (`:6379`), Celery Worker.*
 
+   > **Deploy Produksi (`infra/docker-compose.prod.yml`):** Produksi wajib menyetel `JWT_SECRET_KEY` acak >= 32 karakter di `backend/.env` sebelum menjalankan stack. Generate dengan: `python -c "import secrets; print(secrets.token_hex(32))"`.
+
 4. **Jalankan Frontend (Vite Dev Server)**:
    ```bash
    cd frontend
