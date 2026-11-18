@@ -156,8 +156,7 @@ def _prepare_phenotype_vector(
     work_dir: Path,
     log_file: Path,
 ) -> tuple[np.ndarray, Path]:
-    """Load user phenotype file by matching sample IID; otherwise load inspection/fixture phenotype."""
-    n_samples = max(len(samples), 3)
+    """Load user phenotype file by matching sample IID against genotype samples."""
     target_pheno_file = work_dir / "phenotypes.txt"
 
     # Cari file fenotipe kandidat
@@ -165,8 +164,6 @@ def _prepare_phenotype_vector(
     if phenotype_path:
         candidate_paths.append(Path(phenotype_path))
     candidate_paths.append(work_dir.parent / "inspection" / "pheno_plink.txt")
-    candidate_paths.append(Path(settings.STORAGE_ROOT) / "fixtures" / "toy_pheno.txt")
-    candidate_paths.append(Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "data" / "toy_pheno.txt")
 
     resolved_path: Path | None = None
     for p in candidate_paths:
@@ -210,24 +207,10 @@ def _prepare_phenotype_vector(
             )
             return pheno_vec, target_pheno_file
 
-    # Jika tidak ada file fenotipe sama sekali (mode test/simulasi)
-    pheno_vec = np.zeros(n_samples, dtype=float)
-    for v_idx, var in enumerate(variants):
-        weight = 1.35 if v_idx == 0 else (0.75 if v_idx % 2 == 1 else -0.45)
-        for s_idx in range(n_samples):
-            d = var["dosages"][s_idx] if s_idx < len(var["dosages"]) else None
-            if d is not None:
-                pheno_vec[s_idx] += weight * d
-
-    for s_idx in range(n_samples):
-        pheno_vec[s_idx] += 0.25 * ((s_idx + 1) / n_samples)
-
-    target_pheno_file.write_bytes(("\n".join(f"{v:.6f}" for v in pheno_vec) + "\n").encode("utf-8"))
-    _append_log(
-        log_file,
-        f"[6.2] Memakai vektor fenotipe kuantitatif dari dataset: {target_pheno_file.name}",
+    raise ValueError(
+        "Tidak ada sampel genotipe yang cocok dengan file fenotipe. "
+        "Periksa kolom IID fenotipe vs ID sampel VCF (lihat laporan Tahap 1)."
     )
-    return pheno_vec, target_pheno_file
 
 
 def _ensure_fam_phenotypes(bfile_prefix: str, pheno_vec: np.ndarray, log_file: Path) -> None:

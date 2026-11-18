@@ -127,3 +127,30 @@ def test_run_gemma_reuses_candidate_bfile_from_imputation(tmp_path):
             cmd = call_args[0][0]
             assert "--vcf" not in cmd
 
+
+def test_prepare_phenotype_vector_raises_when_no_samples_match(tmp_path):
+    from app.tasks.gemma_tasks import _prepare_phenotype_vector
+
+    work_dir = tmp_path / "gwas"
+    work_dir.mkdir(parents=True)
+    log_file = tmp_path / "g.log"
+    pheno_file = tmp_path / "pheno.txt"
+    pheno_file.write_text("IID\tTRAIT\nX\t1.0\nY\t2.0\nZ\t3.0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Tidak ada sampel genotipe yang cocok dengan file fenotipe"):
+        _prepare_phenotype_vector(
+            samples=["A", "B", "C"],
+            variants=[],
+            phenotype_path=str(pheno_file),
+            work_dir=work_dir,
+            log_file=log_file,
+        )
+
+    with pytest.raises(ValueError, match="Tidak ada sampel genotipe yang cocok dengan file fenotipe"):
+        _prepare_phenotype_vector(
+            samples=["A", "B", "C"],
+            variants=[{"dosages": [0.0, 1.0, 2.0]}],
+            phenotype_path="",
+            work_dir=work_dir,
+            log_file=log_file,
+        )
