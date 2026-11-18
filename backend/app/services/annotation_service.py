@@ -271,4 +271,3 @@ def map_lead_snps_to_genes(
         })
 
     return mapped_rows, category_counts
-

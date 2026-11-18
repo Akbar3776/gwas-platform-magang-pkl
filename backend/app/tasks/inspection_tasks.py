@@ -197,4 +197,3 @@ def run_inspection(
         raise
     finally:
         db.close()
-

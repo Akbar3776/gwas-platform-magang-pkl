@@ -195,7 +195,7 @@ def run_structure_analysis(
         # File kovariat format PLINK2: FID IID PC1 PC2 ...
         plink_cov_file = workspace / "covariates_plink.txt"
         with plink_cov_file.open("w", encoding="utf-8") as f_pcov:
-            header = ["#FID", "IID"] + [f"PC{c+1}" for c in range(n_cov_pcs)]
+            header = ["#FID", "IID"] + [f"PC{c + 1}" for c in range(n_cov_pcs)]
             f_pcov.write("\t".join(header) + "\n")
             for s in pca_data["samples"]:
                 row_vals = [s["fid"], s["iid"]] + [str(s["pcs"][c]) for c in range(n_cov_pcs)]

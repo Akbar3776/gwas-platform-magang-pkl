@@ -367,4 +367,3 @@ def test_build_plink_qc_command_geno_optional():
         geno=None,
     )
     assert "--geno" not in cmd_without
-

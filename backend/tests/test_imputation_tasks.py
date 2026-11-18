@@ -293,4 +293,3 @@ def test_imputation_success_with_single_marker_isolation(tmp_path):
             assert "rs_chr1_a" in all_content
             assert "rs_chr1_b" in all_content
             assert "scaffold10019" not in all_content
-

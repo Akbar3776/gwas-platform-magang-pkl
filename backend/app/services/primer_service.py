@@ -104,7 +104,7 @@ def calculate_tm_santalucia(seq: str, mv_conc_mm: float = 50.0, dv_conc_mm: floa
         ds += 4.1
 
     for i in range(n - 1):
-        dinuc = s[i : i + 2]
+        dinuc = s[i:i + 2]
         step_dh, step_ds = NN_PARAMS.get(dinuc, (-8000.0, -21.5))
         dh += step_dh
         ds += step_ds
@@ -138,7 +138,7 @@ def _score_secondary_structure(seq1: str, seq2: str | None = None, three_prime_o
     # Cek kecocokan berturut-turut >= 5 bp
     for k in (6, 5):
         for i in range(len(s1) - k + 1):
-            sub = s1[i : i + k]
+            sub = s1[i:i + k]
             if sub in s2_rc:
                 gc = sub.count("G") + sub.count("C")
                 if k >= 6 or gc >= 3:
@@ -174,7 +174,7 @@ def extract_or_build_flanking_sequence(
             if seq_chr and len(seq_chr) == 2 * flank_len + 1:
                 left = seq_chr[:flank_len]
                 mid = (allele or seq_chr[flank_len])[0].upper()
-                right = seq_chr[flank_len + 1 :]
+                right = seq_chr[flank_len + 1:]
                 return f"{left}[{mid}]{right}", f"{left}{mid}{right}"
         except Exception:
             pass
@@ -280,7 +280,7 @@ def design_primers_for_flanking(
         for length in (20, 21, 19, 22, 18):
             if start_0 + length > snp_index_0based - 2:
                 continue
-            oligo = seq[start_0 : start_0 + length]
+            oligo = seq[start_0:start_0 + length]
             if "N" in oligo or re.search(r"(A{5,}|T{5,}|G{5,}|C{5,})", oligo):
                 continue
             gc = calculate_gc_percent(oligo)

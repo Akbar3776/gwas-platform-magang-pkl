@@ -96,7 +96,7 @@ def filter_vcf_32bit_overflow(
             if tab1 == -1:
                 continue
             tab2 = line.find("\t", tab1 + 1)
-            pos_str = line[tab1 + 1 :] if tab2 == -1 else line[tab1 + 1 : tab2]
+            pos_str = line[tab1 + 1:] if tab2 == -1 else line[tab1 + 1:tab2]
 
             try:
                 pos = int(pos_str)
@@ -689,8 +689,8 @@ def run_python_fallback_qc(
                 if target_trait and target_trait in header:
                     t_idx = header.index(target_trait)
                     iid_idx = header.index("IID") if "IID" in header else 1
-                    for l in lines[1:]:
-                        cols = l.strip().split("\t") if "\t" in l else l.strip().split()
+                    for line in lines[1:]:
+                        cols = line.strip().split("\t") if "\t" in line else line.strip().split()
                         cols = [c.strip() for c in cols if c.strip()]
                         if len(cols) > max(iid_idx, t_idx):
                             pheno_map[cols[iid_idx]] = cols[t_idx]

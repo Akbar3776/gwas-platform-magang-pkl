@@ -80,7 +80,7 @@ def read_plink_binary(bfile_prefix: str | Path) -> tuple[list[str], list[dict[st
     # Decode per SNP
     for v_idx in range(n_variants):
         offset = v_idx * bytes_per_snp
-        snp_bytes = raw_data[offset : offset + bytes_per_snp]
+        snp_bytes = raw_data[offset:offset + bytes_per_snp]
         # Unpack 4 samples per byte
         s0 = snp_bytes & 0x03
         s1 = (snp_bytes >> 2) & 0x03
