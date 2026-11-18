@@ -29,6 +29,7 @@ from app.tasks._common import (
     write_json,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
+from app.tasks.gemma_tasks import _chr_label
 from app.utils.process import CLICancelledError, run_cli_command
 
 logger = get_task_logger(__name__)
@@ -586,7 +587,7 @@ def _run_python_multilocus_engine(
     }
 
 
-def _write_gapit_inputs(workspace: Path, log_file: Path) -> tuple[Path, Path, Path]:
+def _write_gapit_inputs(workspace: Path, log_file: Path) -> tuple[Path, Path, Path, dict[int, str]]:
     """Generate GAPIT Y, GD, and GM tab-delimited inputs from QC PLINK binary and inspection phenotype."""
     from app.services.structure_service import read_plink_binary
 
@@ -672,6 +673,19 @@ def _write_gapit_inputs(workspace: Path, log_file: Path) -> tuple[Path, Path, Pa
         positions.append(pos)
 
     chr_map, _ = _build_chr_mapping({c for c in raw_chroms if c})
+    chr_idx_to_label: dict[int, str] = {}
+    for chrom_raw in dict.fromkeys(raw_chroms):
+        gm_idx = chr_map.get(chrom_raw, 0)
+        label = _chr_label(chrom_raw)
+        if gm_idx in chr_idx_to_label:
+            append_log(
+                log_file,
+                f"[WARN] Label kromosom berbeda '{chr_idx_to_label[gm_idx]}' dan '{chrom_raw}' "
+                f"memetakan ke indeks GM yang sama ({gm_idx}); mempertahankan '{chr_idx_to_label[gm_idx]}'.",
+            )
+            continue
+        chr_idx_to_label[gm_idx] = label
+
     gm_path = workspace / "gapit_GM.txt"
     with gm_path.open("w", encoding="utf-8", newline="") as gm_f:
         gm_writer = csv.writer(gm_f, delimiter="\t")
@@ -699,7 +713,33 @@ def _write_gapit_inputs(workspace: Path, log_file: Path) -> tuple[Path, Path, Pa
         f"[7.1] Input GAPIT dibuat: {len(samples)} sampel, {len(snp_names)} SNP "
         f"(Y={y_path.name}, GD={gd_path.name}, GM={gm_path.name}).",
     )
-    return y_path, gd_path, gm_path
+    return y_path, gd_path, gm_path, chr_idx_to_label
+
+
+def _restore_gapit_chr_labels(tsv_path: Path, chr_idx_to_label: dict[int, str]) -> None:
+    """Tulis ulang kolom chr TSV hasil GAPIT memakai label kromosom asli bila ada di peta."""
+    if not chr_idx_to_label or not tsv_path.is_file():
+        return
+    str_map = {str(idx): label for idx, label in chr_idx_to_label.items()}
+    with tsv_path.open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.reader(f, delimiter="\t"))
+    if not rows:
+        return
+    try:
+        chr_col = rows[0].index("chr")
+    except ValueError:
+        return
+    tmp_path = tsv_path.with_suffix(".tsv.tmp")
+    with tmp_path.open("w", encoding="utf-8", newline="") as out_f:
+        writer = csv.writer(out_f, delimiter="\t")
+        writer.writerow(rows[0])
+        for row in rows[1:]:
+            if chr_col < len(row):
+                raw_chr = row[chr_col].strip()
+                if raw_chr in str_map:
+                    row[chr_col] = str_map[raw_chr]
+            writer.writerow(row)
+    tmp_path.replace(tsv_path)
 
 
 def _run_gapit_models(
@@ -719,7 +759,7 @@ def _run_gapit_models(
         if stale_tsv.is_file():
             stale_tsv.unlink(missing_ok=True)
 
-    y_path, gd_path, gm_path = _write_gapit_inputs(workspace, log_file)
+    y_path, gd_path, gm_path, chr_idx_to_label = _write_gapit_inputs(workspace, log_file)
     cmd = [
         rscript,
         str(runner_script),
@@ -752,6 +792,7 @@ def _run_gapit_models(
         chosen_csv = nyc_candidates[0] if nyc_candidates else candidates[0]
         tsv_target = workspace / f"{m.lower()}_results.tsv"
         normalize_association_results(chosen_csv, tsv_target)
+        _restore_gapit_chr_labels(tsv_target, chr_idx_to_label)
         results[m.upper()] = {
             "status": "completed",
             "tsv_file": str(tsv_target),
@@ -1054,13 +1095,13 @@ def generate_peak_comparison(
     matched_multi_indices: set[int] = set()
 
     for s in single_lead_snps:
-        s_chr = str(s.get("chr", "")).lstrip("chrCHR")
+        s_chr = _chr_label(s.get("chr", ""))
         s_pos = int(s.get("pos", 0))
 
         # Cari kecocokan di multi-locus
         matched_multi = None
         for m_idx, m in enumerate(multi_lead_snps):
-            m_chr = str(m.get("chr", "")).lstrip("chrCHR")
+            m_chr = _chr_label(m.get("chr", ""))
             m_pos = int(m.get("pos", 0))
             if s_chr == m_chr and abs(s_pos - m_pos) <= window_bp:
                 matched_multi = m
@@ -1100,7 +1141,7 @@ def generate_peak_comparison(
         if m_idx not in matched_multi_indices:
             multi_only.append({
                 "snp": m.get("snp"),
-                "chr": str(m.get("chr", "")).lstrip("chrCHR"),
+                "chr": _chr_label(m.get("chr", "")),
                 "pos": int(m.get("pos", 0)),
                 "p_single": None,
                 "p_multi": m.get("p"),

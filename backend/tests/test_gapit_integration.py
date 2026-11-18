@@ -35,7 +35,7 @@ def test_gapit_runs_all_multilocus_models_end_to_end(tmp_path, monkeypatch):
     g_mat = rng.integers(0, 3, size=(n_samples, n_snps), dtype=np.int8)
     variants = [
         {
-            "chrom": "1" if j < n_snps // 2 else "2",
+            "chrom": "Gm01" if j < n_snps // 2 else "Gm02",
             "rsid": f"rs{j + 1}",
             "pos": ((j % (n_snps // 2)) + 1) * 1000,
             "a1": "A",
@@ -77,6 +77,7 @@ def test_gapit_runs_all_multilocus_models_end_to_end(tmp_path, monkeypatch):
         log_file=log_file,
     )
 
+    expected_chr_by_snp = {v["rsid"]: v["chrom"] for v in variants}
     assert set(results.keys()) == {"FARMCPU", "BLINK", "MLMM"}
     for key in ("FARMCPU", "BLINK", "MLMM"):
         assert results[key]["engine"] == "gapit"
@@ -85,3 +86,5 @@ def test_gapit_runs_all_multilocus_models_end_to_end(tmp_path, monkeypatch):
         with tsv_path.open("r", encoding="utf-8") as f:
             rows = list(csv.DictReader(f, delimiter="\t"))
         assert len(rows) == n_snps
+        assert {r["chr"] for r in rows} == {"Gm01", "Gm02"}
+        assert {r["rs"]: r["chr"] for r in rows} == expected_chr_by_snp
