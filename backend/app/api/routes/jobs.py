@@ -12,6 +12,7 @@ Endpoint untuk men-trigger dan memantau AnalysisJob serta mengakses file-file jo
 
 from datetime import datetime, timezone
 import gzip
+import os
 from pathlib import Path
 import shutil
 import uuid
@@ -107,7 +108,11 @@ def _is_admin(user: User) -> bool:
     return role_val == "admin"
 
 
+_LOG_TAIL_BYTES = 65536
+
+
 def _read_log_tail(candidates: list[Path], max_lines: int = 2000) -> tuple[str, int]:
+    """Read only the last ~64 KB of each unique candidate log; line_count counts lines in that tail."""
     merged_chunks: list[str] = []
     seen_files: set[str] = set()
     for path in candidates:
@@ -117,8 +122,18 @@ def _read_log_tail(candidates: list[Path], max_lines: int = 2000) -> tuple[str, 
                 continue
             seen_files.add(resolved)
             try:
-                raw = path.read_text(encoding="utf-8", errors="replace").strip()
-                if raw and raw not in "\n".join(merged_chunks):
+                with path.open("rb") as f:
+                    f.seek(0, os.SEEK_END)
+                    size = f.tell()
+                    offset = max(size - _LOG_TAIL_BYTES, 0)
+                    f.seek(offset, os.SEEK_SET)
+                    raw = f.read().decode("utf-8", errors="replace")
+                if offset > 0:
+                    nl_idx = raw.find("\n")
+                    if nl_idx != -1:
+                        raw = raw[nl_idx + 1:]
+                raw = raw.strip()
+                if raw:
                     merged_chunks.append(raw)
             except OSError:
                 continue
@@ -390,6 +405,24 @@ def _discover_job_files(job: AnalysisJob, dataset: Dataset | None) -> list[dict]
     return discovered
 
 
+def _count_job_files(job: AnalysisJob, dataset: Dataset | None = None) -> int:
+    count = 0
+    job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job.id)
+    if job_root.is_dir():
+        for _, _, files in os.walk(job_root):
+            count += len(files)
+    if dataset is not None:
+        input_paths = (
+            getattr(dataset, "storage_path", None),
+            getattr(dataset, "phenotype_file_path", None),
+            getattr(dataset, "annotation_file_path", None) or getattr(dataset, "annotation_gff_path", None),
+        )
+        for p in input_paths:
+            if p and Path(p).is_file():
+                count += 1
+    return count
+
+
 @router.get("")
 def list_user_jobs(
     db: Session = Depends(get_db),
@@ -402,10 +435,19 @@ def list_user_jobs(
     jobs_list = query.order_by(AnalysisJob.created_at.desc()).limit(50).all()
 
     items = []
+    dirty_params = False
     for job in jobs_list:
         dataset = db.get(Dataset, job.dataset_id)
-        files = _discover_job_files(job, dataset)
-        _, last_log_line = _collect_step_logs(job)
+        params = job.parameters if isinstance(job.parameters, dict) else {}
+        last_log_line = params.get("last_log_line")
+        is_terminal = job.overall_status in TERMINAL_JOB_STATUSES
+        if is_terminal and params.get("file_count") is not None:
+            file_count = int(params["file_count"])
+        else:
+            file_count = _count_job_files(job, dataset)
+            if is_terminal:
+                job.parameters = {**params, "file_count": file_count}
+                dirty_params = True
         overall_val = job.overall_status.value if hasattr(job.overall_status, "value") else str(job.overall_status)
         step_val = job.current_step.value if hasattr(job.current_step, "value") else str(job.current_step)
         items.append(
@@ -418,12 +460,14 @@ def list_user_jobs(
                 "overall_status": overall_val,
                 "elapsed_seconds": _compute_elapsed_seconds(job),
                 "last_log_line": last_log_line,
-                "file_count": len(files),
+                "file_count": file_count,
                 "created_at": job.created_at.isoformat() if job.created_at else None,
                 "started_at": job.started_at.isoformat() if job.started_at else None,
                 "completed_at": job.completed_at.isoformat() if job.completed_at else None,
             }
         )
+    if dirty_params:
+        db.commit()
     return items
 
 

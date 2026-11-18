@@ -328,3 +328,91 @@ def test_retry_job_blocks_recent_cancellation_and_allows_after_10s(monkeypatch):
     )
     res = jobs.retry_job(job_id=older_job.id, from_scratch=False, db=session_older, user=user)
     assert res["retried"] is True
+
+
+def test_read_log_tail_reads_only_last_64kb_of_large_file(tmp_path):
+    log_path = tmp_path / "huge.log"
+    lines = [f"log-entry-{i:05d} " + ("x" * 50) for i in range(20000)]
+    log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert log_path.stat().st_size > 1_000_000
+
+    tail, line_count = jobs._read_log_tail([log_path])
+    assert "log-entry-19999" in tail
+    assert "log-entry-00000" not in tail
+    assert line_count < 20000
+    assert len(tail.splitlines()) <= 2000
+
+
+def test_list_user_jobs_skips_full_log_scan_and_caches_terminal_file_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs.settings, "STORAGE_ROOT", str(tmp_path))
+    user = User(
+        id=uuid.uuid4(),
+        email="researcher@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    vcf = tmp_path / "cohort.vcf.gz"
+    vcf.write_bytes(b"vcf")
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path=str(vcf),
+        file_size_bytes=3,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.COMPLETED,
+        current_step=PipelineStep.ANNOTATION,
+        parameters={"last_log_line": "Done annotation"},
+    )
+    stage_folder = tmp_path / "jobs" / str(job.id) / "qc"
+    stage_folder.mkdir(parents=True)
+    (stage_folder / "plink_qc.log").write_text("ok", encoding="utf-8")
+
+    class _ListQuery:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def order_by(self, *args, **kwargs):
+            return self
+
+        def limit(self, n):
+            return self
+
+        def all(self):
+            return list(self.rows)
+
+    class _ListSession(FakeSession):
+        def __init__(self, ds, j):
+            super().__init__(ds, job=j)
+            self.commits = 0
+
+        def query(self, model):
+            return _ListQuery([self.job] if model is AnalysisJob else [])
+
+        def commit(self):
+            self.commits += 1
+
+    db = _ListSession(dataset, job)
+    monkeypatch.setattr(jobs, "_discover_job_files", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not scan")))
+    monkeypatch.setattr(jobs, "_collect_step_logs", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not collect logs")))
+
+    first = jobs.list_user_jobs(db=db, user=user)
+    assert first[0]["last_log_line"] == "Done annotation"
+    assert first[0]["file_count"] == 2
+    assert job.parameters["file_count"] == 2
+    assert db.commits == 1
+
+    # Next call should reuse cached file_count without re-walking disk or re-committing
+    (stage_folder / "extra_after.log").write_text("extra", encoding="utf-8")
+    second = jobs.list_user_jobs(db=db, user=user)
+    assert second[0]["file_count"] == 2
+    assert db.commits == 1
