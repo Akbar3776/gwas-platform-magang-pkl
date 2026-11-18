@@ -750,6 +750,16 @@ def retry_job(
     if dataset is None or dataset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Dataset untuk job ini tidak lagi tersedia.")
 
+    if job.overall_status == JobStatus.CANCELLED and job.completed_at is not None:
+        cancelled_at = job.completed_at
+        if cancelled_at.tzinfo is None:
+            cancelled_at = cancelled_at.replace(tzinfo=timezone.utc)
+        if (datetime.now(timezone.utc) - cancelled_at).total_seconds() < 10:
+            raise HTTPException(
+                status_code=409,
+                detail="Job baru saja dibatalkan; tunggu beberapa detik sebelum retry.",
+            )
+
     # Jika masih ada task lama terdaftar, revoke terlebih dahulu
     if job.celery_task_id and hasattr(celery_app, "control"):
         try:
@@ -769,17 +779,26 @@ def retry_job(
 
     run_id = str(uuid.uuid4())
     job.parameters = {**(job.parameters or {}), "run_id": run_id}
+    job.overall_status = JobStatus.PENDING
     db.commit()
 
-    task_id, start_idx, start_stage = trigger_retry_pipeline(
-        job_id=str(job.id),
-        dataset_id=str(dataset.id),
-        raw_vcf_path=str(getattr(dataset, "storage_path", "") or ""),
-        job_parameters=job.parameters or {},
-        failed_step=previous_failed_step,
-        from_scratch=from_scratch,
-        run_id=run_id,
-    )
+    try:
+        task_id, start_idx, start_stage = trigger_retry_pipeline(
+            job_id=str(job.id),
+            dataset_id=str(dataset.id),
+            raw_vcf_path=str(getattr(dataset, "storage_path", "") or ""),
+            job_parameters=job.parameters or {},
+            failed_step=previous_failed_step,
+            from_scratch=from_scratch,
+            run_id=run_id,
+        )
+    except Exception as exc:
+        if hasattr(db, "rollback"):
+            db.rollback()
+        job.overall_status = JobStatus.FAILED
+        job.error_message = f"Gagal enqueue retry: {exc}"
+        db.commit()
+        raise HTTPException(status_code=500, detail="Gagal memulai ulang job") from exc
 
     new_status, new_step = STAGE_TO_JOB_STATE.get(
         start_stage,

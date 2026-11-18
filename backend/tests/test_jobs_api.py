@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import uuid
 
 from fastapi import FastAPI, HTTPException
@@ -201,3 +202,129 @@ def test_trigger_retry_pipeline_strips_legacy_client_paths(monkeypatch):
     assert imputation_sig.kwargs["reference_vcf_path"] == ""
     assert "/x" not in str(imputation_sig.kwargs)
     assert "/y" not in str(imputation_sig.kwargs)
+
+
+def test_retry_job_sets_pending_and_new_run_id_before_trigger(monkeypatch):
+    user = User(
+        id=uuid.uuid4(),
+        email="researcher@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path="/data/storage/datasets/cohort.vcf.gz",
+        file_size_bytes=100,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.CANCELLED,
+        current_step=PipelineStep.IMPUTATION,
+        parameters={"run_id": "old-run"},
+        completed_at=datetime.now(timezone.utc) - timedelta(seconds=60),
+    )
+    session = FakeSession(dataset, job=job)
+    observed = {}
+
+    def _fake_retry(**kwargs):
+        observed["status_during_trigger"] = job.overall_status
+        observed["run_id_during_trigger"] = (job.parameters or {}).get("run_id")
+        return "new-celery-id", 3, "imputation"
+
+    monkeypatch.setattr(pipeline_orchestrator, "trigger_retry_pipeline", _fake_retry)
+    res = jobs.retry_job(job_id=job.id, from_scratch=False, db=session, user=user)
+
+    assert observed["status_during_trigger"] == JobStatus.PENDING
+    assert observed["run_id_during_trigger"] != "old-run"
+    assert res["overall_status"] == "running_imputation"
+
+
+def test_retry_job_marks_failed_and_returns_500_when_enqueue_fails(monkeypatch):
+    user = User(
+        id=uuid.uuid4(),
+        email="researcher@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path="/data/storage/datasets/cohort.vcf.gz",
+        file_size_bytes=100,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.FAILED,
+        current_step=PipelineStep.GWAS,
+    )
+    session = FakeSession(dataset, job=job)
+
+    def _boom(**kwargs):
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr(pipeline_orchestrator, "trigger_retry_pipeline", _boom)
+    with pytest.raises(HTTPException) as exc:
+        jobs.retry_job(job_id=job.id, from_scratch=False, db=session, user=user)
+
+    assert exc.value.status_code == 500
+    assert job.overall_status == JobStatus.FAILED
+    assert "Gagal enqueue retry" in (job.error_message or "")
+
+
+def test_retry_job_blocks_recent_cancellation_and_allows_after_10s(monkeypatch):
+    user = User(
+        id=uuid.uuid4(),
+        email="researcher@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path="/data/storage/datasets/cohort.vcf.gz",
+        file_size_bytes=100,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    recent_job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.CANCELLED,
+        current_step=PipelineStep.GWAS,
+        completed_at=datetime.now(timezone.utc) - timedelta(seconds=2),
+    )
+    session_recent = FakeSession(dataset, job=recent_job)
+    with pytest.raises(HTTPException) as exc:
+        jobs.retry_job(job_id=recent_job.id, from_scratch=False, db=session_recent, user=user)
+    assert exc.value.status_code == 409
+
+    older_job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.CANCELLED,
+        current_step=PipelineStep.GWAS,
+        completed_at=datetime.now(timezone.utc) - timedelta(seconds=60),
+    )
+    session_older = FakeSession(dataset, job=older_job)
+    monkeypatch.setattr(
+        pipeline_orchestrator,
+        "trigger_retry_pipeline",
+        lambda **kwargs: ("celery-ok", 5, "gwas"),
+    )
+    res = jobs.retry_job(job_id=older_job.id, from_scratch=False, db=session_older, user=user)
+    assert res["retried"] is True
