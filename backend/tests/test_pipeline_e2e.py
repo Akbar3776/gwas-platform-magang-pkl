@@ -82,8 +82,9 @@ class InMemoryDB:
             return self.reference_panels.get(key)
         return None
 
-    def query(self, model):
+    def query(self, *models):
         db = self
+        model = models[0] if len(models) == 1 else None
 
         class _Query:
             def __init__(self):
