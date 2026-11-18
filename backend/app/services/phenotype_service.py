@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import csv
 import gzip
 from pathlib import Path
 import re
-import shutil
 from typing import Any
 import numpy as np
 import pandas as pd
@@ -59,10 +57,8 @@ def load_phenotype_table(path: Path | str) -> pd.DataFrame:
 
     with target_path.open("r", encoding="utf-8", errors="replace") as f:
         first_line = f.readline()
-        second_line = f.readline()
 
     # Determine delimiter
-    sample_text = first_line + "\n" + second_line
     sep = r"\s+"
     if "\t" in first_line:
         sep = "\t"

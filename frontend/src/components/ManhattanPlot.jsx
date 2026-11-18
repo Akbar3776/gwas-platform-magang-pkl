@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   buildManhattanLayout,
+  formatChromosomeLabel,
   GENOME_WIDE_SIGNIFICANCE,
   log10ToPValue,
   toLog10Threshold,
@@ -33,6 +34,7 @@ export default function ManhattanPlot({
   const [threshold, setThreshold] = useState(() => toLog10Threshold(significanceThreshold));
   const [zoomLevel, setZoomLevel] = useState(1);
   const [hoveredPoint, setHoveredPoint] = useState(null);
+  const chrLabels = data?.chr_labels;
 
   const canvasW = Math.round(BASE_CANVAS_W * zoomLevel);
   const plotW = canvasW - PAD_LEFT - PAD_RIGHT;
@@ -219,7 +221,7 @@ export default function ManhattanPlot({
       ctx.moveTo(tx, PAD_TOP + PLOT_H);
       ctx.lineTo(tx, PAD_TOP + PLOT_H + 5);
       ctx.stroke();
-      ctx.fillText(String(tick.chr), tx, PAD_TOP + PLOT_H + 18);
+      ctx.fillText(formatChromosomeLabel(tick.chr, chrLabels), tx, PAD_TOP + PLOT_H + 18);
     }
 
     // Axis titles
@@ -265,7 +267,7 @@ export default function ManhattanPlot({
     }
 
     ctx.restore();
-  }, [layout, threshold, canvasW, plotW]);
+  }, [layout, threshold, canvasW, plotW, chrLabels]);
 
   const handleMouseMove = (event) => {
     const canvas = canvasRef.current;
@@ -321,7 +323,7 @@ export default function ManhattanPlot({
               <option value="ALL">Semua Kromosom ({availableChromosomes.length})</option>
               {availableChromosomes.map((c) => (
                 <option key={c} value={String(c)}>
-                  Kromosom {c}
+                  Kromosom {formatChromosomeLabel(c, chrLabels)}
                 </option>
               ))}
             </select>
@@ -418,7 +420,7 @@ export default function ManhattanPlot({
             <strong>SNP:</strong> {hoveredPoint.snp}
           </span>
           <span>
-            <strong>Kromosom:</strong> {hoveredPoint.chr} (
+            <strong>Kromosom:</strong> {formatChromosomeLabel(hoveredPoint.chr, chrLabels)} (
             {hoveredPoint.bp.toLocaleString("id-ID")} bp)
           </span>
           <span>

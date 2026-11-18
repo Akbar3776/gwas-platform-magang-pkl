@@ -2,9 +2,8 @@ name: Test GWAS Platform
 
 on:
   pull_request:
-    branches: [main]
   push:
-    branches: [main]
+    branches: ["**"]
 
 jobs:
   backend:
@@ -29,6 +28,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-test.txt
+
+      - name: Audit backend dependencies
+        run: |
+          python -m pip install pip-audit
+          pip-audit -r requirements.txt
 
       - name: Lint backend
         run: flake8 app tests --ignore=E501,E402,W503 --max-line-length=120
@@ -57,6 +61,9 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Audit frontend dependencies
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Lint frontend
         run: npm run lint

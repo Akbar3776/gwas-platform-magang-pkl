@@ -1,13 +1,15 @@
 from pathlib import Path
+from unittest.mock import MagicMock
 import pytest
 import numpy as np
 
 from app.schemas.pipeline import GWASPipelineConfig
+from app.tasks import multilocus_tasks
 from app.tasks.multilocus_tasks import (
-    SUPPORTED_MULTILOCUS_MODELS,
     _run_python_multilocus_engine,
     generate_peak_comparison,
 )
+from app.utils.process import CLICancelledError
 
 
 def test_gwas_pipeline_config_multilocus_models():
@@ -64,14 +66,14 @@ def test_generate_peak_comparison_with_mlmm(tmp_path):
 
 
 def test_python_multilocus_engine_execution(tmp_path):
-    # Setup mock workspace
+    # Mock workspace (Python fallback phenotype from inspection/pheno_plink.txt)
     job_dir = tmp_path / "jobs" / "test_job_123"
     multilocus_dir = job_dir / "multilocus"
     norm_dir = job_dir / "normalization"
-    gwas_dir = job_dir / "gwas"
+    inspect_dir = job_dir / "inspection"
     multilocus_dir.mkdir(parents=True)
     norm_dir.mkdir(parents=True)
-    gwas_dir.mkdir(parents=True)
+    inspect_dir.mkdir(parents=True)
 
     log_file = multilocus_dir / "multilocus.log"
 
@@ -88,7 +90,7 @@ def test_python_multilocus_engine_execution(tmp_path):
     vcf_path.write_text(vcf_content, encoding="utf-8")
 
     # Mock Phenotype
-    pheno_path = gwas_dir / "phenotype.txt"
+    pheno_path = inspect_dir / "pheno_plink.txt"
     pheno_content = (
         "FID\tIID\tPHENO1\n"
         "S1\tS1\t12.5\n"
@@ -118,3 +120,307 @@ def test_python_multilocus_engine_execution(tmp_path):
     assert (multilocus_dir / "farmcpu_results.tsv").is_file()
     assert (multilocus_dir / "blink_results.tsv").is_file()
     assert (multilocus_dir / "mlmm_results.tsv").is_file()
+
+
+def test_write_gapit_inputs_formats_y_gd_gm_and_imputes_missing(tmp_path, monkeypatch):
+    job_dir = tmp_path / "jobs" / "gapit_job"
+    workspace = job_dir / "multilocus"
+    inspect_dir = job_dir / "inspection"
+    workspace.mkdir(parents=True)
+    inspect_dir.mkdir(parents=True)
+    log_file = workspace / "multilocus.log"
+
+    (inspect_dir / "pheno_plink.txt").write_text(
+        "FID\tIID\tTRAIT\n"
+        "S1\tS1\t10.5\n"
+        "S2\tS2\tNA\n"
+        "S3\tS3\t14.0\n"
+        "S4\tS4\t12.0\n",
+        encoding="utf-8",
+    )
+
+    samples = ["S1", "S2", "S3", "S4"]
+    variants = [
+        {"chrom": "Gm01", "rsid": "rs1", "pos": 100, "a1": "A", "a2": "G"},
+        {"chrom": "Gm01", "rsid": "rs_all_miss", "pos": 200, "a1": "C", "a2": "T"},
+        {"chrom": "Gm02", "rsid": "rs2", "pos": 300, "a1": "G", "a2": "T"},
+    ]
+    g_mat = np.array(
+        [
+            [0, -1, 1],
+            [-1, -1, 2],
+            [2, -1, 0],
+            [2, -1, 1],
+        ],
+        dtype=np.int8,
+    )
+    monkeypatch.setattr(
+        "app.services.structure_service.read_plink_binary",
+        lambda prefix: (samples, variants, g_mat),
+    )
+
+    y_path, gd_path, gm_path, chr_idx_to_label = multilocus_tasks._write_gapit_inputs(workspace, log_file)
+
+    y_lines = y_path.read_text(encoding="utf-8").splitlines()
+    assert y_lines[0] == "Taxa\tTRAIT"
+    assert "S2\tNA" in y_lines
+
+    gd_lines = gd_path.read_text(encoding="utf-8").splitlines()
+    assert gd_lines[0] == "taxa\trs1\trs2"
+    for row in gd_lines[1:]:
+        vals = row.split("\t")[1:]
+        assert "-1" not in vals
+        assert len(vals) == 2
+
+    gm_lines = gm_path.read_text(encoding="utf-8").splitlines()
+    assert gm_lines[0] == "SNP\tChromosome\tPosition"
+    gm_rows = [line.split("\t") for line in gm_lines[1:]]
+    assert [r[0] for r in gm_rows] == ["rs1", "rs2"]
+    chr_by_snp = {r[0]: int(r[1]) for r in gm_rows}
+    assert chr_by_snp["rs1"] != chr_by_snp["rs2"]
+    assert chr_idx_to_label == {
+        chr_by_snp["rs1"]: "Gm01",
+        chr_by_snp["rs2"]: "Gm02",
+    }
+
+
+def _setup_gapit_fixture(workspace_root: Path, monkeypatch):
+    workspace = workspace_root / "multilocus"
+    inspect_dir = workspace_root / "inspection"
+    workspace.mkdir(parents=True)
+    inspect_dir.mkdir(parents=True)
+    log_file = workspace / "multilocus.log"
+    runner_script = workspace_root / "gapit_runner.R"
+    runner_script.write_text("# runner", encoding="utf-8")
+
+    (inspect_dir / "pheno_plink.txt").write_text(
+        "FID\tIID\tTRAIT\nS1\tS1\t1.0\nS2\tS2\t2.0\nS3\tS3\t3.0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "app.services.structure_service.read_plink_binary",
+        lambda prefix: (
+            ["S1", "S2", "S3"],
+            [{"chrom": "1", "rsid": "rs1", "pos": 100, "a1": "A", "a2": "G"}],
+            np.array([[0], [1], [2]], dtype=np.int8),
+        ),
+    )
+    return workspace, log_file, runner_script
+
+
+def test_run_gapit_models_passes_gd_gm_timeout_cancel_and_returns_only_produced_csvs(tmp_path, monkeypatch):
+    workspace, log_file, runner_script = _setup_gapit_fixture(tmp_path / "jobs" / "gapit_run", monkeypatch)
+
+    recorded = {}
+
+    def fake_run_cli(cmd, **kwargs):
+        recorded["cmd"] = cmd
+        recorded["kwargs"] = kwargs
+        (workspace / "GAPIT.Association.GWAS_Results.FarmCPU.TRAIT.csv").write_text(
+            "SNP,Chromosome,Position,P.value,maf,nobs,Effect\nrs1,1,100,1e-6,0.3,3,0.4\n",
+            encoding="utf-8",
+        )
+        return MagicMock(returncode=0)
+
+    def _never_cancel():
+        return False
+
+    monkeypatch.setattr(multilocus_tasks, "run_cli_command", fake_run_cli)
+
+    results = multilocus_tasks._run_gapit_models(
+        rscript="/usr/bin/Rscript",
+        runner_script=runner_script,
+        methods=["FarmCPU", "BLINK"],
+        workspace=workspace,
+        log_file=log_file,
+        cancel_check=_never_cancel,
+    )
+
+    assert "--gd" in recorded["cmd"]
+    assert "--gm" in recorded["cmd"]
+    assert "timeout" in recorded["kwargs"]
+    assert recorded["kwargs"]["cancel_check"] is _never_cancel
+    assert set(results.keys()) == {"FARMCPU"}
+    assert results["FARMCPU"]["engine"] == "gapit"
+    assert (workspace / "farmcpu_results.tsv").is_file()
+
+
+def test_run_gapit_models_propagates_cli_cancelled_error(tmp_path, monkeypatch):
+    workspace, log_file, runner_script = _setup_gapit_fixture(tmp_path / "jobs" / "gapit_cancel", monkeypatch)
+
+    def raise_cancelled(cmd, **kwargs):
+        raise CLICancelledError(cmd, log_file)
+
+    monkeypatch.setattr(multilocus_tasks, "run_cli_command", raise_cancelled)
+
+    with pytest.raises(CLICancelledError):
+        multilocus_tasks._run_gapit_models(
+            rscript="/usr/bin/Rscript",
+            runner_script=runner_script,
+            methods=["FarmCPU"],
+            workspace=workspace,
+            log_file=log_file,
+            cancel_check=lambda: True,
+        )
+
+
+def test_python_multilocus_engine_plink_preserves_non_numeric_chr_labels(tmp_path, monkeypatch):
+    import csv
+
+    job_dir = tmp_path / "jobs" / "ml_chr_job"
+    multilocus_dir = job_dir / "multilocus"
+    qc_dir = job_dir / "qc"
+    inspect_dir = job_dir / "inspection"
+    multilocus_dir.mkdir(parents=True)
+    qc_dir.mkdir(parents=True)
+    inspect_dir.mkdir(parents=True)
+    (qc_dir / "plink_qc.bed").write_bytes(b"")
+    log_file = multilocus_dir / "multilocus.log"
+
+    (inspect_dir / "pheno_plink.txt").write_text(
+        "FID\tIID\tTRAIT\nS1\tS1\t10.0\nS2\tS2\t12.0\nS3\tS3\t14.0\nS4\tS4\t16.0\n",
+        encoding="utf-8",
+    )
+    samples = ["S1", "S2", "S3", "S4"]
+    variants = [
+        {"chrom": "Gm01", "rsid": ".", "pos": 1000, "a1": "A", "a2": "G"},
+        {"chrom": "Gm07", "rsid": "rs_g7", "pos": 2000, "a1": "C", "a2": "T"},
+    ]
+    g_mat = np.array([[0, 1], [1, 0], [2, 1], [0, 2]], dtype=np.int8)
+    monkeypatch.setattr(
+        "app.services.structure_service.read_plink_binary",
+        lambda prefix: (samples, variants, g_mat),
+    )
+
+    _run_python_multilocus_engine(
+        job_id="ml_chr_job",
+        dataset_id="ds_chr",
+        methods=["FarmCPU"],
+        workspace=multilocus_dir,
+        log_file=log_file,
+        ctx={},
+    )
+
+    tsv_file = multilocus_dir / "farmcpu_results.tsv"
+    assert tsv_file.is_file()
+    with tsv_file.open("r", encoding="utf-8") as tf:
+        rows = list(csv.DictReader(tf, delimiter="\t"))
+    assert [r["chr"] for r in rows] == ["Gm01", "Gm07"]
+    assert rows[0]["rs"] == "Gm01:1000"
+
+
+def test_run_gapit_models_prefers_nyc_csv_over_kansas(tmp_path, monkeypatch):
+    import csv
+
+    workspace, log_file, runner_script = _setup_gapit_fixture(tmp_path / "jobs" / "gapit_nyc", monkeypatch)
+
+    def fake_run_cli(cmd, **kwargs):
+        (workspace / "GAPIT.Association.GWAS_Results.FarmCPU.T(Kansas).csv").write_text(
+            "SNP,Chr,Pos,P.value,MAF,effect,nobs,H&B.P.Value\nrs1,1,100,0.9,0.3,0.1,3,0.95\n",
+            encoding="utf-8",
+        )
+        (workspace / "GAPIT.Association.GWAS_Results.FarmCPU.T(NYC).csv").write_text(
+            "SNP,Chr,Pos,P.value,MAF,effect,nobs,H&B.P.Value\nrs1,1,100,0.01,0.3,0.4,3,0.05\n",
+            encoding="utf-8",
+        )
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(multilocus_tasks, "run_cli_command", fake_run_cli)
+
+    results = multilocus_tasks._run_gapit_models(
+        rscript="/usr/bin/Rscript",
+        runner_script=runner_script,
+        methods=["FarmCPU"],
+        workspace=workspace,
+        log_file=log_file,
+    )
+
+    assert set(results.keys()) == {"FARMCPU"}
+    tsv_file = workspace / "farmcpu_results.tsv"
+    assert tsv_file.is_file()
+    with tsv_file.open("r", encoding="utf-8") as tf:
+        rows = list(csv.DictReader(tf, delimiter="\t"))
+    assert len(rows) == 1
+    assert float(rows[0]["p"]) == pytest.approx(0.01)
+
+
+def test_run_gapit_models_restores_chr_labels_from_gm_mapping(tmp_path, monkeypatch):
+    import csv
+
+    job_dir = tmp_path / "jobs" / "gapit_chr_restore"
+    workspace = job_dir / "multilocus"
+    inspect_dir = job_dir / "inspection"
+    workspace.mkdir(parents=True)
+    inspect_dir.mkdir(parents=True)
+    log_file = workspace / "multilocus.log"
+    runner_script = job_dir / "gapit_runner.R"
+    runner_script.write_text("# runner", encoding="utf-8")
+
+    (inspect_dir / "pheno_plink.txt").write_text(
+        "FID\tIID\tTRAIT\nS1\tS1\t1.0\nS2\tS2\t2.0\nS3\tS3\t3.0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "app.services.structure_service.read_plink_binary",
+        lambda prefix: (
+            ["S1", "S2", "S3"],
+            [
+                {"chrom": "Gm01", "rsid": "rs_g1", "pos": 1000, "a1": "A", "a2": "G"},
+                {"chrom": "Gm02", "rsid": "rs_g2", "pos": 2000, "a1": "C", "a2": "T"},
+            ],
+            np.array([[0, 1], [1, 2], [2, 0]], dtype=np.int8),
+        ),
+    )
+
+    def fake_run_cli(cmd, **kwargs):
+        with (workspace / "gapit_GM.txt").open("r", encoding="utf-8") as gm_f:
+            gm_rows = list(csv.DictReader(gm_f, delimiter="\t"))
+        csv_lines = ["SNP,Chr,Pos,P.value,MAF,effect,nobs,H&B.P.Value"]
+        for idx, gm_row in enumerate(gm_rows):
+            p_val = "0.01" if idx == 0 else "0.25"
+            csv_lines.append(f"{gm_row['SNP']},{gm_row['Chromosome']},{gm_row['Position']},{p_val},0.3,0.4,3,0.05")
+        (workspace / "GAPIT.Association.GWAS_Results.FarmCPU.TRAIT(NYC).csv").write_text(
+            "\n".join(csv_lines) + "\n",
+            encoding="utf-8",
+        )
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(multilocus_tasks, "run_cli_command", fake_run_cli)
+
+    results = multilocus_tasks._run_gapit_models(
+        rscript="/usr/bin/Rscript",
+        runner_script=runner_script,
+        methods=["FarmCPU"],
+        workspace=workspace,
+        log_file=log_file,
+    )
+
+    assert set(results.keys()) == {"FARMCPU"}
+    with (workspace / "farmcpu_results.tsv").open("r", encoding="utf-8") as tf:
+        tsv_rows = list(csv.DictReader(tf, delimiter="\t"))
+    assert [r["chr"] for r in tsv_rows] == ["Gm01", "Gm02"]
+
+
+def test_generate_peak_comparison_preserves_chr_labels_and_matches_gm(tmp_path):
+    single_lead = [
+        {"snp": "rs101", "chr": "Gm01", "pos": 1000, "p": 1e-8},
+        {"snp": "rs_h1", "chr": "H1", "pos": 5000, "p": 2e-7},
+    ]
+    multi_lead = [
+        {"snp": "rs101_ml", "chr": "Gm01", "pos": 1500, "p": 2e-9, "method": "FarmCPU"},
+        {"snp": "rs_h1_ml", "chr": "H1", "pos": 5100, "p": 3e-8, "method": "BLINK"},
+        {"snp": "rs_h2_ml", "chr": "H2", "pos": 9000, "p": 4e-7, "method": "MLMM"},
+    ]
+
+    res = generate_peak_comparison(
+        single_lead_snps=single_lead,
+        multi_lead_snps=multi_lead,
+        output_csv=tmp_path / "Ringkasan_Puncak_GWAS.csv",
+        output_json=tmp_path / "peak_comparison.json",
+    )
+
+    assert res["summary"]["n_consistent"] == 2
+    assert res["summary"]["n_single_only"] == 0
+    assert res["summary"]["n_multi_only"] == 1
+    assert [c["chr"] for c in res["consistent"]] == ["Gm01", "H1"]
+    assert res["multi_only"][0]["chr"] == "H2"

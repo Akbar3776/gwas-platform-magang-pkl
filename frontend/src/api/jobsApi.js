@@ -12,7 +12,7 @@ export async function triggerQcJob(datasetId, params = {}) {
   const { data } = await httpClient.post("/jobs/qc", {
     dataset_id: datasetId,
     maf: params.maf ?? 0.01,
-    geno: params.geno ?? 0.05,
+    geno: params.geno !== undefined ? params.geno : 0.05,
     mind: params.mind ?? 0.1,
   });
   return data;
@@ -247,5 +247,10 @@ export async function downloadInspectionFile(fileId, filename) {
  */
 export async function fetchCapabilities() {
   const { data } = await httpClient.get("/pipeline/capabilities");
+  return data;
+}
+
+export async function fetchReferencePanels() {
+  const { data } = await httpClient.get("/reference-panels");
   return data;
 }

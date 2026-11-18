@@ -15,7 +15,7 @@ file GB-an tanpa kebocoran memori):
 import hashlib
 import re
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from fastapi import UploadFile
 
@@ -60,9 +60,15 @@ def _chunk_path(file_id: str, chunk_index: int) -> Path:
     return get_staging_dir(file_id) / f"chunk_{chunk_index:08d}.part"
 
 
-def save_chunk(file_id: str, chunk_index: int, chunk_file: UploadFile) -> Path:
+def save_chunk(
+    file_id: str,
+    chunk_index: int,
+    chunk_file: UploadFile,
+    *,
+    max_bytes: int = 16 * 1024 * 1024,
+) -> Path:
     """
-    Menyimpan satu chunk ke disk secara streaming.
+    Menyimpan satu chunk ke disk secara streaming dengan batas byte ``max_bytes``.
 
     `chunk_file.file` adalah SpooledTemporaryFile (Starlette) — dibaca dan
     ditulis dalam blok tetap (`_COPY_BUFFER_SIZE`), bukan `.read()` penuh,
@@ -72,13 +78,25 @@ def save_chunk(file_id: str, chunk_index: int, chunk_file: UploadFile) -> Path:
     destination = _chunk_path(file_id, chunk_index)
 
     # Tulis ke file sementara dulu (`.tmp`) lalu rename atomik, supaya jika
-    # proses terputus di tengah tulis, tidak ada chunk "setengah jadi" yang
-    # ikut terhitung sebagai chunk valid oleh count_received_chunks().
+    # proses terputus di tengah tulis atau melampaui max_bytes, tidak ada chunk
+    # setengah jadi yang ikut terhitung oleh count_received_chunks().
     tmp_destination = destination.with_suffix(".tmp")
-    with open(tmp_destination, "wb") as out_file:
-        shutil.copyfileobj(chunk_file.file, out_file, length=_COPY_BUFFER_SIZE)
+    written = 0
+    try:
+        with open(tmp_destination, "wb") as out_file:
+            while True:
+                block = chunk_file.file.read(_COPY_BUFFER_SIZE)
+                if not block:
+                    break
+                written += len(block)
+                if max_bytes > 0 and written > max_bytes:
+                    raise ValueError("Chunk terlalu besar")
+                out_file.write(block)
+    except Exception:
+        tmp_destination.unlink(missing_ok=True)
+        raise
 
-    tmp_destination.rename(destination)
+    tmp_destination.replace(destination)
     return destination
 
 
@@ -121,7 +139,10 @@ def assemble_file(file_id: str, total_chunks: int, original_filename: str) -> tu
 
     final_dir = _DATASETS_ROOT / file_id
     final_dir.mkdir(parents=True, exist_ok=True)
-    final_path = final_dir / original_filename
+    safe_name = Path(PurePosixPath(original_filename.replace("\\", "/")).name).name
+    final_path = final_dir / safe_name
+    if not safe_name or safe_name in {".", ".."} or final_path.resolve().parent != final_dir.resolve():
+        raise ValueError("Nama file tidak aman")
 
     total_size = 0
     tmp_final_path = final_path.with_suffix(final_path.suffix + ".assembling")

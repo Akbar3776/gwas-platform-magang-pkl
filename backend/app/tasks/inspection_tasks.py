@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import logging
 from pathlib import Path
 from typing import Any
 import uuid
 
-from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, ResultType
 from app.services.phenotype_service import (
@@ -20,6 +18,7 @@ from app.tasks._common import (
     JobCancelledError,
     append_log,
     ensure_not_cancelled,
+    guard_status_change,
     mark_job,
     stage_dir,
     upsert_result,
@@ -42,6 +41,7 @@ def run_inspection(
     job_id: str | None = None,
     dataset_id: str | None = None,
     phenotype_cfg: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute Phase 1 Data Inspection and sample ID reconciliation."""
     ctx = ctx or {}
@@ -52,7 +52,7 @@ def run_inspection(
     if not job_id:
         raise ValueError("run_inspection membutuhkan job_id")
 
-    ensure_not_cancelled(job_id)
+    ensure_not_cancelled(job_id, run_id=run_id)
 
     db = SessionLocal()
     try:
@@ -173,6 +173,7 @@ def run_inspection(
             file_path=str(report_json_file),
             summary_stats=report,
         )
+        guard_status_change(db, job.id, JobStatus.RUNNING_NORMALIZATION)
         job.overall_status = JobStatus.RUNNING_NORMALIZATION
         job.current_step = PipelineStep.NORMALIZATION
         db.commit()

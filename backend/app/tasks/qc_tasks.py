@@ -24,6 +24,8 @@ from app.tasks._common import (
     JobCancelledError,
     append_log,
     ensure_not_cancelled,
+    guard_status_change,
+    is_job_cancelled,
     mark_job,
     stage_dir,
     upsert_result,
@@ -31,7 +33,7 @@ from app.tasks._common import (
     write_json,
 )
 from app.tasks.celery_app import SoftTimeLimitExceeded, celery_app, get_task_logger
-from app.utils.process import CLIExecutionError, SubprocessFailed, run_cli_command
+from app.utils.process import CLICancelledError, CLIExecutionError, SubprocessFailed, run_cli_command
 
 logger = get_task_logger(__name__)
 QC_TIMEOUT_SECONDS = int(os.getenv("QC_TIMEOUT_SECONDS", str(6 * 60 * 60)))
@@ -48,7 +50,8 @@ def _error_text(exc: Exception) -> str:
 
 def _set_failed(job: AnalysisJob, exc: Exception, db) -> None:
     message = _error_text(exc)
-    job.overall_status = JobStatus.FAILED
+    if guard_status_change(db, job.id, JobStatus.FAILED):
+        job.overall_status = JobStatus.FAILED
     job.failed_step = "qc"
     job.error_message = message
     job.error_log = message
@@ -69,6 +72,7 @@ def run_qc_pipeline(
     job_id: str,
     dataset_id: str,
     qc_params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Run PLINK 2 / PLINK 1.9 Quality Control for one dataset.
@@ -78,7 +82,7 @@ def run_qc_pipeline(
     db = SessionLocal()
     ctx: dict[str, Any] = dict(normalization_result or {})
     try:
-        ensure_not_cancelled(job_id, db)
+        ensure_not_cancelled(job_id, db, run_id=run_id)
         job = db.get(AnalysisJob, job_id)
         dataset = db.get(Dataset, dataset_id)
         if job is None:
@@ -178,12 +182,15 @@ def run_qc_pipeline(
             f"Input VCF        : {input_vcf_path}\n"
             f"Fase 0 Overflow  : {overflow_removed} varian tereliminasi (POS > {MAX_32BIT_POS} / 32-bit overflow)\n"
             f"Populasi         : {cfg.population_type.value} (HWE: {'Nonaktif' if cfg.population_type.value == 'inbred' else cfg.hwe})\n"
-            f"Parameter        : MAF={cfg.maf}, GENO={cfg.geno}, MIND={cfg.mind}\n"
+            f"Parameter        : MAF={cfg.maf}, GENO={'Nonaktif' if cfg.geno is None else cfg.geno}, MIND={cfg.mind}\n"
             f"SNP-only/Bi-all  : {cfg.snps_only} / max-alleles={cfg.max_alleles}\n"
             f"Keep IDs         : {keep_ids_candidate or 'Semua sampel'}\n"
         )
 
         comparison_data: dict[str, Any] = {}
+
+        def _cancel_check() -> bool:
+            return is_job_cancelled(job_id, run_id=run_id)
 
         if has_plink2 and plink2_bin:
             commands = build_plink2_qc_commands(
@@ -197,9 +204,17 @@ def run_qc_pipeline(
             )
             try:
                 for cmd in commands:
-                    ensure_not_cancelled(job_id, db)
+                    ensure_not_cancelled(job_id, db, run_id=run_id)
                     append_log(log_file, f"Menjalankan: {' '.join(cmd)}")
-                    run_cli_command(cmd, cwd=workspace, log_file=log_file, timeout=QC_TIMEOUT_SECONDS)
+                    run_cli_command(
+                        cmd,
+                        cwd=workspace,
+                        log_file=log_file,
+                        timeout=QC_TIMEOUT_SECONDS,
+                        cancel_check=_cancel_check,
+                    )
+            except (JobCancelledError, CLICancelledError):
+                raise
             except (SubprocessFailed, CLIExecutionError, OSError) as exc:
                 logger.error("PLINK2 gagal pada tahap QC: %s; menghentikan pipeline.", exc)
                 append_log(log_file, f"[ERROR] PLINK2 gagal dieksekusi ({exc}); proses dihentikan tanpa fallback Python.")
@@ -219,9 +234,17 @@ def run_qc_pipeline(
             )
             try:
                 for cmd in commands:
-                    ensure_not_cancelled(job_id, db)
+                    ensure_not_cancelled(job_id, db, run_id=run_id)
                     append_log(log_file, f"Menjalankan: {' '.join(cmd)}")
-                    run_cli_command(cmd, cwd=workspace, log_file=log_file, timeout=QC_TIMEOUT_SECONDS)
+                    run_cli_command(
+                        cmd,
+                        cwd=workspace,
+                        log_file=log_file,
+                        timeout=QC_TIMEOUT_SECONDS,
+                        cancel_check=_cancel_check,
+                    )
+            except (JobCancelledError, CLICancelledError):
+                raise
             except (SubprocessFailed, CLIExecutionError, OSError) as exc:
                 logger.error("PLINK 1.9 gagal pada tahap QC: %s; menghentikan pipeline.", exc)
                 append_log(log_file, f"[ERROR] PLINK 1.9 gagal dieksekusi ({exc}); proses dihentikan tanpa fallback Python.")
@@ -314,9 +337,11 @@ def run_qc_pipeline(
         }
 
         if job.pipeline_type == "qc_only":
+            guard_status_change(db, job.id, JobStatus.COMPLETED)
             job.overall_status = JobStatus.COMPLETED
             job.completed_at = datetime.now(timezone.utc)
         else:
+            guard_status_change(db, job.id, JobStatus.RUNNING_IMPUTATION)
             job.overall_status = JobStatus.RUNNING_IMPUTATION
             job.current_step = PipelineStep.IMPUTATION
         db.commit()
@@ -338,7 +363,7 @@ def run_qc_pipeline(
             "log_file": str(log_file),
         }
 
-    except JobCancelledError:
+    except (JobCancelledError, CLICancelledError):
         logger.info("QC pipeline dibatalkan oleh user: job=%s", job_id)
         raise
     except SoftTimeLimitExceeded as exc:

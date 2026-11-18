@@ -16,7 +16,7 @@ services:
     restart: unless-stopped
     working_dir: /app
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - ../backend/.env
     environment:
@@ -50,7 +50,7 @@ services:
     container_name: gwas_postgres
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       - POSTGRES_USER=gwas_user
       - POSTGRES_PASSWORD=gwas_password
@@ -74,7 +74,7 @@ services:
     container_name: gwas_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -121,6 +121,31 @@ services:
     networks:
       - gwas_network
 
+  celery_beat:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: gwas_celery_beat
+    restart: unless-stopped
+    env_file:
+      - ../backend/.env
+    environment:
+      - DATABASE_URL=postgresql://gwas_user:gwas_password@db:5432/gwas_db
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - STORAGE_ROOT=/data/storage
+    volumes:
+      - ../backend/app:/app/app
+      - vcf_storage:/data/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.tasks.celery_app beat --loglevel=info --schedule /tmp/celerybeat-schedule
+    networks:
+      - gwas_network
+
   # ---------------------------------------------------------------------------
   # Flower - observability dashboard for Celery workers and tasks
   # ---------------------------------------------------------------------------
@@ -137,7 +162,7 @@ services:
       - FLOWER_PORT=5555
     command: celery -A app.tasks.celery_app flower --address=0.0.0.0 --port=5555
     ports:
-      - "5555:5555"
+      - "127.0.0.1:5555:5555"
     depends_on:
       redis:
         condition: service_healthy

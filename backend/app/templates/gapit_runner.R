@@ -54,46 +54,58 @@ if (!has_gapit) {
 }
 
 # 1. Muat Fenotipe
-myY <- read.table(opt$y, header = TRUE, stringsAsFactors = FALSE)
+myY <- read.table(opt$y, header = TRUE, sep = "\t", na.strings = "NA", check.names = FALSE, stringsAsFactors = FALSE)
 trait_name <- colnames(myY)[2]
 cat(sprintf("Trait terdeteksi : %s (%d sampel)\n", trait_name, nrow(myY)))
 
-# 2. Muat Genotipe (GD & GM) bila tersedia
-myGD <- NULL
-myGM <- NULL
-if (!is.null(opt$gd) && file.exists(opt$gd)) {
-  myGD <- read.table(opt$gd, header = TRUE, stringsAsFactors = FALSE)
+# 2. Muat Genotipe (GD & GM) - wajib tersedia untuk GAPIT
+if (is.null(opt$gd) || !file.exists(opt$gd)) {
+  stop(paste("Berkas genotipe GD tidak ditemukan:", opt$gd))
 }
-if (!is.null(opt$gm) && file.exists(opt$gm)) {
-  myGM <- read.table(opt$gm, header = TRUE, stringsAsFactors = FALSE)
+if (is.null(opt$gm) || !file.exists(opt$gm)) {
+  stop(paste("Berkas peta genetik GM tidak ditemukan:", opt$gm))
 }
+myGD <- read.table(opt$gd, header = TRUE, sep = "\t", check.names = FALSE, stringsAsFactors = FALSE)
+myGM <- read.table(opt$gm, header = TRUE, sep = "\t", check.names = FALSE, stringsAsFactors = FALSE)
 
 # 3. Muat Kovariat bila ada
 myCV <- NULL
 if (!is.null(opt$cv) && file.exists(opt$cv)) {
-  myCV <- read.table(opt$cv, header = TRUE, stringsAsFactors = FALSE)
+  myCV <- read.table(opt$cv, header = TRUE, sep = "\t", check.names = FALSE, stringsAsFactors = FALSE)
 }
 
 models_to_run <- unlist(strsplit(opt$models, ","))
+success_count <- 0
 
 for (m in models_to_run) {
   model_clean <- trimws(m)
   if (model_clean == "") next
   cat(sprintf("\n[GAPIT] Memulai analisis model: %s ...\n", model_clean))
 
-  tryCatch({
+  ok <- tryCatch({
     GAPIT(
       Y = myY,
       GD = myGD,
       GM = myGM,
       CV = myCV,
       model = model_clean,
-      memo = model_clean
+      memo = model_clean,
+      Geno.View.output = FALSE
     )
     cat(sprintf("[GAPIT] Model %s selesai dieksekusi.\n", model_clean))
+    TRUE
   }, error = function(e) {
     cat(sprintf("[GAPIT ERROR] Gagal menjalankan model %s: %s\n", model_clean, e$message))
+    FALSE
   })
+  if (ok) {
+    success_count <- success_count + 1
+  }
+}
+
+if (success_count == 0) {
+  cat("\n[GAPIT ERROR] Tidak ada model multi-locus yang berhasil dieksekusi.\n")
+  quit(status = 1)
 }
 
 cat("\n=== Eksekusi GAPIT Selesai ===\n")

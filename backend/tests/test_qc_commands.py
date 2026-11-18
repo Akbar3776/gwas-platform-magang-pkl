@@ -317,3 +317,54 @@ def test_filter_vcf_32bit_overflow_from_gzip_and_plain_vcf(tmp_path):
     assert "rs_overflow2" not in "\n".join(variant_lines)
 
 
+def test_build_plink2_qc_commands_geno_disabled():
+    cfg = QCPipelineConfig(
+        population_type=PopulationType.INBRED,
+        maf=0.05,
+        geno=None,
+        mind=0.05,
+    )
+    cmds = build_plink2_qc_commands(
+        cfg=cfg,
+        input_vcf="/data/in.vcf.gz",
+        output_dir=Path("/data/qc"),
+    )
+    cmd1 = cmds[1]
+    assert "--maf" in cmd1
+    assert "--geno" not in cmd1
+
+
+def test_build_plink19_qc_commands_geno_disabled():
+    cfg = QCPipelineConfig(
+        population_type=PopulationType.INBRED,
+        maf=0.05,
+        geno=None,
+        mind=0.05,
+    )
+    cmds = build_plink19_qc_commands(
+        cfg=cfg,
+        input_vcf="/data/in.vcf.gz",
+        output_dir=Path("/data/qc"),
+    )
+    cmd_main = cmds[1]
+    assert "--maf" in cmd_main
+    assert "--geno" not in cmd_main
+
+
+def test_build_plink_qc_command_geno_optional():
+    from app.services.qc_service import build_plink_qc_command
+
+    cmd_with = build_plink_qc_command(
+        input_vcf_path="/data/in.vcf.gz",
+        output_prefix="/data/out",
+        geno=0.05,
+    )
+    assert "--geno" in cmd_with
+
+    cmd_without = build_plink_qc_command(
+        input_vcf_path="/data/in.vcf.gz",
+        output_prefix="/data/out",
+        geno=None,
+    )
+    assert "--geno" not in cmd_without
+

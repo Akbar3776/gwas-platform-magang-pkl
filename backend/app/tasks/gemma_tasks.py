@@ -7,48 +7,33 @@ import gzip
 import math
 import os
 from pathlib import Path
+import re
 import shutil
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
 from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, Result, ResultType
-from app.services.manhattan_parser import compute_assoc_summary_stats, generate_manhattan_cache
-from app.tasks._common import which_tool
+from app.services.manhattan_parser import compute_assoc_summary_stats
+from app.tasks._common import (
+    JobCancelledError,
+    append_log,
+    ensure_not_cancelled,
+    guard_status_change,
+    is_job_cancelled,
+    mark_job,
+    which_tool,
+)
 from app.tasks.celery_app import celery_app, get_task_logger
-from app.utils.process import CLIExecutionError, SubprocessFailed, run_cli_command
+from app.utils.process import CLICancelledError, CLIExecutionError, SubprocessFailed, run_cli_command
 
 logger = get_task_logger(__name__)
 
 GEMMA_BINARY = which_tool("gemma") or "gemma"
 PLINK_BINARY = which_tool("plink2") or which_tool("plink") or "plink"
 GEMMA_TIMEOUT_SECONDS = int(os.getenv("GEMMA_TIMEOUT_SECONDS", str(6 * 60 * 60)))
-
-
-def _append_log(log_file: Path, message: str) -> None:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    with log_file.open("a", encoding="utf-8") as log:
-        log.write(message if message.endswith("\n") else f"{message}\n")
-
-
-def _mark_job(job_id: str, *, status: JobStatus | None = None, error: str | None = None, **fields: Any) -> None:
-    db = SessionLocal()
-    try:
-        job = db.get(AnalysisJob, job_id)
-        if job is None:
-            return
-        if status is not None:
-            job.overall_status = status
-        if error is not None:
-            job.error_message = error
-            job.error_log = error
-        for key, value in fields.items():
-            setattr(job, key, value)
-        db.commit()
-    finally:
-        db.close()
 
 
 def _upsert_result(
@@ -79,6 +64,12 @@ def _upsert_result(
             existing.summary_stats = summary_stats
 
 
+def _chr_label(raw: str) -> str:
+    """Label kromosom apa adanya, hanya prefix 'chr' (case-insensitive) yang dibuang."""
+    label = re.sub(r"^chr", "", str(raw).strip(), flags=re.IGNORECASE)
+    return label or "0"
+
+
 def _parse_vcf_genotypes(vcf_path: Path) -> tuple[list[str], list[dict[str, Any]]]:
     """Parse sample IDs and biallelic genotype dosage rows from a .vcf or .vcf.gz file."""
     samples: list[str] = []
@@ -101,10 +92,9 @@ def _parse_vcf_genotypes(vcf_path: Path) -> tuple[list[str], list[dict[str, Any]
             parts = line.split("\t")
             if len(parts) < 5:
                 continue
-            raw_chr = parts[0].lstrip("chrCHR")
-            chr_num = int(raw_chr) if raw_chr.isdigit() and 1 <= int(raw_chr) <= 26 else ((idx % 22) + 1)
+            chr_label = _chr_label(parts[0])
             pos = int(parts[1]) if parts[1].isdigit() else (idx + 1) * 1000
-            rsid = parts[2] if parts[2] and parts[2] != "." else f"chr{chr_num}:{pos}"
+            rsid = parts[2] if parts[2] and parts[2] != "." else f"{chr_label}:{pos}"
             ref = parts[3]
             alt = parts[4].split(",")[0]
 
@@ -124,7 +114,7 @@ def _parse_vcf_genotypes(vcf_path: Path) -> tuple[list[str], list[dict[str, Any]
 
             variants.append(
                 {
-                    "chr": chr_num,
+                    "chr": chr_label,
                     "rs": rsid,
                     "ps": pos,
                     "ref": ref,
@@ -142,8 +132,7 @@ def _prepare_phenotype_vector(
     work_dir: Path,
     log_file: Path,
 ) -> tuple[np.ndarray, Path]:
-    """Load user phenotype file by matching sample IID; otherwise load inspection/fixture phenotype."""
-    n_samples = max(len(samples), 3)
+    """Load user phenotype file by matching sample IID against genotype samples."""
     target_pheno_file = work_dir / "phenotypes.txt"
 
     # Cari file fenotipe kandidat
@@ -151,8 +140,6 @@ def _prepare_phenotype_vector(
     if phenotype_path:
         candidate_paths.append(Path(phenotype_path))
     candidate_paths.append(work_dir.parent / "inspection" / "pheno_plink.txt")
-    candidate_paths.append(Path(settings.STORAGE_ROOT) / "fixtures" / "toy_pheno.txt")
-    candidate_paths.append(Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "data" / "toy_pheno.txt")
 
     resolved_path: Path | None = None
     for p in candidate_paths:
@@ -190,30 +177,16 @@ def _prepare_phenotype_vector(
         if any(v != -9.0 for v in matched_vals):
             pheno_vec = np.array(matched_vals, dtype=float)
             target_pheno_file.write_bytes(("\n".join(f"{v:.6f}" if v != -9.0 else "-9" for v in pheno_vec) + "\n").encode("utf-8"))
-            _append_log(
+            append_log(
                 log_file,
                 f"[6.2] File fenotipe dimuat: {resolved_path} (Mencocokkan {len(pheno_vec)} sampel)",
             )
             return pheno_vec, target_pheno_file
 
-    # Jika tidak ada file fenotipe sama sekali (mode test/simulasi)
-    pheno_vec = np.zeros(n_samples, dtype=float)
-    for v_idx, var in enumerate(variants):
-        weight = 1.35 if v_idx == 0 else (0.75 if v_idx % 2 == 1 else -0.45)
-        for s_idx in range(n_samples):
-            d = var["dosages"][s_idx] if s_idx < len(var["dosages"]) else None
-            if d is not None:
-                pheno_vec[s_idx] += weight * d
-
-    for s_idx in range(n_samples):
-        pheno_vec[s_idx] += 0.25 * ((s_idx + 1) / n_samples)
-
-    target_pheno_file.write_bytes(("\n".join(f"{v:.6f}" for v in pheno_vec) + "\n").encode("utf-8"))
-    _append_log(
-        log_file,
-        f"[6.2] Memakai vektor fenotipe kuantitatif dari dataset: {target_pheno_file.name}",
+    raise ValueError(
+        "Tidak ada sampel genotipe yang cocok dengan file fenotipe. "
+        "Periksa kolom IID fenotipe vs ID sampel VCF (lihat laporan Tahap 1)."
     )
-    return pheno_vec, target_pheno_file
 
 
 def _ensure_fam_phenotypes(bfile_prefix: str, pheno_vec: np.ndarray, log_file: Path) -> None:
@@ -238,10 +211,16 @@ def _ensure_fam_phenotypes(bfile_prefix: str, pheno_vec: np.ndarray, log_file: P
         else:
             updated.append(line)
     fam_path.write_bytes(("\n".join(updated) + "\n").encode("utf-8"))
-    _append_log(log_file, f"[6.2] Kolom fenotipe pada {fam_path.name} diperbarui untuk {len(updated)} sampel.")
+    append_log(log_file, f"[6.2] Kolom fenotipe pada {fam_path.name} diperbarui untuk {len(updated)} sampel.")
 
 
-def _bfile_prefix(genotype_path: str, work_dir: Path, log_file: Path) -> str:
+def _bfile_prefix(
+    genotype_path: str,
+    work_dir: Path,
+    log_file: Path,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+) -> str:
     path = Path(genotype_path)
     if path.suffix == ".bed":
         prefix = str(path.with_suffix(""))
@@ -249,7 +228,7 @@ def _bfile_prefix(genotype_path: str, work_dir: Path, log_file: Path) -> str:
         missing = [str(item) for item in required if not item.is_file()]
         if missing:
             raise FileNotFoundError(f"PLINK dataset tidak lengkap: {', '.join(missing)}")
-        _append_log(log_file, f"[6.1] Menggunakan dataset PLINK biner langsung: {prefix}.bed/.bim/.fam")
+        append_log(log_file, f"[6.1] Menggunakan dataset PLINK biner langsung: {prefix}.bed/.bim/.fam")
         return prefix
     if path.suffix in {".vcf", ".gz"} and (path.name.endswith(".vcf") or path.name.endswith(".vcf.gz")):
         converted_prefix = work_dir / "genotypes"
@@ -266,12 +245,13 @@ def _bfile_prefix(genotype_path: str, work_dir: Path, log_file: Path) -> str:
             "--out",
             str(converted_prefix),
         ]
-        _append_log(log_file, f"[6.1] Mengonversi VCF ke PLINK binary (.bed/.bim/.fam): {' '.join(cmd)}")
+        append_log(log_file, f"[6.1] Mengonversi VCF ke PLINK binary (.bed/.bim/.fam): {' '.join(cmd)}")
         run_cli_command(
             cmd,
             cwd=work_dir,
             log_file=log_file,
             timeout=GEMMA_TIMEOUT_SECONDS,
+            cancel_check=cancel_check,
         )
         return str(converted_prefix)
     raise ValueError("genotype_path harus berupa .vcf/.vcf.gz atau prefix/file .bed dengan .bim dan .fam")
@@ -313,20 +293,19 @@ def _run_statistical_gwas_fallback(
     if candidate_bfile and Path(f"{candidate_bfile}.bed").is_file():
         try:
             samples, plink_vars, G_mat = read_plink_binary(candidate_bfile)
-            for idx, pv in enumerate(plink_vars):
-                raw_chr = str(pv["chrom"]).lstrip("chrCHR")
-                chr_num = int(raw_chr) if raw_chr.isdigit() and 1 <= int(raw_chr) <= 26 else ((idx % 22) + 1)
+            for pv in plink_vars:
+                chr_label = _chr_label(pv["chrom"])
                 variants_meta.append(
                     {
-                        "chr": chr_num,
-                        "rs": pv["rsid"] if pv["rsid"] and pv["rsid"] != "." else f"chr{chr_num}:{pv['pos']}",
+                        "chr": chr_label,
+                        "rs": pv["rsid"] if pv["rsid"] and pv["rsid"] != "." else f"{chr_label}:{pv['pos']}",
                         "ps": int(pv["pos"]),
                         "alt": pv["a1"],
                         "ref": pv["a2"],
                     }
                 )
             used_plink_binary = True
-            _append_log(
+            append_log(
                 log_file,
                 f"[6.1] Membaca genotipe biner PLINK ({Path(candidate_bfile).name}): "
                 f"{len(samples)} sampel, {len(variants_meta)} varian dimuat.",
@@ -354,7 +333,7 @@ def _run_statistical_gwas_fallback(
             for s_idx, d in enumerate(var["dosages"][:n_s]):
                 if d is not None:
                     G_mat[s_idx, v_idx] = int(round(d))
-        _append_log(
+        append_log(
             log_file,
             f"[6.1] Membaca genotipe dari {src_vcf.name}: {len(samples)} sampel ({', '.join(samples[:8])}), "
             f"{len(variants_meta)} varian ditemukan.",
@@ -379,19 +358,19 @@ def _run_statistical_gwas_fallback(
         np.savetxt(kinship_path, kinship_mat, fmt="%.6f", delimiter="\t")
 
     if model == "lmm":
-        _append_log(
+        append_log(
             log_file,
             f"[6.3] Centered Relatedness Matrix (Kinship K = W*W^T / p) siap digunakan -> {kinship_path.name}:",
         )
         for idx, row in enumerate(kinship_mat[:6]):
             sname = samples[idx] if idx < len(samples) else f"S{idx+1}"
-            _append_log(log_file, f"      {sname:<10}: [" + ", ".join(f"{v:+.4f}" for v in row[:6]) + "]")
+            append_log(log_file, f"      {sname:<10}: [" + ", ".join(f"{v:+.4f}" for v in row[:6]) + "]")
 
-    _append_log(
+    append_log(
         log_file,
         f"[6.4] Menjalankan uji asosiasi tervektorisasi per SNP (Model: {model.upper()}, Statistik: Wald Test)...",
     )
-    _append_log(
+    append_log(
         log_file,
         "      CHR  SNP             BP          A1  A0  N_MISS  AF      BETA      SE        P_WALD",
     )
@@ -506,11 +485,11 @@ def _run_statistical_gwas_fallback(
                 out_f.writelines(chunk_lines)
 
     if preview_log_lines:
-        _append_log(log_file, "\n".join(preview_log_lines))
+        append_log(log_file, "\n".join(preview_log_lines))
         if n_variants > len(preview_log_lines):
-            _append_log(log_file, f"      ... (menampilkan {len(preview_log_lines)} dari total {n_variants} varian)")
+            append_log(log_file, f"      ... (menampilkan {len(preview_log_lines)} dari total {n_variants} varian)")
 
-    _append_log(
+    append_log(
         log_file,
         f"[6.5] File hasil asosiasi disimpan ke {assoc_path} ({n_variants} varian dianalisis).",
     )
@@ -520,7 +499,7 @@ def _merge_gemma_log_file(gemma_sub_log: Path, main_log_file: Path, title: str) 
     if gemma_sub_log.is_file():
         content = gemma_sub_log.read_text(encoding="utf-8", errors="replace").strip()
         if content:
-            _append_log(main_log_file, f"\n--- {title} ({gemma_sub_log.name}) ---\n{content}\n")
+            append_log(main_log_file, f"\n--- {title} ({gemma_sub_log.name}) ---\n{content}\n")
 
 
 @celery_app.task(
@@ -539,9 +518,18 @@ def run_gemma_gwas(
     phenotype_path: str = "",
     model: str = "lmm",
     params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, str]:
     """Run GEMMA kinship and association analysis for an imputed dataset."""
     try:
+        check_db = SessionLocal()
+        try:
+            ensure_not_cancelled(job_id, check_db, run_id=run_id)
+        finally:
+            check_db.close()
+
+        def _cancel_check() -> bool:
+            return is_job_cancelled(job_id, run_id=run_id)
         params = params or {}
         genotype_path = imputation_result.get("output_vcf") or imputation_result.get("genotype_vcf_path")
         if not genotype_path:
@@ -570,7 +558,7 @@ def run_gemma_gwas(
             if is_multilocus
             else ("Linear Mixed Model + Kinship Matrix" if model == "lmm" else "General Linear Model / LM")
         )
-        _append_log(
+        append_log(
             log_file,
             f"=== TAHAP 6: ANALISIS ASOSIASI GWAS (GEMMA / GLM) ===\n"
             f"Waktu mulai    : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
@@ -579,13 +567,14 @@ def run_gemma_gwas(
             f"File Fenotipe  : {phenotype_path or imputation_result.get('pheno_path') or '(otomatis dari dataset)'}",
         )
 
-        _mark_job(
+        mark_job(
             job_id,
             status=JobStatus.RUNNING_GWAS,
             current_step=PipelineStep.GWAS,
             work_dir=str(work_dir),
             error_message=None,
             error_log=None,
+            session_factory=SessionLocal,
         )
         output_dir_gemma = work_dir / "output"
         output_dir_gemma.mkdir(parents=True, exist_ok=True)
@@ -607,7 +596,6 @@ def run_gemma_gwas(
             if qc_bed.is_file():
                 candidate_bfile = str(qc_bed.with_suffix(""))
 
-        ran_cli_gemma = False
         if has_gemma_binaries:
             try:
                 if (
@@ -627,9 +615,9 @@ def run_gemma_gwas(
                     ]
                     variants = []
                     source_label = "QC" if imputation_result.get("imputation_skipped", True) else "imputasi"
-                    _append_log(log_file, f"[6.1] Menggunakan PLINK binary dari tahap {source_label}: {bfile_prefix}.bed/.bim/.fam")
+                    append_log(log_file, f"[6.1] Menggunakan PLINK binary dari tahap {source_label}: {bfile_prefix}.bed/.bim/.fam")
                 else:
-                    bfile_prefix = _bfile_prefix(genotype_path, work_dir, log_file)
+                    bfile_prefix = _bfile_prefix(genotype_path, work_dir, log_file, cancel_check=_cancel_check)
                     if Path(f"{bfile_prefix}.fam").is_file():
                         samples = [
                             line.split()[1]
@@ -666,8 +654,14 @@ def run_gemma_gwas(
                         "-o",
                         "kinship",
                     ]
-                    _append_log(log_file, f"[6.3] Menjalankan GEMMA Kinship Matrix: {' '.join(kinship_command)}")
-                    run_cli_command(kinship_command, cwd=work_dir, log_file=log_file, timeout=GEMMA_TIMEOUT_SECONDS)
+                    append_log(log_file, f"[6.3] Menjalankan GEMMA Kinship Matrix: {' '.join(kinship_command)}")
+                    run_cli_command(
+                        kinship_command,
+                        cwd=work_dir,
+                        log_file=log_file,
+                        timeout=GEMMA_TIMEOUT_SECONDS,
+                        cancel_check=_cancel_check,
+                    )
                     _merge_gemma_log_file(output_dir_gemma / "kinship.log.txt", log_file, "Log GEMMA Kinship")
                     if not kinship_path.is_file():
                         raise RuntimeError(f"Matriks kinship tidak ditemukan: {kinship_path}")
@@ -697,8 +691,14 @@ def run_gemma_gwas(
                 cov_path = imputation_result.get("gemma_covariates_path")
                 if cov_path and Path(cov_path).is_file():
                     association_command.extend(["-c", str(cov_path)])
-                _append_log(log_file, f"[6.4] Menjalankan GEMMA Association: {' '.join(association_command)}")
-                run_cli_command(association_command, cwd=work_dir, log_file=log_file, timeout=GEMMA_TIMEOUT_SECONDS)
+                append_log(log_file, f"[6.4] Menjalankan GEMMA Association: {' '.join(association_command)}")
+                run_cli_command(
+                    association_command,
+                    cwd=work_dir,
+                    log_file=log_file,
+                    timeout=GEMMA_TIMEOUT_SECONDS,
+                    cancel_check=_cancel_check,
+                )
                 _merge_gemma_log_file(output_dir_gemma / "association.log.txt", log_file, "Log GEMMA Association")
 
                 if not assoc_path.is_file():
@@ -706,19 +706,20 @@ def run_gemma_gwas(
                 lines = assoc_path.read_text(encoding="utf-8", errors="replace").splitlines()
                 if len(lines) <= 1:
                     raise RuntimeError("GEMMA selesai tetapi tidak menghasilkan baris varian pada file asosiasi.")
-                ran_cli_gemma = True
-                _append_log(
+                append_log(
                     log_file,
                     f"[6.5] GEMMA CLI berhasil menganalisis {len(lines) - 1} SNP -> {assoc_path}",
                 )
+            except (JobCancelledError, CLICancelledError):
+                raise
             except (SubprocessFailed, CLIExecutionError, FileNotFoundError, RuntimeError) as cli_exc:
-                _append_log(
+                append_log(
                     log_file,
                     f"[ERROR] Eksekusi GEMMA gagal ({cli_exc}); proses dihentikan tanpa fallback Python.",
                 )
                 raise
         else:
-            _append_log(
+            append_log(
                 log_file,
                 "[ERROR] Tools GEMMA / PLINK tidak ditemukan; proses GWAS dihentikan.",
             )
@@ -730,7 +731,7 @@ def run_gemma_gwas(
         normalize_association_results(assoc_path, norm_path)
         summary_stats = compute_assoc_summary_stats(str(assoc_path))
 
-        _append_log(
+        append_log(
             log_file,
             f"[SUCCESS] Analisis asosiasi GEMMA selesai: {assoc_path}\n"
             f"          File hasil ternormalisasi: {norm_path.name} ({summary_stats['total_snps']} SNP)",
@@ -740,6 +741,7 @@ def run_gemma_gwas(
         try:
             job = db.get(AnalysisJob, job_id)
             if job is not None:
+                guard_status_change(db, job.id, JobStatus.RUNNING_MULTILOCUS)
                 job.overall_status = JobStatus.RUNNING_MULTILOCUS
                 job.current_step = PipelineStep.MULTILOCUS
                 job.assoc_output_path = str(assoc_path)
@@ -778,11 +780,20 @@ def run_gemma_gwas(
             "normalized_assoc_path": str(norm_path),
             "log_file": str(log_file),
         }
+    except (JobCancelledError, CLICancelledError):
+        logger.info("GEMMA GWAS dibatalkan: job=%s", job_id)
+        raise
     except Exception as exc:
         message = str(exc)
         if isinstance(exc, CLIExecutionError):
             message = f"{exc}\n\n--- Log terakhir ---\n{''.join(exc.last_lines).strip()}"
-        _mark_job(job_id, status=JobStatus.FAILED, failed_step="gwas", error=message)
+        mark_job(
+            job_id,
+            status=JobStatus.FAILED,
+            failed_step="gwas",
+            error=message,
+            session_factory=SessionLocal,
+        )
         logger.exception("GEMMA GWAS gagal untuk job=%s", job_id)
         raise
 

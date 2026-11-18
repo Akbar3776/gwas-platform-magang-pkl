@@ -10,8 +10,8 @@ Catatan desain:
 """
 
 from collections.abc import Generator
-from contextlib import contextmanager
 import logging
+import os
 from pathlib import Path
 import socket
 from urllib.parse import urlparse
@@ -20,14 +20,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
-from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep
 
 logger = logging.getLogger(__name__)
 
 
 def _build_engine():
     db_url = settings.DATABASE_URL
-    if db_url.startswith("postgresql"):
+    allow_sqlite_fallback = os.getenv("ALLOW_SQLITE_FALLBACK", "false").lower() == "true"
+    if db_url.startswith("postgresql") and allow_sqlite_fallback:
         parsed = urlparse(db_url)
         host = parsed.hostname or "localhost"
         port = parsed.port or 5432
@@ -36,7 +36,6 @@ def _build_engine():
             sock.settimeout(0.3)
             try:
                 sock.connect((host, port))
-                sock.close()
             except OSError:
                 sqlite_path = (Path(__file__).resolve().parents[3] / "gwas_local.db").as_posix()
                 logger.warning(
@@ -50,14 +49,18 @@ def _build_engine():
                     connect_args={"check_same_thread": False},
                     future=True,
                 )
+            finally:
+                sock.close()
 
-    return create_engine(
-        db_url,
-        pool_pre_ping=True,
-        pool_size=10,
-        max_overflow=20,
-        future=True,
-    )
+    engine_kwargs: dict = {
+        "pool_pre_ping": True,
+        "pool_size": 10,
+        "max_overflow": 20,
+        "future": True,
+    }
+    if db_url.startswith("postgresql"):
+        engine_kwargs["connect_args"] = {"connect_timeout": 5}
+    return create_engine(db_url, **engine_kwargs)
 
 
 engine = _build_engine()
@@ -84,24 +87,3 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
-
-
-@contextmanager
-def get_db_session():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-def update_job_status(job_id: str, status: str, step: str, error: str | None = None) -> None:
-    with get_db_session() as db:
-        job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
-        if job is None:
-            return
-        job.overall_status = JobStatus(status.lower())
-        job.current_step = PipelineStep(step.lower())
-        if error is not None:
-            job.error_message = error
-        db.commit()

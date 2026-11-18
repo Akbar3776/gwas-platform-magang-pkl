@@ -1,6 +1,5 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-import pytest
 
 from app.tasks.imputation_tasks import _beagle_command, _prepare_beagle_safe_vcf, run_imputation
 from app.services.qc_service import MAX_32BIT_POS

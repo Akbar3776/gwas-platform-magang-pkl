@@ -26,22 +26,20 @@ langsung ditolak karena versinya tidak cocok lagi.
 """
 
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Cookie, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.engine.database import get_db
-from app.db.engine.models import User, UserRole
+from app.db.engine.models import AnalysisJob, User, UserRole
 
-try:
-    from jose import JWTError, jwt
-except ImportError:  # pragma: no cover - fallback to PyJWT when python-jose is absent
-    import jwt  # type: ignore[no-redef]
-    from jwt.exceptions import PyJWTError as JWTError  # type: ignore[no-redef]
+import jwt
+from jwt import PyJWTError as JWTError
 
 try:
     from passlib.context import CryptContext
@@ -50,11 +48,25 @@ except ImportError:  # pragma: no cover - fallback when passlib is absent
     _pwd_context = None
 
 # --- Konfigurasi ------------------------------------------------------------
+_KNOWN_PLACEHOLDERS = {
+    "",
+    "change-me-in-production",
+    "change-this-jwt-secret-key-in-production-min-32-chars",
+    "change-this-secret-key-in-production-min-32-chars",
+}
+
+
+def resolve_jwt_secret(raw_secret: str, env: str) -> str:
+    env = (env or "development").lower()
+    if env not in {"development", "test"} and (raw_secret in _KNOWN_PLACEHOLDERS or len(raw_secret) < 32):
+        raise RuntimeError("JWT_SECRET_KEY wajib string acak >= 32 karakter di luar mode development")
+    return raw_secret or "dev-only-insecure-secret"
+
+
 # Ambil dari environment variable atau fallback ke config.settings
-SECRET_KEY = (
-    os.environ.get("JWT_SECRET_KEY")
-    or getattr(settings, "JWT_SECRET_KEY", "")
-    or getattr(settings, "SECRET_KEY", "change-me-in-production")
+SECRET_KEY = resolve_jwt_secret(
+    os.environ.get("JWT_SECRET_KEY") or getattr(settings, "JWT_SECRET_KEY", "") or getattr(settings, "SECRET_KEY", ""),
+    os.environ.get("ENV", getattr(settings, "ENV", "development")),
 )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(getattr(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 180))
@@ -186,6 +198,21 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != UserRole.ADMIN and _role_str(user.role) != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Khusus admin")
     return user
+
+
+def is_admin(user: User) -> bool:
+    return _role_str(user.role) == "admin"
+
+
+def require_job_owner(
+    job_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisJob:
+    job = db.get(AnalysisJob, job_id)
+    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not is_admin(user)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job tidak ditemukan.")
+    return job
 
 
 def verify_refresh_token_and_get_user(

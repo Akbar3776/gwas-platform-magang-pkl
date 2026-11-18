@@ -7,9 +7,9 @@ import json
 import math
 from datetime import datetime, timezone
 from pathlib import Path
+import shutil
 from typing import Any
 
-from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, ResultType
 from app.schemas.pipeline import ClumpConfig, ThresholdConfig
@@ -22,6 +22,8 @@ from app.tasks._common import (
     JobCancelledError,
     append_log,
     ensure_not_cancelled,
+    guard_status_change,
+    is_job_cancelled,
     mark_job,
     stage_dir,
     upsert_result,
@@ -29,7 +31,7 @@ from app.tasks._common import (
     write_json,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
-from app.utils.process import CLIExecutionError, SubprocessFailed, run_cli_command
+from app.utils.process import CLICancelledError, run_cli_command
 
 logger = get_task_logger(__name__)
 
@@ -47,6 +49,7 @@ def run_postgwas_analysis(
     dataset_id: str,
     threshold_params: dict[str, Any] | None = None,
     clump_params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Menjalankan kalkulasi pasca-GWAS:
@@ -57,7 +60,7 @@ def run_postgwas_analysis(
     db = SessionLocal()
     ctx: dict[str, Any] = dict(gwas_result or {})
     try:
-        ensure_not_cancelled(job_id, db)
+        ensure_not_cancelled(job_id, db, run_id=run_id)
         job = db.get(AnalysisJob, job_id)
         if job is None:
             raise ValueError(f"AnalysisJob {job_id} tidak ditemukan")
@@ -188,7 +191,13 @@ def run_postgwas_analysis(
             ]
             try:
                 append_log(log_file, f"Menjalankan PLINK2 Clumping: {' '.join(clump_cmd)}")
-                run_cli_command(clump_cmd, cwd=workspace, log_file=log_file, timeout=1800)
+                run_cli_command(
+                    clump_cmd,
+                    cwd=workspace,
+                    log_file=log_file,
+                    timeout=1800,
+                    cancel_check=lambda: is_job_cancelled(job_id, run_id=run_id),
+                )
                 ran_plink_clump = True
                 clumps_output = workspace / "clumped.clumps"
                 if clumps_output.is_file():
@@ -216,6 +225,8 @@ def run_postgwas_analysis(
                                 })
                             except (ValueError, KeyError):
                                 continue
+            except (JobCancelledError, CLICancelledError):
+                raise
             except Exception as exc:
                 logger.error("PLINK2 Clump gagal: %s; menghentikan pipeline.", exc)
                 append_log(log_file, f"[ERROR] PLINK2 Clump gagal ({exc}); proses dihentikan tanpa fallback Python.")
@@ -351,12 +362,6 @@ def run_postgwas_analysis(
                     shutil.copyfile(peak_json, ml_peak_target)
                 except Exception:
                     pass
-        ml_dir = workspace.parent / "multilocus"
-        if ml_dir.is_dir():
-            try:
-                shutil.copyfile(peak_json, ml_dir / "peak_comparison.json")
-            except Exception:
-                pass
 
         # 6. Upsert Results ke database
         upsert_result(db, job_id, ResultType.THRESHOLDS, str(thresholds_file), thresholds)
@@ -370,6 +375,7 @@ def run_postgwas_analysis(
             "thresholds": thresholds,
             "n_lead_snps": len(lead_snps),
         }
+        guard_status_change(db, job.id, JobStatus.RUNNING_PARSING)
         job.overall_status = JobStatus.RUNNING_PARSING
         job.current_step = PipelineStep.VISUALIZATION
         db.commit()
@@ -385,7 +391,7 @@ def run_postgwas_analysis(
             "thresholds_json_path": str(thresholds_file),
         }
 
-    except JobCancelledError:
+    except (JobCancelledError, CLICancelledError):
         logger.info("Post-GWAS dibatalkan: job=%s", job_id)
         raise
     except Exception as exc:

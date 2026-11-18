@@ -1,3 +1,5 @@
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -64,3 +66,19 @@ def test_run_cli_command_calls_line_callback(monkeypatch, tmp_path: Path):
 
     assert result.returncode == 0
     assert received == ["tool started", "last diagnostic"]
+
+
+def test_run_cli_command_terminates_when_cancelled(tmp_path: Path):
+    log_path = tmp_path / "x.log"
+    started = time.monotonic()
+    with pytest.raises(process.CLICancelledError):
+        process.run_cli_command(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            cwd=tmp_path,
+            log_file=log_path,
+            cancel_check=lambda: True,
+            cancel_poll_seconds=0.2,
+        )
+    elapsed = time.monotonic() - started
+    assert elapsed < 10.0
+    assert "[CANCELLED]" in log_path.read_text(encoding="utf-8")

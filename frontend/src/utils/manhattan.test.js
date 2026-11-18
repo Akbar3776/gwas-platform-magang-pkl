@@ -1,4 +1,4 @@
-import { buildManhattanLayout, toLog10Threshold } from "./manhattan";
+import { buildManhattanLayout, formatChromosomeLabel, toLog10Threshold } from "./manhattan";
 
 describe("buildManhattanLayout", () => {
   it("prevents small chromosomes (Chr 9..22) from piling up at the corner after gigabase chromosomes (Chr 1..8)", () => {
@@ -42,5 +42,13 @@ describe("buildManhattanLayout", () => {
   it("converts p-value thresholds and log10 thresholds accurately", () => {
     expect(toLog10Threshold(1e-6)).toBeCloseTo(6, 5);
     expect(toLog10Threshold(7.3)).toBeCloseTo(7.3, 5);
+  });
+
+  it("formats non-numeric chromosome labels when chr_labels map is provided", () => {
+    const labels = { 1: "Gm01", 2: "Gm02", 3: "scaffold_1" };
+    expect(formatChromosomeLabel(1, labels)).toBe("Gm01");
+    expect(formatChromosomeLabel("3", labels)).toBe("scaffold_1");
+    expect(formatChromosomeLabel(4, labels)).toBe("4");
+    expect(formatChromosomeLabel(23, null)).toBe("23");
   });
 });

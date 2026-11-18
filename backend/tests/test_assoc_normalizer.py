@@ -1,7 +1,3 @@
-from pathlib import Path
-
-import pytest
-
 from app.services.assoc_normalizer import (
     CANONICAL_COLUMNS,
     detect_association_format,
@@ -91,3 +87,33 @@ def test_normalize_gapit_output(tmp_path):
     assert row1[1] == "12000"
     assert row1[2] == "rs501"
     assert float(row1[8]) == 3.4e-7
+
+
+def test_normalize_gapit_4_1_headers_and_chr_prefix(tmp_path):
+    import csv
+    import pytest
+
+    gapit_file = tmp_path / "GAPIT.Association.GWAS_Results.FarmCPU.TRAIT(NYC).csv"
+    gapit_content = (
+        "SNP,Chr,Pos,P.value,MAF,effect,nobs,H&B.P.Value\n"
+        "snp1,1,1000,0.42,0.48,0.11,80,0.99\n"
+        "snp2,H1,2000,0.15,0.25,-0.05,80,0.75\n"
+    )
+    gapit_file.write_text(gapit_content, encoding="utf-8")
+
+    out_tsv = tmp_path / "gapit41_normalized.tsv"
+    count = normalize_association_results(gapit_file, out_tsv)
+    assert count == 2
+
+    with out_tsv.open("r", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+
+    assert len(rows) == 2
+    assert rows[0]["chr"] == "1"
+    assert rows[0]["pos"] == "1000"
+    assert float(rows[0]["p"]) == pytest.approx(0.42)
+    assert float(rows[0]["af"]) == pytest.approx(0.48)
+    assert float(rows[0]["beta"]) == pytest.approx(0.11)
+    assert rows[0]["n"] == "80"
+
+    assert rows[1]["chr"] == "H1"

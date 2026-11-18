@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import gzip
+import math
 from pathlib import Path
+import re
 import shutil
 import uuid
 
@@ -13,9 +15,9 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import get_current_user
+from app.core.security import get_current_user, is_admin
 from app.db.engine.database import get_db
-from app.db.engine.models import AnalysisJob, Dataset, JobStatus, UploadStatus, User
+from app.db.engine.models import ACTIVE_JOB_STATUSES, AnalysisJob, Dataset, UploadStatus, User
 from app.schemas.upload import (
     ChunkUploadResponse,
     FinalizeUploadResponse,
@@ -34,16 +36,21 @@ from app.tasks.upload_tasks import assemble_dataset_task
 router = APIRouter(prefix="/upload", tags=["upload"])
 
 
-def _is_admin(user: User) -> bool:
-    role_val = user.role.value if hasattr(user.role, "value") else str(user.role)
-    return role_val == "admin"
-
-
 def _owned_dataset(file_id: uuid.UUID, user: User, db: Session) -> Dataset:
     dataset = db.get(Dataset, file_id)
-    if dataset is None or (dataset.owner_id != user.id and not _is_admin(user)):
+    if dataset is None or (dataset.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload tidak ditemukan")
     return dataset
+
+
+def _under_storage(p: Path) -> bool:
+    root = Path(settings.STORAGE_ROOT).resolve()
+    try:
+        resolved = p.resolve()
+        resolved.relative_to(root)
+        return resolved != root
+    except ValueError:
+        return False
 
 
 @router.get("/datasets")
@@ -53,7 +60,7 @@ def list_uploaded_datasets(
 ) -> list[dict]:
     """Mengembalikan daftar file dataset yang sudah diunggah oleh user."""
     query = db.query(Dataset).filter(Dataset.deleted_at.is_(None))
-    if not _is_admin(user):
+    if not is_admin(user):
         query = query.filter(Dataset.owner_id == user.id)
     datasets = query.order_by(Dataset.uploaded_at.desc()).limit(50).all()
 
@@ -95,6 +102,12 @@ def init_upload(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> InitUploadResponse:
+    if settings.MAX_UPLOAD_SIZE_BYTES > 0 and payload.total_size_bytes > settings.MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Ukuran total berkas melebihi batas maksimal yang diizinkan.",
+        )
+
     dataset = Dataset(
         owner_id=user.id,
         original_filename=payload.original_filename,
@@ -125,10 +138,33 @@ def upload_chunk(
     if chunk_index >= total_chunks:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="chunk_index di luar rentang")
 
+    max_chunks = math.ceil((dataset.file_size_bytes or 0) / (1024 * 1024)) + 1
+    if total_chunks > max_chunks:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Jumlah chunk melebihi batas yang wajar untuk ukuran berkas.",
+        )
+
     try:
-        upload_service.save_chunk(str(file_id), chunk_index, chunk)
+        saved_path = upload_service.save_chunk(
+            str(file_id),
+            chunk_index,
+            chunk,
+            max_bytes=settings.MAX_CHUNK_SIZE_BYTES,
+        )
     except upload_service.InvalidFileIdError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="file_id tidak valid") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)) from exc
+
+    staging_dir = upload_service.get_staging_dir(str(file_id))
+    total_staged_bytes = sum(p.stat().st_size for p in staging_dir.glob("chunk_*.part"))
+    if total_staged_bytes > (dataset.file_size_bytes or 0) + settings.MAX_CHUNK_SIZE_BYTES:
+        saved_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Total ukuran chunk yang diterima melebihi batas ukuran berkas.",
+        )
 
     received_indices = upload_service.get_received_chunk_indices(str(file_id))
     return ChunkUploadResponse(
@@ -230,21 +266,13 @@ def delete_uploaded_dataset(
     if dataset.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload sudah dihapus")
 
-    active_statuses = {
-        JobStatus.RUNNING,
-        JobStatus.RUNNING_NORMALIZATION,
-        JobStatus.RUNNING_QC,
-        JobStatus.RUNNING_IMPUTATION,
-        JobStatus.RUNNING_GWAS,
-        JobStatus.RUNNING_PARSING,
-    }
     related_jobs = (
         db.query(AnalysisJob)
         .filter(AnalysisJob.dataset_id == dataset.id)
         .all()
     )
     for job in related_jobs:
-        if job.deleted_at is None and job.overall_status in active_statuses:
+        if job.deleted_at is None and job.overall_status in ACTIVE_JOB_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="File tidak dapat dihapus karena sedang digunakan oleh job yang sedang berjalan.",
@@ -253,15 +281,18 @@ def delete_uploaded_dataset(
     # Hapus file fisik dataset dan direktori staging
     if dataset.storage_path:
         raw_path = Path(dataset.storage_path)
-        raw_path.unlink(missing_ok=True)
-        if raw_path.parent.is_dir() and raw_path.parent.name == str(dataset.id):
-            shutil.rmtree(raw_path.parent, ignore_errors=True)
+        if _under_storage(raw_path):
+            raw_path.unlink(missing_ok=True)
+            if raw_path.parent.is_dir() and raw_path.parent.name == str(dataset.id) and _under_storage(raw_path.parent):
+                shutil.rmtree(raw_path.parent, ignore_errors=True)
 
     if dataset.normalized_vcf_path:
-        Path(dataset.normalized_vcf_path).unlink(missing_ok=True)
+        norm_path = Path(dataset.normalized_vcf_path)
+        if _under_storage(norm_path):
+            norm_path.unlink(missing_ok=True)
 
     staging_dir = Path(settings.STORAGE_ROOT) / "staging" / str(dataset.id)
-    if staging_dir.is_dir():
+    if staging_dir.is_dir() and _under_storage(staging_dir):
         shutil.rmtree(staging_dir, ignore_errors=True)
 
     now = datetime.now(timezone.utc)
@@ -271,7 +302,7 @@ def delete_uploaded_dataset(
     for job in related_jobs:
         job.deleted_at = now
         job_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job.id)
-        if job_dir.is_dir():
+        if job_dir.is_dir() and _under_storage(job_dir):
             shutil.rmtree(job_dir, ignore_errors=True)
 
     db.commit()
@@ -340,7 +371,7 @@ def upload_phenotype_file(
             non_missing = [v for v in sample_vals if v not in {"", ".", "NA", "-9", "nan"}]
             if non_missing:
                 # If at least 70% of non-missing values are parseable as float
-                valid_num = sum(1 for v in non_missing if re.match(r"^-?\d+(\.\d+)?([eE][+-]?\d+)?$", v))
+                valid_num = sum(1 for v in non_missing if re.match(r"^-?\d+(\.\d+)?([eE][+-]?\d+)?$", str(v)))
                 if valid_num / len(non_missing) >= 0.7:
                     numeric_cols.append(c)
         except Exception:
@@ -376,30 +407,18 @@ def delete_phenotype_file(
     dataset = _owned_dataset(file_id, user, db)
 
     # Check active jobs
-    active_statuses = {
-        JobStatus.PENDING,
-        JobStatus.RUNNING,
-        JobStatus.RUNNING_INSPECTION,
-        JobStatus.RUNNING_NORMALIZATION,
-        JobStatus.RUNNING_QC,
-        JobStatus.RUNNING_IMPUTATION,
-        JobStatus.RUNNING_STRUCTURE,
-        JobStatus.RUNNING_GWAS,
-        JobStatus.RUNNING_MULTILOCUS,
-        JobStatus.RUNNING_POSTGWAS,
-        JobStatus.RUNNING_PARSING,
-        JobStatus.RUNNING_ANNOTATION,
-    }
     jobs = db.query(AnalysisJob).filter(AnalysisJob.dataset_id == dataset.id).all()
     for j in jobs:
-        if j.deleted_at is None and j.overall_status in active_statuses:
+        if j.deleted_at is None and j.overall_status in ACTIVE_JOB_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="File fenotipe tidak dapat dihapus karena ada job yang sedang berjalan.",
             )
 
     if dataset.phenotype_file_path:
-        Path(dataset.phenotype_file_path).unlink(missing_ok=True)
+        pheno_path = Path(dataset.phenotype_file_path)
+        if _under_storage(pheno_path):
+            pheno_path.unlink(missing_ok=True)
     dataset.phenotype_file_path = None
     meta = dataset.extra_metadata or {}
     meta.pop("phenotype", None)
@@ -490,7 +509,9 @@ def delete_annotation_file(
     dataset = _owned_dataset(file_id, user, db)
 
     if dataset.annotation_file_path:
-        Path(dataset.annotation_file_path).unlink(missing_ok=True)
+        anno_path = Path(dataset.annotation_file_path)
+        if _under_storage(anno_path):
+            anno_path.unlink(missing_ok=True)
     dataset.annotation_file_path = None
     meta = dataset.extra_metadata or {}
     meta.pop("annotation", None)

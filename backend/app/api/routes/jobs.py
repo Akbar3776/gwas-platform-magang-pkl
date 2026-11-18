@@ -12,6 +12,7 @@ Endpoint untuk men-trigger dan memantau AnalysisJob serta mengakses file-file jo
 
 from datetime import datetime, timezone
 import gzip
+import os
 from pathlib import Path
 import shutil
 import uuid
@@ -21,9 +22,19 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import get_current_user
+from app.core.security import get_current_user, is_admin
 from app.db.engine.database import get_db
-from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, Result, ResultType, UploadStatus, User
+from app.db.engine.models import (
+    TERMINAL_JOB_STATUSES,
+    AnalysisJob,
+    Dataset,
+    JobStatus,
+    PipelineStep,
+    Result,
+    ResultType,
+    UploadStatus,
+    User,
+)
 from app.schemas.jobs import JobStatusResponse, JobTriggerResponse, QCJobRequest, StepLogEntry
 from app.services.manhattan_parser import compute_assoc_summary_stats
 from app.tasks.celery_app import celery_app
@@ -92,12 +103,12 @@ _PREVIEWABLE_SUFFIXES = (
 )
 
 
-def _is_admin(user: User) -> bool:
-    role_val = user.role.value if hasattr(user.role, "value") else str(user.role)
-    return role_val == "admin"
+_LOG_TAIL_BYTES = 65536
+_FILE_COUNT_CACHE: dict[tuple[str, str], int] = {}
 
 
 def _read_log_tail(candidates: list[Path], max_lines: int = 2000) -> tuple[str, int]:
+    """Read only the last ~64 KB of each unique candidate log; line_count counts lines in that tail."""
     merged_chunks: list[str] = []
     seen_files: set[str] = set()
     for path in candidates:
@@ -107,8 +118,18 @@ def _read_log_tail(candidates: list[Path], max_lines: int = 2000) -> tuple[str, 
                 continue
             seen_files.add(resolved)
             try:
-                raw = path.read_text(encoding="utf-8", errors="replace").strip()
-                if raw and raw not in "\n".join(merged_chunks):
+                with path.open("rb") as f:
+                    f.seek(0, os.SEEK_END)
+                    size = f.tell()
+                    offset = max(size - _LOG_TAIL_BYTES, 0)
+                    f.seek(offset, os.SEEK_SET)
+                    raw = f.read().decode("utf-8", errors="replace")
+                if offset > 0:
+                    nl_idx = raw.find("\n")
+                    if nl_idx != -1:
+                        raw = raw[nl_idx + 1:]
+                raw = raw.strip()
+                if raw:
                     merged_chunks.append(raw)
             except OSError:
                 continue
@@ -380,6 +401,24 @@ def _discover_job_files(job: AnalysisJob, dataset: Dataset | None) -> list[dict]
     return discovered
 
 
+def _count_job_files(job: AnalysisJob, dataset: Dataset | None = None) -> int:
+    count = 0
+    job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job.id)
+    if job_root.is_dir():
+        for _, _, files in os.walk(job_root):
+            count += len(files)
+    if dataset is not None:
+        input_paths = (
+            getattr(dataset, "storage_path", None),
+            getattr(dataset, "phenotype_file_path", None),
+            getattr(dataset, "annotation_file_path", None) or getattr(dataset, "annotation_gff_path", None),
+        )
+        for p in input_paths:
+            if p and Path(p).is_file():
+                count += 1
+    return count
+
+
 @router.get("")
 def list_user_jobs(
     db: Session = Depends(get_db),
@@ -387,15 +426,27 @@ def list_user_jobs(
 ) -> list[dict]:
     """Mengembalikan daftar seluruh AnalysisJob milik user (sedang berjalan maupun selesai)."""
     query = db.query(AnalysisJob).filter(AnalysisJob.deleted_at.is_(None))
-    if not _is_admin(user):
+    if not is_admin(user):
         query = query.filter(AnalysisJob.triggered_by == user.id)
     jobs_list = query.order_by(AnalysisJob.created_at.desc()).limit(50).all()
 
     items = []
     for job in jobs_list:
         dataset = db.get(Dataset, job.dataset_id)
-        files = _discover_job_files(job, dataset)
-        _, last_log_line = _collect_step_logs(job)
+        params = job.parameters if isinstance(job.parameters, dict) else {}
+        last_log_line = params.get("last_log_line")
+        is_terminal = job.overall_status in TERMINAL_JOB_STATUSES
+        if is_terminal and job.completed_at is not None:
+            cache_key = (str(job.id), job.completed_at.isoformat())
+            if cache_key in _FILE_COUNT_CACHE:
+                file_count = _FILE_COUNT_CACHE[cache_key]
+            else:
+                file_count = _count_job_files(job, dataset)
+                if len(_FILE_COUNT_CACHE) > 5000:
+                    _FILE_COUNT_CACHE.clear()
+                _FILE_COUNT_CACHE[cache_key] = file_count
+        else:
+            file_count = _count_job_files(job, dataset)
         overall_val = job.overall_status.value if hasattr(job.overall_status, "value") else str(job.overall_status)
         step_val = job.current_step.value if hasattr(job.current_step, "value") else str(job.current_step)
         items.append(
@@ -408,7 +459,7 @@ def list_user_jobs(
                 "overall_status": overall_val,
                 "elapsed_seconds": _compute_elapsed_seconds(job),
                 "last_log_line": last_log_line,
-                "file_count": len(files),
+                "file_count": file_count,
                 "created_at": job.created_at.isoformat() if job.created_at else None,
                 "started_at": job.started_at.isoformat() if job.started_at else None,
                 "completed_at": job.completed_at.isoformat() if job.completed_at else None,
@@ -431,7 +482,7 @@ def trigger_qc_job(
     if dataset is None:
         raise HTTPException(status_code=404, detail="Dataset tidak ditemukan.")
 
-    if dataset.owner_id != user.id and not _is_admin(user):
+    if dataset.owner_id != user.id and not is_admin(user):
         raise HTTPException(status_code=404, detail="Dataset tidak ditemukan.")
 
     if dataset.upload_status != UploadStatus.UPLOADED and dataset.upload_status != UploadStatus.READY:
@@ -443,6 +494,7 @@ def trigger_qc_job(
             ),
         )
 
+    run_id = str(uuid.uuid4())
     job = AnalysisJob(
         dataset_id=dataset.id,
         triggered_by=user.id,
@@ -454,13 +506,14 @@ def trigger_qc_job(
             "geno": payload.geno,
             "mind": payload.mind,
             "hwe": payload.hwe,
+            "run_id": run_id,
         },
     )
     db.add(job)
     db.commit()
     db.refresh(job)
 
-    task = run_qc_pipeline.delay(None, str(job.id), str(dataset.id), job.parameters)
+    task = run_qc_pipeline.delay(None, str(job.id), str(dataset.id), job.parameters, run_id=run_id)
 
     return JobTriggerResponse(
         job_id=job.id,
@@ -483,7 +536,7 @@ def get_job_status(
     job = db.get(AnalysisJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
-    if job.triggered_by != user.id and not _is_admin(user):
+    if job.triggered_by != user.id and not is_admin(user):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
     step_logs, last_log_line = _collect_step_logs(job)
@@ -528,7 +581,7 @@ def get_job_logs(
     Mengembalikan seluruh log eksekusi per tahap untuk sebuah AnalysisJob.
     """
     job = db.get(AnalysisJob, job_id)
-    if job is None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
     step_logs, last_log_line = _collect_step_logs(job)
@@ -554,7 +607,7 @@ def list_job_files(
     maupun file yang dihasilkan pada setiap tahap saat job sedang berjalan / selesai).
     """
     job = db.get(AnalysisJob, job_id)
-    if job is None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
     dataset = db.get(Dataset, job.dataset_id)
@@ -581,19 +634,13 @@ def get_job_file_content(
 ):
     """Mengunduh atau melihat pratinjau isi file spesifik dari sebuah job."""
     job = db.get(AnalysisJob, job_id)
-    if job is None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
     dataset = db.get(Dataset, job.dataset_id)
     raw_files = _discover_job_files(job, dataset)
     matched = next(
-        (
-            item
-            for item in raw_files
-            if item["file_key"] == file_key
-            or item["filename"].lower() == file_key.lower()
-            or item["file_key"].lower().endswith(file_key.lower())
-        ),
+        (item for item in raw_files if item["file_key"] == file_key),
         None,
     )
     if matched is None:
@@ -635,7 +682,7 @@ def get_job_results_summary(
     yang ditampilkan oleh ResultDashboard.jsx.
     """
     job = db.get(AnalysisJob, job_id)
-    if job is None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
     if job.overall_status not in {JobStatus.COMPLETED, JobStatus.SUCCESS}:
@@ -679,11 +726,10 @@ def cancel_job(
 ) -> dict:
     """Menghentikan eksekusi AnalysisJob yang sedang berjalan."""
     job = db.get(AnalysisJob, job_id)
-    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
-    terminal_statuses = {JobStatus.COMPLETED, JobStatus.SUCCESS, JobStatus.FAILED, JobStatus.CANCELLED}
-    if job.overall_status in terminal_statuses:
+    if job.overall_status in TERMINAL_JOB_STATUSES:
         return {
             "job_id": str(job.id),
             "overall_status": job.overall_status.value,
@@ -726,12 +772,28 @@ def retry_job(
     from app.tasks.pipeline_orchestrator import STAGE_TO_JOB_STATE, trigger_retry_pipeline
 
     job = db.get(AnalysisJob, job_id)
-    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
+
+    if job.overall_status not in {JobStatus.FAILED, JobStatus.CANCELLED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job berstatus {job.overall_status.value}; hanya job gagal/dibatalkan yang bisa di-retry.",
+        )
 
     dataset = db.get(Dataset, job.dataset_id)
     if dataset is None or dataset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Dataset untuk job ini tidak lagi tersedia.")
+
+    if job.overall_status == JobStatus.CANCELLED and job.completed_at is not None:
+        cancelled_at = job.completed_at
+        if cancelled_at.tzinfo is None:
+            cancelled_at = cancelled_at.replace(tzinfo=timezone.utc)
+        if (datetime.now(timezone.utc) - cancelled_at).total_seconds() < 10:
+            raise HTTPException(
+                status_code=409,
+                detail="Job baru saja dibatalkan; tunggu beberapa detik sebelum retry.",
+            )
 
     # Jika masih ada task lama terdaftar, revoke terlebih dahulu
     if job.celery_task_id and hasattr(celery_app, "control"):
@@ -750,14 +812,27 @@ def retry_job(
     if from_scratch or job.started_at is None:
         job.started_at = datetime.now(timezone.utc)
 
-    task_id, start_idx, start_stage = trigger_retry_pipeline(
-        job_id=str(job.id),
-        dataset_id=str(dataset.id),
-        raw_vcf_path=str(getattr(dataset, "storage_path", "") or ""),
-        job_parameters=job.parameters or {},
-        failed_step=previous_failed_step,
-        from_scratch=from_scratch,
-    )
+    run_id = str(uuid.uuid4())
+    job.parameters = {**(job.parameters or {}), "run_id": run_id}
+    job.overall_status = JobStatus.PENDING
+    db.commit()
+
+    try:
+        task_id, start_idx, start_stage = trigger_retry_pipeline(
+            job_id=str(job.id),
+            dataset_id=str(dataset.id),
+            job_parameters=job.parameters or {},
+            failed_step=previous_failed_step,
+            from_scratch=from_scratch,
+            run_id=run_id,
+        )
+    except Exception as exc:
+        if hasattr(db, "rollback"):
+            db.rollback()
+        job.overall_status = JobStatus.FAILED
+        job.error_message = f"Gagal enqueue retry: {exc}"
+        db.commit()
+        raise HTTPException(status_code=500, detail="Gagal memulai ulang job") from exc
 
     new_status, new_step = STAGE_TO_JOB_STATE.get(
         start_stage,
@@ -788,11 +863,10 @@ def delete_job(
 ) -> dict:
     """Menghapus AnalysisJob beserta file artefak di direktori kerja job."""
     job = db.get(AnalysisJob, job_id)
-    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
-    terminal_statuses = {JobStatus.COMPLETED, JobStatus.SUCCESS, JobStatus.FAILED, JobStatus.CANCELLED}
-    if job.overall_status not in terminal_statuses:
+    if job.overall_status not in TERMINAL_JOB_STATUSES:
         if job.celery_task_id and hasattr(celery_app, "control"):
             try:
                 celery_app.control.revoke(job.celery_task_id, terminate=True)

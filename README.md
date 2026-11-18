@@ -50,6 +50,16 @@ Platform bioinformatika berbasis web (*full-stack*) untuk mengotomatisasi analis
    ```
    *Service yang berjalan: FastAPI (`:8000`), PostgreSQL (`:5432`), Redis (`:6379`), Celery Worker.*
 
+   > **Deploy Produksi (`infra/docker-compose.prod.yml`):** Produksi wajib menyetel `JWT_SECRET_KEY` acak >= 32 karakter di `backend/.env` sebelum menjalankan stack. Generate dengan: `python -c "import secrets; print(secrets.token_hex(32))"`.
+
+#### TLS produksi
+
+Produksi mengaktifkan cookie refresh `Secure`, sehingga aplikasi wajib disajikan melalui HTTPS (Nginx mendengarkan port `80` untuk healthcheck/ACME & redirect `301`, serta `443` dengan TLSv1.2/TLSv1.3; header `Strict-Transport-Security "max-age=86400"` sengaja disetel 1 hari lebih dulu dan dapat dinaikkan setelah TLS terbukti stabil). Pilih salah satu cara penyediaan sertifikat sebelum `docker compose -f infra/docker-compose.prod.yml up -d`:
+
+- **(a) Sertifikat dari kampus / CA:** salin sertifikat ke `infra/certs/` dengan nama `fullchain.pem` dan `privkey.pem`. (Untuk uji lokal semata, jalankan `sh infra/scripts/gen-selfsigned-cert.sh`.)
+- **(b) Let's Encrypt (butuh domain publik):** jalankan `certbot certonly --webroot -w infra/acme -d <domain>`, lalu salin atau symlink hasilnya ke `infra/certs/fullchain.pem` dan `infra/certs/privkey.pem`. Setiap kali pembaruan sertifikat selesai, muat ulang Nginx dengan `docker exec gwas_nginx_prod nginx -s reload`.
+- **(c) Di belakang reverse proxy kampus yang sudah terminasi TLS:** reverse proxy di depan container ini wajib meneruskan header `X-Forwarded-Proto: https`, dan Nginx stack ini cukup diakses melalui jaringan internal.
+
 4. **Jalankan Frontend (Vite Dev Server)**:
    ```bash
    cd frontend
@@ -67,7 +77,7 @@ Platform bioinformatika berbasis web (*full-stack*) untuk mengotomatisasi analis
 
 ### Opsi B: Menjalankan Lokal Tanpa Docker (Mode Pengembangan Cepat)
 
-Backend mendukung **SQLite fallback otomatis** dan perutean engine lokal sehingga Anda dapat menjalankan backend dan frontend tanpa perlu memasang PostgreSQL dan Redis.
+Backend dapat dijalankan dengan **SQLite lokal** tanpa perlu memasang PostgreSQL dan Redis (mode pengembangan; di produksi fallback dimatikan secara bawaan).
 
 1. **Setup & Jalankan Backend**:
    ```powershell
@@ -76,7 +86,11 @@ Backend mendukung **SQLite fallback otomatis** dan perutean engine lokal sehingg
    python -m venv venv
    .\venv\Scripts\Activate.ps1    # Linux/macOS: source venv/bin/activate
    pip install -r requirements.txt
-   
+
+   # Buat backend/.env dan aktifkan SQLite lokal (atau setel DATABASE_URL=sqlite:///./data/gwas.db)
+   Copy-Item .env.example .env
+   Add-Content .env "`nALLOW_SQLITE_FALLBACK=true"
+
    # Jalankan API server FastAPI
    uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
    ```

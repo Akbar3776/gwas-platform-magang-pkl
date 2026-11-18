@@ -1,10 +1,13 @@
+from datetime import datetime, timedelta, timezone
 import uuid
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+import pytest
 
 from app.api.routes import jobs
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, UploadStatus, User, UserRole
+from app.tasks import pipeline_orchestrator
 
 
 class FakeSession:
@@ -52,8 +55,9 @@ def test_trigger_qc_creates_pending_job_and_enqueues_task(monkeypatch):
     class FakeTask:
         id = "celery-task-123"
 
-    def fake_delay(*args):
+    def fake_delay(*args, **kwargs):
         task_call["args"] = args
+        task_call["kwargs"] = kwargs
         return FakeTask()
 
     monkeypatch.setattr(jobs.run_qc_pipeline, "delay", fake_delay)
@@ -124,3 +128,432 @@ def test_retry_job_resumes_from_failed_stage(monkeypatch):
     assert body["overall_status"] == "running_gwas"
     assert job.error_message is None
     assert job.failed_step is None
+
+
+def test_retry_job_rejects_running_or_completed_status():
+    user = User(
+        id=uuid.uuid4(),
+        email="researcher@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path="/data/storage/datasets/cohort.vcf.gz",
+        file_size_bytes=100,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    for bad_status in (JobStatus.RUNNING_GWAS, JobStatus.COMPLETED):
+        job = AnalysisJob(
+            id=uuid.uuid4(),
+            dataset_id=dataset.id,
+            triggered_by=user.id,
+            pipeline_type="full_gwas",
+            overall_status=bad_status,
+            current_step=PipelineStep.GWAS,
+        )
+        session = FakeSession(dataset, job=job)
+        with pytest.raises(HTTPException) as exc:
+            jobs.retry_job(job_id=job.id, from_scratch=False, db=session, user=user)
+        assert exc.value.status_code == 409
+
+
+def test_trigger_retry_pipeline_strips_legacy_client_paths(monkeypatch):
+    captured = {}
+
+    class FakeChain:
+        def __init__(self, *sigs):
+            captured["sigs"] = sigs
+
+        def apply_async(self):
+            class Res:
+                id = "retry-task-id"
+
+            return Res()
+
+    monkeypatch.setattr(pipeline_orchestrator, "chain", lambda *sigs: FakeChain(*sigs))
+
+    pipeline_orchestrator.trigger_retry_pipeline(
+        job_id=str(uuid.uuid4()),
+        dataset_id=str(uuid.uuid4()),
+        job_parameters={
+            "gwas": {"phenotype_path": "/etc/passwd"},
+            "imputation": {
+                "mode": "reference",
+                "reference_vcf_path": "/x",
+                "map_path": "/y",
+            },
+        },
+        failed_step="qc",
+        from_scratch=True,
+    )
+
+    sigs_by_task = {
+        getattr(sig, "task", None) or sig.task_wrapper.name: sig
+        for sig in captured["sigs"]
+    }
+    gemma_sig = sigs_by_task["app.tasks.gemma_tasks.run_gemma_gwas"]
+    imputation_sig = sigs_by_task["app.tasks.imputation_tasks.run_imputation"]
+    assert gemma_sig.kwargs["phenotype_path"] == ""
+    assert "/etc/passwd" not in str(gemma_sig.kwargs)
+    assert imputation_sig.kwargs["reference_vcf_path"] == ""
+    assert "/x" not in str(imputation_sig.kwargs)
+    assert "/y" not in str(imputation_sig.kwargs)
+
+
+def test_retry_job_sets_pending_and_new_run_id_before_trigger(monkeypatch):
+    user = User(
+        id=uuid.uuid4(),
+        email="researcher@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path="/data/storage/datasets/cohort.vcf.gz",
+        file_size_bytes=100,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.CANCELLED,
+        current_step=PipelineStep.IMPUTATION,
+        parameters={"run_id": "old-run"},
+        completed_at=datetime.now(timezone.utc) - timedelta(seconds=60),
+    )
+    session = FakeSession(dataset, job=job)
+    observed = {}
+
+    def _fake_retry(**kwargs):
+        observed["status_during_trigger"] = job.overall_status
+        observed["run_id_during_trigger"] = (job.parameters or {}).get("run_id")
+        return "new-celery-id", 3, "imputation"
+
+    monkeypatch.setattr(pipeline_orchestrator, "trigger_retry_pipeline", _fake_retry)
+    res = jobs.retry_job(job_id=job.id, from_scratch=False, db=session, user=user)
+
+    assert observed["status_during_trigger"] == JobStatus.PENDING
+    assert observed["run_id_during_trigger"] != "old-run"
+    assert res["overall_status"] == "running_imputation"
+
+
+def test_retry_job_marks_failed_and_returns_500_when_enqueue_fails(monkeypatch):
+    user = User(
+        id=uuid.uuid4(),
+        email="researcher@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path="/data/storage/datasets/cohort.vcf.gz",
+        file_size_bytes=100,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.FAILED,
+        current_step=PipelineStep.GWAS,
+    )
+    session = FakeSession(dataset, job=job)
+
+    def _boom(**kwargs):
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr(pipeline_orchestrator, "trigger_retry_pipeline", _boom)
+    with pytest.raises(HTTPException) as exc:
+        jobs.retry_job(job_id=job.id, from_scratch=False, db=session, user=user)
+
+    assert exc.value.status_code == 500
+    assert job.overall_status == JobStatus.FAILED
+    assert "Gagal enqueue retry" in (job.error_message or "")
+
+
+def test_retry_job_blocks_recent_cancellation_and_allows_after_10s(monkeypatch):
+    user = User(
+        id=uuid.uuid4(),
+        email="researcher@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path="/data/storage/datasets/cohort.vcf.gz",
+        file_size_bytes=100,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    recent_job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.CANCELLED,
+        current_step=PipelineStep.GWAS,
+        completed_at=datetime.now(timezone.utc) - timedelta(seconds=2),
+    )
+    session_recent = FakeSession(dataset, job=recent_job)
+    with pytest.raises(HTTPException) as exc:
+        jobs.retry_job(job_id=recent_job.id, from_scratch=False, db=session_recent, user=user)
+    assert exc.value.status_code == 409
+
+    older_job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.CANCELLED,
+        current_step=PipelineStep.GWAS,
+        completed_at=datetime.now(timezone.utc) - timedelta(seconds=60),
+    )
+    session_older = FakeSession(dataset, job=older_job)
+    monkeypatch.setattr(
+        pipeline_orchestrator,
+        "trigger_retry_pipeline",
+        lambda **kwargs: ("celery-ok", 5, "gwas"),
+    )
+    res = jobs.retry_job(job_id=older_job.id, from_scratch=False, db=session_older, user=user)
+    assert res["retried"] is True
+
+
+def test_read_log_tail_reads_only_last_64kb_of_large_file(tmp_path):
+    log_path = tmp_path / "huge.log"
+    lines = [f"log-entry-{i:05d} " + ("x" * 50) for i in range(20000)]
+    log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert log_path.stat().st_size > 1_000_000
+
+    tail, line_count = jobs._read_log_tail([log_path])
+    assert "log-entry-19999" in tail
+    assert "log-entry-00000" not in tail
+    assert line_count < 20000
+    assert len(tail.splitlines()) <= 2000
+
+
+class _JobListQuery:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def limit(self, n):
+        return self
+
+    def all(self):
+        return list(self.rows)
+
+
+class _JobListSession(FakeSession):
+    def __init__(self, ds, j):
+        super().__init__(ds, job=j)
+        self.commits = 0
+
+    def query(self, model):
+        return _JobListQuery([self.job] if model is AnalysisJob else [])
+
+    def commit(self):
+        self.commits += 1
+
+
+def test_list_user_jobs_skips_full_log_scan_and_caches_terminal_file_count(tmp_path, monkeypatch):
+    jobs._FILE_COUNT_CACHE.clear()
+    monkeypatch.setattr(jobs.settings, "STORAGE_ROOT", str(tmp_path))
+    user = User(
+        id=uuid.uuid4(),
+        email="researcher@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    vcf = tmp_path / "cohort.vcf.gz"
+    vcf.write_bytes(b"vcf")
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path=str(vcf),
+        file_size_bytes=3,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.COMPLETED,
+        current_step=PipelineStep.ANNOTATION,
+        parameters={"last_log_line": "Done annotation"},
+        completed_at=datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc),
+    )
+    stage_folder = tmp_path / "jobs" / str(job.id) / "qc"
+    stage_folder.mkdir(parents=True)
+    (stage_folder / "plink_qc.log").write_text("ok", encoding="utf-8")
+
+    db = _JobListSession(dataset, job)
+    orig_count = jobs._count_job_files
+    count_calls = []
+    monkeypatch.setattr(
+        jobs,
+        "_count_job_files",
+        lambda j, ds=None: (count_calls.append(1), orig_count(j, ds))[1],
+    )
+    monkeypatch.setattr(jobs, "_discover_job_files", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not scan")))
+    monkeypatch.setattr(jobs, "_collect_step_logs", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not collect logs")))
+
+    first = jobs.list_user_jobs(db=db, user=user)
+    assert first[0]["last_log_line"] == "Done annotation"
+    assert first[0]["file_count"] == 2
+    assert "file_count" not in (job.parameters or {})
+    assert db.commits == 0
+    assert len(count_calls) == 1
+
+    # Next call should reuse in-memory cache without re-walking disk or writing to DB
+    (stage_folder / "extra_after.log").write_text("extra", encoding="utf-8")
+    second = jobs.list_user_jobs(db=db, user=user)
+    assert second[0]["file_count"] == 2
+    assert db.commits == 0
+    assert len(count_calls) == 1
+
+
+def test_list_user_jobs_recomputes_when_completed_at_changes_and_ignores_stale_param(tmp_path, monkeypatch):
+    jobs._FILE_COUNT_CACHE.clear()
+    monkeypatch.setattr(jobs.settings, "STORAGE_ROOT", str(tmp_path))
+    user = User(
+        id=uuid.uuid4(),
+        email="researcher@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path=str(tmp_path / "missing.vcf.gz"),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    completed_a = datetime(2026, 11, 18, 10, 0, tzinfo=timezone.utc)
+    completed_b = datetime(2026, 11, 18, 11, 0, tzinfo=timezone.utc)
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.COMPLETED,
+        current_step=PipelineStep.ANNOTATION,
+        parameters={"file_count": 999},
+        completed_at=completed_a,
+    )
+    stage_folder = tmp_path / "jobs" / str(job.id) / "qc"
+    stage_folder.mkdir(parents=True)
+    (stage_folder / "one.log").write_text("1", encoding="utf-8")
+
+    db = _JobListSession(dataset, job)
+    orig_count = jobs._count_job_files
+    count_calls = []
+    monkeypatch.setattr(
+        jobs,
+        "_count_job_files",
+        lambda j, ds=None: (count_calls.append(1), orig_count(j, ds))[1],
+    )
+
+    res_a1 = jobs.list_user_jobs(db=db, user=user)
+    assert res_a1[0]["file_count"] == 1
+    assert len(count_calls) == 1
+    assert job.parameters == {"file_count": 999}
+    assert db.commits == 0
+
+    res_a2 = jobs.list_user_jobs(db=db, user=user)
+    assert res_a2[0]["file_count"] == 1
+    assert len(count_calls) == 1
+
+    # New completion timestamp (e.g. after retry) must recompute _count_job_files
+    (stage_folder / "two.log").write_text("2", encoding="utf-8")
+    job.completed_at = completed_b
+    res_b = jobs.list_user_jobs(db=db, user=user)
+    assert res_b[0]["file_count"] == 2
+    assert len(count_calls) == 2
+
+    # Terminal job with completed_at=None must not read/write cache
+    job.completed_at = None
+    (stage_folder / "three.log").write_text("3", encoding="utf-8")
+    res_none = jobs.list_user_jobs(db=db, user=user)
+    assert res_none[0]["file_count"] == 3
+    assert len(count_calls) == 3
+
+    # Cache clears before insert when exceeding 5000 entries
+    job.completed_at = completed_a
+    jobs._FILE_COUNT_CACHE.clear()
+    for i in range(5001):
+        jobs._FILE_COUNT_CACHE[(f"dummy-{i}", "2026-01-01T00:00:00+00:00")] = i
+    jobs.list_user_jobs(db=db, user=user)
+    assert len(jobs._FILE_COUNT_CACHE) == 1
+
+
+def test_get_job_file_content_requires_exact_file_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs.settings, "STORAGE_ROOT", str(tmp_path))
+    user = User(
+        id=uuid.uuid4(),
+        email="researcher@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path=str(tmp_path / "missing.vcf.gz"),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="qc_only",
+        overall_status=JobStatus.COMPLETED,
+        current_step=PipelineStep.QC,
+    )
+    log_file = tmp_path / "jobs" / str(job.id) / "qc" / "plink_qc.log"
+    log_file.parent.mkdir(parents=True)
+    log_file.write_text("qc-log-content\n", encoding="utf-8")
+    session = FakeSession(dataset, job=job)
+
+    listed = jobs.list_job_files(job_id=job.id, db=session, user=user)
+    assert listed["files"][0]["file_key"] == "job:qc/plink_qc.log"
+
+    for non_exact in ("log", "plink_qc.log", "JOB:QC/PLINK_QC.LOG"):
+        with pytest.raises(HTTPException) as exc:
+            jobs.get_job_file_content(
+                job_id=job.id,
+                file_key=non_exact,
+                preview=True,
+                db=session,
+                user=user,
+            )
+        assert exc.value.status_code == 404
+
+    resp = jobs.get_job_file_content(
+        job_id=job.id,
+        file_key="job:qc/plink_qc.log",
+        preview=True,
+        db=session,
+        user=user,
+    )
+    assert resp.status_code == 200
+    assert resp.body.decode("utf-8") == "qc-log-content"

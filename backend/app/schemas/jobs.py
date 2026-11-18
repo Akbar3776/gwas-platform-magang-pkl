@@ -15,7 +15,7 @@ class QCJobRequest(BaseModel):
 
     dataset_id: uuid.UUID
     maf: float = Field(default=0.01, ge=0, le=1, description="Minor Allele Frequency threshold")
-    geno: float = Field(default=0.05, ge=0, le=1, description="Variant missing-rate threshold")
+    geno: float | None = Field(default=0.05, ge=0, le=1, description="Variant missing-rate threshold (None untuk menonaktifkan)")
     mind: float = Field(default=0.1, ge=0, le=1, description="Sample missing-rate threshold")
     hwe: float = Field(default=1e-6, ge=0, le=1, description="Hardy-Weinberg equilibrium p-value threshold")
 

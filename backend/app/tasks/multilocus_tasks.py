@@ -4,22 +4,24 @@ from __future__ import annotations
 
 import csv
 import json
-import logging
+import math
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
-from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, ResultType
 from app.services.assoc_normalizer import CANONICAL_COLUMNS, normalize_association_results
+from app.services.manhattan_parser import _build_chr_mapping
 from app.tasks._common import (
     JobCancelledError,
     append_log,
     ensure_not_cancelled,
+    is_job_cancelled,
     mark_job,
     stage_dir,
     upsert_result,
@@ -27,12 +29,14 @@ from app.tasks._common import (
     write_json,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
-from app.utils.process import CLIExecutionError, run_cli_command
+from app.tasks.gemma_tasks import _chr_label
+from app.utils.process import CLICancelledError, run_cli_command
 
 logger = get_task_logger(__name__)
 
 SUPPORTED_MULTILOCUS_MODELS = ["FarmCPU", "BLINK", "MLMM"]
 METHOD_DISPLAY_NAMES = {"FARMCPU": "FarmCPU", "BLINK": "BLINK", "MLMM": "MLMM"}
+MULTILOCUS_TIMEOUT_SECONDS = int(os.getenv("MULTILOCUS_TIMEOUT_SECONDS", str(6 * 60 * 60)))
 
 
 def compute_bh_fdr(p_values: np.ndarray) -> np.ndarray:
@@ -208,7 +212,7 @@ def _run_python_multilocus_engine(
     """
     from scipy.special import erfc
     from app.services.structure_service import compute_centered_kinship, read_plink_binary
-    from app.tasks.gemma_tasks import _parse_vcf_genotypes, _prepare_phenotype_vector
+    from app.tasks.gemma_tasks import _chr_label, _parse_vcf_genotypes, _prepare_phenotype_vector
 
     append_log(log_file, "[INFO] Menginisialisasi Python Native Engine untuk Multi-Locus GWAS...")
 
@@ -221,13 +225,12 @@ def _run_python_multilocus_engine(
     if Path(f"{candidate_bfile}.bed").is_file():
         try:
             samples, plink_vars, G_mat = read_plink_binary(str(candidate_bfile))
-            for idx, pv in enumerate(plink_vars):
-                raw_chr = str(pv["chrom"]).lstrip("chrCHR")
-                chr_num = int(raw_chr) if raw_chr.isdigit() and 1 <= int(raw_chr) <= 26 else ((idx % 22) + 1)
+            for pv in plink_vars:
+                chr_label = _chr_label(pv["chrom"])
                 variants_meta.append(
                     {
-                        "chr": chr_num,
-                        "rs": pv["rsid"] if pv["rsid"] and pv["rsid"] != "." else f"chr{chr_num}:{pv['pos']}",
+                        "chr": chr_label,
+                        "rs": pv["rsid"] if pv["rsid"] and pv["rsid"] != "." else f"{chr_label}:{pv['pos']}",
                         "ps": int(pv["pos"]),
                         "alt": pv["a1"],
                         "ref": pv["a2"],
@@ -277,7 +280,7 @@ def _run_python_multilocus_engine(
         raise ValueError("Data genotipe kosong untuk analisis Multi-Locus GWAS.")
 
     # 2. Muat Fenotipe
-    pheno_file = workspace.parent / "gwas" / "phenotype.txt"
+    pheno_file = workspace.parent / "inspection" / "pheno_plink.txt"
     pheno_path_str = str(pheno_file) if pheno_file.is_file() else ""
     pheno_vec, _ = _prepare_phenotype_vector(samples, [], pheno_path_str, workspace, log_file)
 
@@ -584,6 +587,220 @@ def _run_python_multilocus_engine(
     }
 
 
+def _write_gapit_inputs(workspace: Path, log_file: Path) -> tuple[Path, Path, Path, dict[int, str]]:
+    """Generate GAPIT Y, GD, and GM tab-delimited inputs from QC PLINK binary and inspection phenotype."""
+    from app.services.structure_service import read_plink_binary
+
+    bfile_prefix = workspace.parent / "qc" / "plink_qc"
+    samples, variants, g_mat = read_plink_binary(bfile_prefix)
+    if not samples or not variants or g_mat.size == 0:
+        raise ValueError("Data genotipe PLINK kosong untuk input GAPIT.")
+
+    pheno_file = workspace.parent / "inspection" / "pheno_plink.txt"
+    if not pheno_file.is_file():
+        raise FileNotFoundError(f"File fenotipe tidak ditemukan: {pheno_file}")
+
+    raw_lines = [
+        ln.rstrip("\r\n")
+        for ln in pheno_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        if ln.strip()
+    ]
+    if not raw_lines:
+        raise ValueError(f"File fenotipe kosong: {pheno_file}")
+
+    header_cols = raw_lines[0].split("\t")
+    trait_name = header_cols[2].strip() if len(header_cols) >= 3 and header_cols[2].strip() else "TRAIT"
+
+    pheno_by_iid: dict[str, str] = {}
+    for line in raw_lines[1:]:
+        cols = line.split("\t")
+        if len(cols) < 3:
+            continue
+        iid = cols[1].strip()
+        raw_val = cols[2].strip()
+        if not iid:
+            continue
+        if not raw_val or raw_val.upper() == "NA":
+            pheno_by_iid[iid] = "NA"
+            continue
+        try:
+            num = float(raw_val)
+            pheno_by_iid[iid] = "NA" if (math.isnan(num) or math.isinf(num)) else raw_val
+        except ValueError:
+            pheno_by_iid[iid] = "NA"
+
+    y_rows: list[str] = []
+    valid_y_count = 0
+    for sample_id in samples:
+        val = pheno_by_iid.get(sample_id, "NA")
+        if val != "NA":
+            valid_y_count += 1
+        y_rows.append(f"{sample_id}\t{val}")
+
+    if valid_y_count < 3:
+        raise ValueError(
+            f"Jumlah nilai fenotipe non-NA kurang dari 3 ({valid_y_count}); GAPIT memerlukan minimal 3 sampel."
+        )
+
+    y_path = workspace / "gapit_Y.txt"
+    y_path.write_text("\n".join([f"Taxa\t{trait_name}", *y_rows]) + "\n", encoding="utf-8")
+
+    keep_mask = np.any(g_mat >= 0, axis=0)
+    kept_indices = np.flatnonzero(keep_mask)
+    if len(kept_indices) == 0:
+        raise ValueError("Seluruh SNP missing; tidak ada varian tersisa untuk input GAPIT.")
+
+    used_snp_names: set[str] = set()
+    snp_names: list[str] = []
+    raw_chroms: list[str] = []
+    positions: list[int] = []
+    for idx in kept_indices:
+        var = variants[int(idx)]
+        chrom_raw = str(var.get("chrom") or "").strip()
+        pos = int(var.get("pos") or 0)
+        rsid = str(var.get("rsid") or "").strip()
+        base_name = f"{chrom_raw}_{pos}" if (not rsid or rsid == ".") else rsid
+        candidate = base_name
+        if candidate in used_snp_names:
+            candidate = f"{base_name}_{idx}"
+            suffix = 1
+            while candidate in used_snp_names:
+                candidate = f"{base_name}_{idx}_{suffix}"
+                suffix += 1
+        used_snp_names.add(candidate)
+        snp_names.append(candidate)
+        raw_chroms.append(chrom_raw)
+        positions.append(pos)
+
+    chr_map, _ = _build_chr_mapping({c for c in raw_chroms if c})
+    chr_idx_to_label: dict[int, str] = {}
+    for chrom_raw in dict.fromkeys(raw_chroms):
+        gm_idx = chr_map.get(chrom_raw, 0)
+        label = _chr_label(chrom_raw)
+        if gm_idx in chr_idx_to_label:
+            append_log(
+                log_file,
+                f"[WARN] Label kromosom berbeda '{chr_idx_to_label[gm_idx]}' dan '{chrom_raw}' "
+                f"memetakan ke indeks GM yang sama ({gm_idx}); mempertahankan '{chr_idx_to_label[gm_idx]}'.",
+            )
+            continue
+        chr_idx_to_label[gm_idx] = label
+
+    gm_path = workspace / "gapit_GM.txt"
+    with gm_path.open("w", encoding="utf-8", newline="") as gm_f:
+        gm_writer = csv.writer(gm_f, delimiter="\t")
+        gm_writer.writerow(["SNP", "Chromosome", "Position"])
+        for snp_name, chrom_raw, pos in zip(snp_names, raw_chroms, positions):
+            gm_writer.writerow([snp_name, chr_map.get(chrom_raw, 0), pos])
+
+    g_kept = g_mat[:, kept_indices].astype(np.int16, copy=True)
+    for j in range(g_kept.shape[1]):
+        col = g_kept[:, j]
+        miss_mask = col < 0
+        if np.any(miss_mask):
+            mean_val = int(round(float(np.mean(col[~miss_mask]))))
+            col[miss_mask] = max(0, min(2, mean_val))
+
+    gd_path = workspace / "gapit_GD.txt"
+    with gd_path.open("w", encoding="utf-8", newline="") as gd_f:
+        gd_writer = csv.writer(gd_f, delimiter="\t")
+        gd_writer.writerow(["taxa", *snp_names])
+        for s_idx, sample_id in enumerate(samples):
+            gd_writer.writerow([sample_id, *g_kept[s_idx].tolist()])
+
+    append_log(
+        log_file,
+        f"[7.1] Input GAPIT dibuat: {len(samples)} sampel, {len(snp_names)} SNP "
+        f"(Y={y_path.name}, GD={gd_path.name}, GM={gm_path.name}).",
+    )
+    return y_path, gd_path, gm_path, chr_idx_to_label
+
+
+def _restore_gapit_chr_labels(tsv_path: Path, chr_idx_to_label: dict[int, str]) -> None:
+    """Tulis ulang kolom chr TSV hasil GAPIT memakai label kromosom asli bila ada di peta."""
+    if not chr_idx_to_label or not tsv_path.is_file():
+        return
+    str_map = {str(idx): label for idx, label in chr_idx_to_label.items()}
+    with tsv_path.open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.reader(f, delimiter="\t"))
+    if not rows:
+        return
+    try:
+        chr_col = rows[0].index("chr")
+    except ValueError:
+        return
+    tmp_path = tsv_path.with_suffix(".tsv.tmp")
+    with tmp_path.open("w", encoding="utf-8", newline="") as out_f:
+        writer = csv.writer(out_f, delimiter="\t")
+        writer.writerow(rows[0])
+        for row in rows[1:]:
+            if chr_col < len(row):
+                raw_chr = row[chr_col].strip()
+                if raw_chr in str_map:
+                    row[chr_col] = str_map[raw_chr]
+            writer.writerow(row)
+    tmp_path.replace(tsv_path)
+
+
+def _run_gapit_models(
+    *,
+    rscript: str,
+    runner_script: Path,
+    methods: list[str],
+    workspace: Path,
+    log_file: Path,
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Run GAPIT via Rscript and normalize outputs only for models producing GAPIT CSV files."""
+    for stale_file in workspace.glob("GAPIT.*"):
+        if stale_file.is_file():
+            stale_file.unlink(missing_ok=True)
+    for stale_tsv in workspace.glob("*_results.tsv"):
+        if stale_tsv.is_file():
+            stale_tsv.unlink(missing_ok=True)
+
+    y_path, gd_path, gm_path, chr_idx_to_label = _write_gapit_inputs(workspace, log_file)
+    cmd = [
+        rscript,
+        str(runner_script),
+        "--y", str(y_path),
+        "--gd", str(gd_path),
+        "--gm", str(gm_path),
+        "--models", ",".join(methods),
+        "--out", str(workspace),
+    ]
+    run_cli_command(
+        cmd,
+        cwd=workspace,
+        log_file=log_file,
+        timeout=MULTILOCUS_TIMEOUT_SECONDS,
+        cancel_check=cancel_check,
+    )
+
+    results: dict[str, dict[str, Any]] = {}
+    for m in methods:
+        candidates = sorted(
+            p for p in {
+                *workspace.glob(f"GAPIT.Association.GWAS_Results.{m}.*.csv"),
+                *workspace.glob(f"GAPIT.{m}.*.GWAS.Results.csv"),
+            }
+            if "GWAS_StdErr" not in p.name and "Filter_GWAS_results" not in p.name
+        )
+        if not candidates:
+            continue
+        nyc_candidates = [p for p in candidates if "(NYC)" in p.name]
+        chosen_csv = nyc_candidates[0] if nyc_candidates else candidates[0]
+        tsv_target = workspace / f"{m.lower()}_results.tsv"
+        normalize_association_results(chosen_csv, tsv_target)
+        _restore_gapit_chr_labels(tsv_target, chr_idx_to_label)
+        results[m.upper()] = {
+            "status": "completed",
+            "tsv_file": str(tsv_target),
+            "engine": "gapit",
+        }
+    return results
+
+
 @celery_app.task(
     bind=True,
     name="app.tasks.multilocus_tasks.run_multilocus_gwas",
@@ -596,6 +813,7 @@ def run_multilocus_gwas(
     job_id: str,
     dataset_id: str,
     params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Menjalankan analisis Multi-Locus GWAS (FarmCPU, BLINK, dan MLMM) bila diaktifkan;
@@ -604,7 +822,7 @@ def run_multilocus_gwas(
     db = SessionLocal()
     ctx: dict[str, Any] = dict(gwas_result or {})
     try:
-        ensure_not_cancelled(job_id, db)
+        ensure_not_cancelled(job_id, db, run_id=run_id)
         job = db.get(AnalysisJob, job_id)
         if job is None:
             raise ValueError(f"AnalysisJob {job_id} tidak ditemukan")
@@ -632,9 +850,10 @@ def run_multilocus_gwas(
         if not active_methods:
             active_methods = ["FarmCPU", "BLINK", "MLMM"]
 
-        has_rscript = bool(which_tool("Rscript"))
+        rscript_bin = which_tool("Rscript")
+        has_rscript = bool(rscript_bin)
         runner_script = Path(__file__).resolve().parents[1] / "templates" / "gapit_runner.R"
-        can_run_r = has_rscript and runner_script.is_file()
+        can_run_r = bool(rscript_bin) and runner_script.is_file()
 
         mark_job(
             db,
@@ -678,80 +897,85 @@ def run_multilocus_gwas(
         multi_lead_snps: list[dict[str, Any]] = []
 
         # Jalankan R GAPIT jika tersedia
-        r_success = False
-        if can_run_r:
+        if can_run_r and rscript_bin is not None:
             try:
-                pheno_path = workspace.parent / "gwas" / "phenotype.txt"
-                if pheno_path.is_file():
-                    append_log(log_file, "[INFO] Mengeksekusi script GAPIT via Rscript...")
-                    cmd = [
-                        "Rscript",
-                        str(runner_script),
-                        "--y", str(pheno_path),
-                        "--models", ",".join(active_methods),
-                        "--out", str(workspace),
-                    ]
-                    res = run_cli_command(cmd, log_file=log_file, timeout_seconds=600)
-                    if res.returncode == 0:
-                        r_success = True
-                        append_log(log_file, "[INFO] GAPIT R script selesai dengan sukses.")
+                append_log(log_file, "[INFO] Mengeksekusi script GAPIT via Rscript...")
+                gapit_results = _run_gapit_models(
+                    rscript=rscript_bin,
+                    runner_script=runner_script,
+                    methods=active_methods,
+                    workspace=workspace,
+                    log_file=log_file,
+                    cancel_check=lambda: is_job_cancelled(job_id, run_id=run_id),
+                )
+                methods_results.update(gapit_results)
+                if gapit_results:
+                    append_log(
+                        log_file,
+                        f"[INFO] GAPIT R selesai untuk model: {', '.join(gapit_results.keys())}.",
+                    )
+            except (JobCancelledError, CLICancelledError):
+                raise
             except Exception as r_err:
-                append_log(log_file, f"[WARN] Eksekusi Rscript gagal atau GAPIT tidak terpasang: {r_err}")
-                append_log(log_file, "[INFO] Beralih secara transparan ke Python Native Engine...")
+                append_log(log_file, f"[WARN] Eksekusi Rscript/GAPIT gagal, beralih ke Python Native Engine: {r_err}")
 
-        # Jika R tidak berhasil atau tidak tersedia, gunakan Python Native Engine
-        if not r_success:
+        # Model aktif yang belum dihasilkan GAPIT dijalankan dengan Python Native Engine
+        remaining_methods = [m for m in active_methods if m.upper() not in methods_results]
+        if remaining_methods:
             engine_output = _run_python_multilocus_engine(
                 job_id=job_id,
                 dataset_id=dataset_id,
-                methods=active_methods,
+                methods=remaining_methods,
                 workspace=workspace,
                 log_file=log_file,
                 ctx=ctx,
             )
-            methods_results = engine_output.get("methods_results", {})
-            multi_lead_snps = engine_output.get("lead_snps_multi", [])
+            py_results = engine_output.get("methods_results", {})
+            for m_key, m_entry in py_results.items():
+                m_entry["engine"] = "python"
+                methods_results[m_key] = m_entry
+            multi_lead_snps.extend(engine_output.get("lead_snps_multi", []))
 
-        # 4. Normalisasi output GAPIT CSV ke TSV kanonik jika dihasilkan dari R
-        for m in active_methods:
-            m_lower = m.lower()
-            tsv_target = workspace / f"{m_lower}_results.tsv"
-            if not tsv_target.is_file():
-                gapit_csv_candidates = list(workspace.glob(f"GAPIT.Association.GWAS_Results.{m}.*.csv"))
-                if gapit_csv_candidates:
-                    normalize_association_results(gapit_csv_candidates[0], tsv_target)
-                    methods_results[m] = {"status": "completed", "tsv_file": str(tsv_target)}
-
-        # Pastikan multi_lead_snps terisi dari TSV model bila sebelumnya kosong
+        # Pastikan lead SNPs & PVE CSV terisi untuk tiap model (khususnya keluaran GAPIT R)
         trait_label = str(
             ctx.get("trait")
             or ((job.parameters or {}).get("phenotype") or {}).get("trait")
             or "Trait"
         )
-        if not multi_lead_snps:
-            for m in active_methods:
-                m_lower = m.lower()
-                tsv_target = workspace / f"{m_lower}_results.tsv"
+        for m in active_methods:
+            m_upper = m.upper()
+            entry = methods_results.get(m_upper)
+            if not entry:
+                continue
+            if "significant_snps" not in entry:
+                tsv_target = Path(entry.get("tsv_file") or (workspace / f"{m.lower()}_results.tsv"))
                 if tsv_target.is_file():
                     extracted = extract_multilocus_leads_from_tsv(
                         tsv_target,
-                        method_name=m.upper(),
+                        method_name=m_upper,
                         trait_name=trait_label,
                         max_top=5,
                     )
                     if extracted:
                         multi_lead_snps.extend(extracted)
-                        display_m = METHOD_DISPLAY_NAMES.get(m.upper(), m)
+                        display_m = METHOD_DISPLAY_NAMES.get(m_upper, m)
                         pve_csv = workspace / f"{display_m}_Significant_SNPs_PVE.csv"
                         write_significant_pve_csv(pve_csv, extracted, trait_name=trait_label)
-                        if m.upper() in methods_results:
-                            methods_results[m.upper()]["significant_snps"] = extracted
-                            methods_results[m.upper()]["pve_csv_file"] = str(pve_csv)
+                        entry["significant_snps"] = extracted
+                        entry["pve_csv_file"] = str(pve_csv)
+
+        engines_used = {
+            m_upper: str(entry.get("engine", "unknown"))
+            for m_upper, entry in methods_results.items()
+        }
+        for m_upper, eng in engines_used.items():
+            append_log(log_file, f"[INFO] Model {m_upper} selesai menggunakan engine: {eng}")
 
         # Simpan ringkasan multi-locus JSON
         summary_payload = {
             "status": "completed",
             "models_evaluated": active_methods,
+            "engines": engines_used,
             "results": methods_results,
             "n_lead_snps": len(multi_lead_snps),
             "lead_snps": multi_lead_snps,
@@ -822,7 +1046,7 @@ def run_multilocus_gwas(
             "log_file": str(log_file),
         }
 
-    except JobCancelledError:
+    except (JobCancelledError, CLICancelledError):
         logger.info("Multi-locus GWAS dibatalkan: job=%s", job_id)
         raise
     except Exception as exc:
@@ -871,13 +1095,13 @@ def generate_peak_comparison(
     matched_multi_indices: set[int] = set()
 
     for s in single_lead_snps:
-        s_chr = str(s.get("chr", "")).lstrip("chrCHR")
+        s_chr = _chr_label(s.get("chr", ""))
         s_pos = int(s.get("pos", 0))
 
         # Cari kecocokan di multi-locus
         matched_multi = None
         for m_idx, m in enumerate(multi_lead_snps):
-            m_chr = str(m.get("chr", "")).lstrip("chrCHR")
+            m_chr = _chr_label(m.get("chr", ""))
             m_pos = int(m.get("pos", 0))
             if s_chr == m_chr and abs(s_pos - m_pos) <= window_bp:
                 matched_multi = m
@@ -917,7 +1141,7 @@ def generate_peak_comparison(
         if m_idx not in matched_multi_indices:
             multi_only.append({
                 "snp": m.get("snp"),
-                "chr": str(m.get("chr", "")).lstrip("chrCHR"),
+                "chr": _chr_label(m.get("chr", "")),
                 "pos": int(m.get("pos", 0)),
                 "p_single": None,
                 "p_multi": m.get("p"),

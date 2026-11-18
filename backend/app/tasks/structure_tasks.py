@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, ResultType
-from app.schemas.pipeline import PopulationType, StructureConfig
+from app.schemas.pipeline import StructureConfig
 from app.services.structure_service import (
     compute_centered_kinship,
     compute_king_robust_table,
@@ -25,10 +23,10 @@ from app.tasks._common import (
     JobCancelledError,
     append_log,
     ensure_not_cancelled,
+    guard_status_change,
     mark_job,
     stage_dir,
     upsert_result,
-    which_tool,
     write_json,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
@@ -39,7 +37,7 @@ logger = get_task_logger(__name__)
 @celery_app.task(
     bind=True,
     name="app.tasks.structure_tasks.run_structure_analysis",
-    queue="structure",
+    queue="gwas",
     max_retries=0,
 )
 def run_structure_analysis(
@@ -48,6 +46,7 @@ def run_structure_analysis(
     job_id: str,
     dataset_id: str,
     structure_params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Menjalankan analisis Struktur Populasi (LD pruning + PCA), Kekerabatan (Kinship + KING),
@@ -56,7 +55,7 @@ def run_structure_analysis(
     db = SessionLocal()
     ctx: dict[str, Any] = dict(imputation_or_qc_result or {})
     try:
-        ensure_not_cancelled(job_id, db)
+        ensure_not_cancelled(job_id, db, run_id=run_id)
         job = db.get(AnalysisJob, job_id)
         dataset = db.get(Dataset, dataset_id)
         if job is None:
@@ -215,6 +214,7 @@ def run_structure_analysis(
             "recommended_model": rec_data["recommended_model"],
             "model_used": rec_data["model_used"],
         }
+        guard_status_change(db, job.id, JobStatus.RUNNING_GWAS)
         job.overall_status = JobStatus.RUNNING_GWAS
         job.current_step = PipelineStep.GWAS
         db.commit()

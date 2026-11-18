@@ -73,6 +73,7 @@ def _build_stage_signatures(
     clump_params: dict[str, Any] | None = None,
     multilocus_params: dict[str, Any] | None = None,
     annotation_params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> list[Signature]:
     job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
     imputation_config = dict(imputation_params or {})
@@ -90,29 +91,34 @@ def _build_stage_signatures(
             job_id=job_id,
             dataset_id=dataset_id,
             phenotype_cfg=phenotype_params or {},
+            run_id=run_id,
         ),
         # 2. Normalisasi VCF
         run_vcf_normalization.s(
             job_id=job_id,
             dataset_id=dataset_id,
+            run_id=run_id,
         ),
         # 3. Quality Control (PLINK 2 / 1.9)
         run_qc_pipeline.s(
             job_id=job_id,
             dataset_id=dataset_id,
             qc_params=qc_params or {},
+            run_id=run_id,
         ),
         # 4. Imputasi Genotipe (Beagle 5.4 / Skip)
         run_imputation.s(
             job_id=job_id,
             reference_vcf_path=ref_vcf,
             params=imputation_config,
+            run_id=run_id,
         ),
         # 5. Struktur Populasi, Kinship & LD Decay
         run_structure_analysis.s(
             job_id=job_id,
             dataset_id=dataset_id,
             structure_params=structure_params or {},
+            run_id=run_id,
         ),
         # 6. Analisis Asosiasi GWAS (GEMMA / GLM)
         run_gemma_gwas.s(
@@ -120,12 +126,14 @@ def _build_stage_signatures(
             phenotype_path=pheno_path,
             model=gwas_model,
             params=gwas_config,
+            run_id=run_id,
         ),
         # 7. Multi-Locus GWAS (FarmCPU / BLINK via R)
         run_multilocus_gwas.s(
             job_id=job_id,
             dataset_id=dataset_id,
             params=multilocus_params or {},
+            run_id=run_id,
         ),
         # 8. Pasca-GWAS, Lambda GC, Dynamic Thresholds & Clumping
         run_postgwas_analysis.s(
@@ -133,17 +141,20 @@ def _build_stage_signatures(
             dataset_id=dataset_id,
             threshold_params=threshold_params or {},
             clump_params=clump_params or {},
+            run_id=run_id,
         ),
         # 9. Visualisasi & Plot Cache (Parquet)
         run_visualization.s(
             job_id=job_id,
             dataset_id=dataset_id,
+            run_id=run_id,
         ),
         # 10. Anotasi Gen Kandidat GFF3 & GO Enrichment List
         run_annotation.s(
             job_id=job_id,
             dataset_id=dataset_id,
             annotation_params=annotation_params or {},
+            run_id=run_id,
         ),
     ]
 
@@ -301,7 +312,6 @@ def build_full_pipeline(
     *,
     job_id: str,
     dataset_id: str,
-    raw_vcf_path: str,
     phenotype_params: dict[str, Any] | None = None,
     qc_params: dict[str, Any] | None = None,
     imputation_params: dict[str, Any] | None = None,
@@ -311,18 +321,9 @@ def build_full_pipeline(
     clump_params: dict[str, Any] | None = None,
     multilocus_params: dict[str, Any] | None = None,
     annotation_params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> Signature:
     """Build the complete 10-step Celery chain without executing it."""
-    job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
-    imputation_config = dict(imputation_params or {})
-    imputation_config.setdefault("output_dir", str(job_root / "imputation"))
-    ref_vcf = imputation_config.pop("reference_vcf_path", "")
-
-    gwas_config = dict(gwas_params or {})
-    gwas_config.setdefault("output_dir", str(job_root / "gwas"))
-    pheno_path = gwas_config.pop("phenotype_path", "") or ""
-    gwas_model = gwas_config.pop("model", "lmm")
-
     return chain(
         *_build_stage_signatures(
             job_id=job_id,
@@ -336,6 +337,7 @@ def build_full_pipeline(
             clump_params=clump_params,
             multilocus_params=multilocus_params,
             annotation_params=annotation_params,
+            run_id=run_id,
         )
     )
 
@@ -344,10 +346,10 @@ def trigger_retry_pipeline(
     *,
     job_id: str,
     dataset_id: str,
-    raw_vcf_path: str,
     job_parameters: dict[str, Any] | None = None,
     failed_step: str | None = None,
     from_scratch: bool = False,
+    run_id: str | None = None,
 ) -> tuple[str, int, str]:
     """
     Menjalankan ulang (retry) atau melanjutkan (resume) AnalysisJob:
@@ -360,6 +362,11 @@ def trigger_retry_pipeline(
     job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
 
     gwas_cfg = dict(params.get("gwas") or {})
+    gwas_cfg.pop("phenotype_path", None)
+    imputation_cfg = dict(params.get("imputation") or {})
+    if not imputation_cfg.get("reference_panel_id"):
+        imputation_cfg.pop("reference_vcf_path", None)
+        imputation_cfg.pop("map_path", None)
     multilocus_cfg = dict(params.get("multilocus") or {})
     if "enabled" not in multilocus_cfg and "enable_multilocus" in gwas_cfg:
         multilocus_cfg = {
@@ -372,13 +379,14 @@ def trigger_retry_pipeline(
         dataset_id=dataset_id,
         phenotype_params=params.get("phenotype"),
         qc_params=params.get("qc"),
-        imputation_params=params.get("imputation"),
+        imputation_params=imputation_cfg,
         structure_params=params.get("structure"),
         gwas_params=gwas_cfg,
         threshold_params=params.get("threshold"),
         clump_params=params.get("clump"),
         multilocus_params=multilocus_cfg,
         annotation_params=params.get("annotation"),
+        run_id=run_id,
     )
 
     if from_scratch:
@@ -412,7 +420,6 @@ def trigger_full_pipeline(
     *,
     job_id: str,
     dataset_id: str,
-    raw_vcf_path: str,
     phenotype_params: dict[str, Any] | None = None,
     qc_params: dict[str, Any] | None = None,
     imputation_params: dict[str, Any] | None = None,
@@ -422,12 +429,12 @@ def trigger_full_pipeline(
     clump_params: dict[str, Any] | None = None,
     multilocus_params: dict[str, Any] | None = None,
     annotation_params: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> str:
     """Enqueue the full 10-step chain and return its root Celery task id."""
     pipeline = build_full_pipeline(
         job_id=job_id,
         dataset_id=dataset_id,
-        raw_vcf_path=raw_vcf_path,
         phenotype_params=phenotype_params,
         qc_params=qc_params,
         imputation_params=imputation_params,
@@ -437,10 +444,6 @@ def trigger_full_pipeline(
         clump_params=clump_params,
         multilocus_params=multilocus_params,
         annotation_params=annotation_params,
+        run_id=run_id,
     )
     return pipeline.apply_async().id
-
-
-# Compatibility aliases
-build_pipeline_chain = build_full_pipeline
-start_pipeline = trigger_full_pipeline

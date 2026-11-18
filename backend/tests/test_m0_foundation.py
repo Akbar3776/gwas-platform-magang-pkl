@@ -1,14 +1,11 @@
 import tempfile
 from pathlib import Path
 import numpy as np
-import pytest
 
 from app.services.manhattan_parser import compute_assoc_summary_stats
 from app.tasks._common import (
-    JobCancelledError,
     append_log,
     read_json,
-    stage_dir,
     which_tool,
     write_json,
 )

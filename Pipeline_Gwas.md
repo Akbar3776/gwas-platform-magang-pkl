@@ -246,6 +246,9 @@ boxplot(
 
 ## **Catatan:**
 
+- **Parameter GENO Opsional:**
+  Parameter `--geno` (batas toleransi missing genotype rate per SNP) bersifat opsional. Pada UI form GWAS Platform, pengguna dapat menonaktifkan filter ini melalui kotak ceklis (*checkbox*) jika ingin mempertahankan seluruh varian tanpa memotong berdasarkan persentase missing data. Bila dinonaktifkan, flag `--geno` tidak akan disertakan pada eksekusi PLINK2 / PLINK 1.9.
+
 - Cek hasil QC
     
     Bandingkan jumlah SNP & sampel sebelum dan sesudah. Kalau SNP yang tersisa turun drastis (>50%), curiga ada filter yang salah (biasanya HWE).

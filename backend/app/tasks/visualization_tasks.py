@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, ResultType
 from app.services.manhattan_parser import compute_assoc_summary_stats, generate_manhattan_cache
@@ -14,6 +13,7 @@ from app.tasks._common import (
     JobCancelledError,
     append_log,
     ensure_not_cancelled,
+    guard_status_change,
     mark_job,
     stage_dir,
     upsert_result,
@@ -34,6 +34,7 @@ def run_visualization(
     prev_result: dict[str, Any],
     job_id: str,
     dataset_id: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Menghasilkan cache biner Parquet untuk Manhattan & QQ plot interaktif berperforma tinggi.
@@ -42,7 +43,7 @@ def run_visualization(
     db = SessionLocal()
     ctx: dict[str, Any] = dict(prev_result or {})
     try:
-        ensure_not_cancelled(job_id, db)
+        ensure_not_cancelled(job_id, db, run_id=run_id)
         job = db.get(AnalysisJob, job_id)
         if job is None:
             raise ValueError(f"AnalysisJob {job_id} tidak ditemukan")
@@ -125,6 +126,7 @@ def run_visualization(
             "manhattan_cache_path": str(manhattan_cache_path),
             "summary_stats": full_summary,
         }
+        guard_status_change(db, job.id, JobStatus.RUNNING_ANNOTATION)
         job.overall_status = JobStatus.RUNNING_ANNOTATION
         job.current_step = PipelineStep.ANNOTATION
         db.commit()

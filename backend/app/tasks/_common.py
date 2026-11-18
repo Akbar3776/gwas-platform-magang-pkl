@@ -45,8 +45,8 @@ def append_log(log_file: Path, message: str, with_timestamp: bool = False) -> No
         logger.warning("Gagal menulis ke log file %s: %s", log_file, exc)
 
 
-def ensure_not_cancelled(job_id: str, db: Any = None) -> None:
-    """Check if the job has been cancelled by the user; raise JobCancelledError if so."""
+def ensure_not_cancelled(job_id: str, db: Any = None, run_id: str | None = None) -> None:
+    """Check if the job has been cancelled or superseded by a newer run_id; raise JobCancelledError if so."""
     close_db = False
     if db is None:
         db = SessionLocal()
@@ -56,15 +56,82 @@ def ensure_not_cancelled(job_id: str, db: Any = None) -> None:
             target_id = uuid.UUID(str(job_id))
         except (ValueError, TypeError):
             target_id = job_id
-        job = db.get(AnalysisJob, target_id)
+        try:
+            job = db.get(AnalysisJob, target_id, populate_existing=True)
+        except TypeError:
+            job = db.get(AnalysisJob, target_id)
         if job is None:
             return
         status_val = job.overall_status.value if hasattr(job.overall_status, "value") else str(job.overall_status)
         if status_val == JobStatus.CANCELLED.value:
             raise JobCancelledError(f"Job {job_id} telah dibatalkan oleh pengguna.")
+        if run_id is not None:
+            job_params = getattr(job, "parameters", None)
+            stored_run_id = job_params.get("run_id") if isinstance(job_params, dict) else None
+            if stored_run_id and str(stored_run_id) != str(run_id):
+                raise JobCancelledError(f"Eksekusi usang: job {job_id} sudah di-retry.")
     finally:
         if close_db:
             db.close()
+
+
+def current_status(db: Any, job_id: Any) -> JobStatus | None:
+    try:
+        target_id = uuid.UUID(str(job_id))
+    except (ValueError, TypeError):
+        return None
+    q = db.query(AnalysisJob.overall_status).filter(AnalysisJob.id == target_id)
+    if hasattr(q, "with_for_update") and hasattr(q, "scalar"):
+        return q.with_for_update().scalar()
+    job = db.get(AnalysisJob, str(job_id))
+    return getattr(job, "overall_status", None) if job is not None else None
+
+
+def guard_status_change(db: Any, job_id: Any, new_status: JobStatus | None) -> bool:
+    """
+    Kembalikan True jika status boleh ditulis.
+    - Job sudah CANCELLED + new_status FAILED/CANCELLED -> False (biarkan CANCELLED, jangan raise)
+    - Job sudah CANCELLED + new_status lain (RUNNING_*, COMPLETED, ...) -> raise JobCancelledError
+    - Selain itu -> True
+    """
+    if new_status is None:
+        return True
+    if current_status(db, job_id) != JobStatus.CANCELLED:
+        return True
+    if new_status in {JobStatus.FAILED, JobStatus.CANCELLED}:
+        return False
+    raise JobCancelledError(f"Job {job_id} telah dibatalkan oleh pengguna.")
+
+
+def is_job_cancelled(job_id: str, run_id: str | None = None) -> bool:
+    """Return True if persisted job is CANCELLED or has a different run_id; DB errors return False."""
+    try:
+        with SessionLocal() as db:
+            try:
+                target_id = uuid.UUID(str(job_id))
+            except (ValueError, TypeError):
+                return False
+            row = (
+                db.query(AnalysisJob.overall_status, AnalysisJob.parameters)
+                .filter(AnalysisJob.id == target_id)
+                .first()
+            )
+            if row is None:
+                return False
+            status_val, params = row[0], row[1]
+            if status_val == JobStatus.CANCELLED:
+                return True
+            if run_id is not None and isinstance(params, dict):
+                stored_run_id = params.get("run_id")
+                if stored_run_id and str(stored_run_id) != str(run_id):
+                    return True
+            return False
+    except Exception as exc:
+        logger.warning("Cek pembatalan gagal untuk job %s: %s", job_id, exc)
+        return False
+
+
+_UNSET: Any = object()
 
 
 def mark_job(
@@ -74,10 +141,11 @@ def mark_job(
     status: JobStatus | None = None,
     overall_status: JobStatus | None = None,
     current_step: Any = None,
-    error: str | None = None,
-    error_message: str | None = None,
+    error: Any = _UNSET,
+    error_message: Any = _UNSET,
     work_dir: str | None = None,
     extra_params: dict[str, Any] | None = None,
+    session_factory: Any = None,
     **fields: Any,
 ) -> None:
     """
@@ -94,12 +162,12 @@ def mark_job(
         job = job_or_none
     elif isinstance(target, AnalysisJob):
         job = target
-        db = SessionLocal()
+        db = (session_factory or SessionLocal)()
         close_db = True
     else:
         # target is job_id (str or UUID)
         job_id = target
-        db = SessionLocal()
+        db = (session_factory or SessionLocal)()
         close_db = True
         try:
             job_uuid = uuid.UUID(str(job_id)) if isinstance(job_id, str) else job_id
@@ -114,14 +182,14 @@ def mark_job(
 
     try:
         new_status = overall_status or status
-        if new_status is not None:
+        if new_status is not None and guard_status_change(db, job.id, new_status):
             job.overall_status = new_status
         if current_step is not None:
             job.current_step = current_step
-        new_err = error_message or error
-        if new_err is not None:
-            job.error_message = new_err
-            job.error_log = new_err
+        err_val = error_message if error_message is not _UNSET else error
+        if err_val is not _UNSET:
+            job.error_message = err_val
+            job.error_log = err_val
         if work_dir is not None:
             job.work_dir = work_dir
         if extra_params is not None:
@@ -131,6 +199,9 @@ def mark_job(
             if hasattr(job, k):
                 setattr(job, k, v)
         db.commit()
+    except JobCancelledError:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
         logger.warning("Gagal memperbarui job: %s", exc)

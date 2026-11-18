@@ -1,16 +1,25 @@
 """Schema Pydantic untuk endpoint chunked upload."""
 
+from pathlib import PurePosixPath
 import uuid
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class InitUploadRequest(BaseModel):
     """Payload untuk memulai sesi upload baru (sebelum chunk pertama dikirim)."""
 
-    original_filename: str = Field(..., examples=["cohort_batch1.vcf.gz"])
+    original_filename: str = Field(..., min_length=1, max_length=255, examples=["cohort_batch1.vcf.gz"])
     total_size_bytes: int = Field(..., gt=0)
     genome_build: str | None = Field(default=None, examples=["GRCh38"])
+
+    @field_validator("original_filename")
+    @classmethod
+    def _basename_only(cls, v: str) -> str:
+        name = PurePosixPath(v.replace("\\", "/")).name.strip()
+        if name in {"", ".", ".."}:
+            raise ValueError("original_filename tidak valid")
+        return name
 
 
 class InitUploadResponse(BaseModel):

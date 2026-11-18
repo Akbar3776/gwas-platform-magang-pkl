@@ -6,6 +6,7 @@ untuk dirender pada visualisasi interaktif frontend.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 import uuid
@@ -15,12 +16,18 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.security import require_job_owner
 from app.db.engine.database import get_db
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, Result, ResultType
 from app.schemas.results import ManhattanDataResponse
-from app.services.manhattan_parser import generate_manhattan_cache, load_manhattan_cache
+from app.services.manhattan_parser import (
+    generate_manhattan_cache,
+    load_manhattan_cache,
+    load_manhattan_chr_labels,
+)
 
-router = APIRouter(prefix="/results", tags=["results"])
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/results", tags=["results"], dependencies=[Depends(require_job_owner)])
 
 
 def _load_job_json_result(
@@ -129,6 +136,15 @@ def get_manhattan_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> Manh
     if not cache_path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cache Manhattan Plot tidak ditemukan")
 
+    labels_path = Path(cache_path).with_name("manhattan_chr_labels.json")
+    if not labels_path.is_file() and job.assoc_output_path:
+        assoc_path = Path(job.assoc_output_path)
+        if assoc_path.is_file():
+            generate_manhattan_cache(
+                assoc_file_path=str(assoc_path),
+                output_cache_path=str(cache_path),
+            )
+
     try:
         df = load_manhattan_cache(cache_path)
     except FileNotFoundError as exc:
@@ -137,13 +153,16 @@ def get_manhattan_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> Manh
             detail="File cache Manhattan Plot hilang dari storage",
         ) from exc
 
+    chr_labels = load_manhattan_chr_labels(cache_path)
+
     return ManhattanDataResponse(
         job_id=str(job_id),
         total_points=len(df),
-        chr=[int(float(v)) if pd.notna(v) and str(v).replace(".", "", 1).isdigit() else 1 for v in df["CHR"].tolist()],
+        chr=[int(float(v)) if pd.notna(v) and str(v).replace(".", "", 1).isdigit() else 0 for v in df["CHR"].tolist()],
         bp=[int(float(v)) if pd.notna(v) and str(v).replace(".", "", 1).isdigit() else 0 for v in df["BP"].tolist()],
         snp=[str(v) for v in df["SNP"].tolist()],
         log10_p=[round(float(v), 4) if pd.notna(v) else 0.0 for v in df["LOG10_P"].tolist()],
+        chr_labels=chr_labels,
     )
 
 

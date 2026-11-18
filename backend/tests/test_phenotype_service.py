@@ -1,8 +1,6 @@
 import tempfile
 from pathlib import Path
-import numpy as np
 import pandas as pd
-import pytest
 
 from app.services.phenotype_service import (
     inspect_phenotype,

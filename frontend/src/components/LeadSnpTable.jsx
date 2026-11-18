@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { downloadJobFile } from "../api/jobsApi";
+import { downloadJobFileByName } from "../utils/jobFiles";
 import { Pagination } from "./Pagination";
 
 function formatBeta(b) {
@@ -122,7 +122,7 @@ export function LeadSnpTable({
     if (!jobId) return;
     setIsDownloading(true);
     try {
-      await downloadJobFile(jobId, "lead_snps.tsv", "lead_snps.tsv");
+      await downloadJobFileByName(jobId, "lead_snps.tsv", "postgwas");
     } catch (err) {
       alert(`Gagal mengunduh file lead_snps.tsv: ${err.message}`);
     } finally {

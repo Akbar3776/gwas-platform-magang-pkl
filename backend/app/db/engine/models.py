@@ -101,6 +101,12 @@ class JobStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+TERMINAL_JOB_STATUSES = frozenset(
+    {JobStatus.COMPLETED, JobStatus.SUCCESS, JobStatus.FAILED, JobStatus.CANCELLED}
+)
+ACTIVE_JOB_STATUSES = frozenset(set(JobStatus) - TERMINAL_JOB_STATUSES)
+
+
 class ResultType(str, enum.Enum):
     PLINK_QC_LOG = "plink_qc_log"
     GEMMA_LOG = "gemma_log"

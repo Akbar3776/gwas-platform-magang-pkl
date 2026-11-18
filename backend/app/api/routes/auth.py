@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import (
     REFRESH_COOKIE_NAME,
+    _role_str,
     clear_refresh_token_cookie,
     create_access_token,
     create_refresh_token,
@@ -35,10 +36,6 @@ from app.db.engine.database import get_db
 from app.db.engine.models import User, UserRole
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-
-def _role_value(role) -> str:
-    return role.value if hasattr(role, "value") else str(role)
 
 
 class RegisterRequest(BaseModel):
@@ -79,7 +76,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    return UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=_role_value(user.role))
+    return UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=_role_str(user.role))
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -106,7 +103,7 @@ def login(
 
     return TokenResponse(
         access_token=access_token,
-        user=UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=_role_value(user.role)),
+        user=UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=_role_str(user.role)),
     )
 
 
@@ -131,7 +128,7 @@ def refresh_access_token(
 
     return TokenResponse(
         access_token=new_access_token,
-        user=UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=_role_value(user.role)),
+        user=UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=_role_str(user.role)),
     )
 
 
@@ -150,4 +147,4 @@ def logout(response: Response, user: User = Depends(get_current_user), db: Sessi
 
 @router.get("/me", response_model=UserOut)
 def read_current_user(user: User = Depends(get_current_user)):
-    return UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=_role_value(user.role))
+    return UserOut(id=str(user.id), email=user.email, full_name=user.full_name, role=_role_str(user.role))

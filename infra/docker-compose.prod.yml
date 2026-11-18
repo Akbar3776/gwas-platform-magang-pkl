@@ -7,6 +7,10 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      - ${TLS_CERT_DIR:-./certs}:/etc/nginx/certs:ro
+      - ${ACME_WEBROOT:-./acme}:/var/www/certbot:ro
     depends_on:
       backend:
         condition: service_healthy
@@ -27,6 +31,7 @@ services:
     env_file:
       - ../backend/.env
     environment:
+      ENV: production
       DATABASE_URL: postgresql+psycopg2://gwas_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/gwas_db
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -64,6 +69,7 @@ services:
     env_file:
       - ../backend/.env
     environment:
+      ENV: production
       DATABASE_URL: postgresql+psycopg2://gwas_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/gwas_db
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -84,6 +90,31 @@ services:
     networks:
       - gwas_network
 
+  celery_beat:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: gwas_celery_beat_prod
+    restart: unless-stopped
+    env_file:
+      - ../backend/.env
+    environment:
+      ENV: production
+      DATABASE_URL: postgresql+psycopg2://gwas_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/gwas_db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      STORAGE_ROOT: /data/storage
+    volumes:
+      - vcf_storage:/data/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.tasks.celery_app beat --loglevel=info --schedule /tmp/celerybeat-schedule
+    networks:
+      - gwas_network
+
   flower:
     build:
       context: ../backend
@@ -93,6 +124,7 @@ services:
     env_file:
       - ../backend/.env
     environment:
+      ENV: production
       CELERY_BROKER_URL: redis://redis:6379/0
     command: celery -A app.tasks.celery_app flower --address=0.0.0.0 --port=5555
     ports:
