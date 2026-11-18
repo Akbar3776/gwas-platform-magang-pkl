@@ -487,3 +487,97 @@ def test_staging_sweep_and_purge_dataset_remove_staging_dirs(tmp_path, monkeypat
     assert not expired_staging.exists()
     assert not deleted_staging.exists()
     assert active_staging.exists()
+
+
+def test_deleted_or_unauthorized_export_report_and_pipeline_return_404(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from app.api.routes.export import export_job_results
+    from app.api.routes.pipeline import start_pipeline_endpoint
+    from app.api.routes.report import download_summary_report
+    from app.db.engine.models import UploadStatus, User, UserRole
+    from app.schemas.pipeline import FullPipelineRequest
+
+    storage_root = tmp_path / "storage"
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(storage_root))
+    Session = _make_session(tmp_path)
+    db = Session()
+    try:
+        owner = User(
+            id=uuid.uuid4(),
+            email="owner-a60@test.local",
+            hashed_password="x",
+            role=UserRole.RESEARCHER,
+        )
+        other_user = User(
+            id=uuid.uuid4(),
+            email="other-a60@test.local",
+            hashed_password="x",
+            role=UserRole.RESEARCHER,
+        )
+        db.add_all([owner, other_user])
+        db.flush()
+
+        assoc_file = tmp_path / "gwas.assoc.txt"
+        assoc_file.write_text(
+            "chr\trs\tps\tn_miss\tallele1\tallele0\taf\tbeta\tse\tp_wald\n"
+            "1\trs1\t100\t0\tA\tG\t0.25\t0.5\t0.1\t1e-8\n",
+            encoding="utf-8",
+        )
+        pheno_file = tmp_path / "pheno.txt"
+        pheno_file.write_text("IID\tTrait1\ns1\t1.0\n", encoding="utf-8")
+
+        _, ds_deleted, job_deleted = _seed_job(
+            db,
+            status=JobStatus.COMPLETED,
+            deleted_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+        )
+        ds_deleted.owner_id = owner.id
+        ds_deleted.upload_status = UploadStatus.UPLOADED
+        ds_deleted.storage_path = str(tmp_path / "missing_or_deleted.vcf.gz")
+        ds_deleted.phenotype_file_path = str(pheno_file)
+        ds_deleted.deleted_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+        job_deleted.triggered_by = owner.id
+        job_deleted.assoc_output_path = str(assoc_file)
+        job_deleted.completed_at = datetime.now(timezone.utc)
+
+        _, ds_active, job_active = _seed_job(
+            db,
+            status=JobStatus.COMPLETED,
+        )
+        ds_active.owner_id = owner.id
+        job_active.triggered_by = owner.id
+        job_active.assoc_output_path = str(assoc_file)
+        job_active.completed_at = datetime.now(timezone.utc)
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_export_del:
+            export_job_results(job_id=job_deleted.id, db=db, user=owner)
+        assert exc_export_del.value.status_code == 404
+        assert "Job tidak ditemukan" in exc_export_del.value.detail
+
+        with pytest.raises(HTTPException) as exc_report_del:
+            download_summary_report(job_id=job_deleted.id, db=db, user=owner)
+        assert exc_report_del.value.status_code == 404
+        assert "Job tidak ditemukan" in exc_report_del.value.detail
+
+        with pytest.raises(HTTPException) as exc_export_other:
+            export_job_results(job_id=job_active.id, db=db, user=other_user)
+        assert exc_export_other.value.status_code == 404
+        assert "Job tidak ditemukan" in exc_export_other.value.detail
+
+        with pytest.raises(HTTPException) as exc_report_other:
+            download_summary_report(job_id=job_active.id, db=db, user=other_user)
+        assert exc_report_other.value.status_code == 404
+        assert "Job tidak ditemukan" in exc_report_other.value.detail
+
+        with pytest.raises(HTTPException) as exc_pipe_del:
+            start_pipeline_endpoint(
+                dataset_id=ds_deleted.id,
+                payload=FullPipelineRequest(),
+                db=db,
+                user=owner,
+            )
+        assert exc_pipe_del.value.status_code == 404
+        assert "Dataset tidak ditemukan" in exc_pipe_del.value.detail
+    finally:
+        db.close()

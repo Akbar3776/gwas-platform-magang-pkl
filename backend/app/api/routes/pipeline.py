@@ -31,7 +31,7 @@ def start_pipeline_endpoint(
     user: User = Depends(get_current_user),
 ) -> PipelineStartResponse:
     dataset = db.get(Dataset, dataset_id)
-    if dataset is None or (dataset.owner_id != user.id and not is_admin(user)):
+    if dataset is None or dataset.deleted_at is not None or (dataset.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset tidak ditemukan")
     if dataset.upload_status not in {UploadStatus.UPLOADED, UploadStatus.READY}:
         raise HTTPException(

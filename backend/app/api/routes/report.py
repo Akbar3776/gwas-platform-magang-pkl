@@ -12,9 +12,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.core.security import get_current_user, is_admin
+from app.core.security import get_current_user, require_job_owner
 from app.db.engine.database import get_db
-from app.db.engine.models import AnalysisJob, JobStatus, Result, ResultType
+from app.db.engine.models import JobStatus, Result, ResultType
 from app.services.report_generator import (
     build_report_context,
     extract_top_snps,
@@ -31,12 +31,7 @@ def download_summary_report(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    job = db.get(AnalysisJob, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job tidak ditemukan")
-
-    if job.triggered_by != user.id and not is_admin(user):
-        raise HTTPException(status_code=403, detail="Anda tidak memiliki akses ke job ini")
+    job = require_job_owner(job_id=job_id, user=user, db=db)
 
     if job.overall_status not in {JobStatus.COMPLETED, JobStatus.SUCCESS}:
         raise HTTPException(
@@ -46,7 +41,7 @@ def download_summary_report(
 
     assoc_result = (
         db.query(Result)
-        .filter(Result.job_id == job_id, Result.result_type == ResultType.GWAS_ASSOC)
+        .filter(Result.job_id == job.id, Result.result_type == ResultType.GWAS_ASSOC)
         .first()
     )
     assoc_path = (

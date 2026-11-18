@@ -7,12 +7,13 @@ imputasi) menjadi satu file .zip dan mengirimkannya sebagai StreamingResponse.
 """
 
 from pathlib import Path
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.core.security import get_current_user, is_admin
+from app.core.security import get_current_user, require_job_owner
 from app.db.engine.database import get_db
 from app.db.engine.models import AnalysisJob, JobStatus, Result
 from app.services.export_service import ExportFile, generate_zip_stream
@@ -67,16 +68,11 @@ def _collect_job_export_files(job: AnalysisJob, results: list[Result]) -> list[E
 
 @router.get("/{job_id}/export")
 def export_job_results(
-    job_id: str,
+    job_id: uuid.UUID,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job tidak ditemukan")
-
-    if job.triggered_by != user.id and not is_admin(user):
-        raise HTTPException(status_code=403, detail="Anda tidak memiliki akses ke job ini")
+    job = require_job_owner(job_id=job_id, user=user, db=db)
 
     if job.overall_status not in {JobStatus.COMPLETED, JobStatus.SUCCESS}:
         raise HTTPException(
@@ -84,13 +80,13 @@ def export_job_results(
             detail="Hasil belum tersedia karena job belum selesai diproses",
         )
 
-    results = db.query(Result).filter(Result.job_id == job_id).all()
+    results = db.query(Result).filter(Result.job_id == job.id).all()
     result_files = _collect_job_export_files(job, results)
     if not result_files:
         raise HTTPException(status_code=404, detail="Tidak ada file hasil untuk job ini")
 
     zip_stream = generate_zip_stream(result_files)
-    filename = f"gwas_results_{job_id}.zip"
+    filename = f"gwas_results_{job.id}.zip"
 
     return StreamingResponse(
         zip_stream,

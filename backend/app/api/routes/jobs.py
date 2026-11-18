@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import get_current_user, is_admin
+from app.core.security import get_current_user, is_admin, require_job_owner
 from app.db.engine.database import get_db
 from app.db.engine.models import (
     TERMINAL_JOB_STATUSES,
@@ -468,13 +468,6 @@ def list_user_jobs(
     return items
 
 
-def _owned_job(job_id: uuid.UUID, user: User, db: Session) -> AnalysisJob:
-    job = db.get(AnalysisJob, job_id)
-    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not is_admin(user)):
-        raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
-    return job
-
-
 @router.post("/qc", response_model=JobTriggerResponse, status_code=202)
 def trigger_qc_job(
     payload: QCJobRequest,
@@ -540,7 +533,7 @@ def get_job_status(
     `overall_status` masih PENDING/RUNNING, lalu berhenti polling begitu status
     menjadi COMPLETED/FAILED/CANCELLED.
     """
-    job = _owned_job(job_id, user, db)
+    job = require_job_owner(job_id=job_id, user=user, db=db)
 
     step_logs, last_log_line = _collect_step_logs(job)
     elapsed_seconds = _compute_elapsed_seconds(job)
@@ -583,7 +576,7 @@ def get_job_logs(
     """
     Mengembalikan seluruh log eksekusi per tahap untuk sebuah AnalysisJob.
     """
-    job = _owned_job(job_id, user, db)
+    job = require_job_owner(job_id=job_id, user=user, db=db)
 
     step_logs, last_log_line = _collect_step_logs(job)
     return {
@@ -607,7 +600,7 @@ def list_job_files(
     Mengembalikan daftar seluruh file yang terkait dengan job (baik input dataset
     maupun file yang dihasilkan pada setiap tahap saat job sedang berjalan / selesai).
     """
-    job = _owned_job(job_id, user, db)
+    job = require_job_owner(job_id=job_id, user=user, db=db)
 
     dataset = db.get(Dataset, job.dataset_id)
     raw_files = _discover_job_files(job, dataset)
@@ -632,7 +625,7 @@ def get_job_file_content(
     user: User = Depends(get_current_user),
 ):
     """Mengunduh atau melihat pratinjau isi file spesifik dari sebuah job."""
-    job = _owned_job(job_id, user, db)
+    job = require_job_owner(job_id=job_id, user=user, db=db)
 
     dataset = db.get(Dataset, job.dataset_id)
     raw_files = _discover_job_files(job, dataset)
@@ -678,7 +671,7 @@ def get_job_results_summary(
     Mengembalikan ringkasan statistik hasil GWAS (total_snps, significant_snps, lambda_gc)
     yang ditampilkan oleh ResultDashboard.jsx.
     """
-    job = _owned_job(job_id, user, db)
+    job = require_job_owner(job_id=job_id, user=user, db=db)
 
     if job.overall_status not in {JobStatus.COMPLETED, JobStatus.SUCCESS}:
         raise HTTPException(
