@@ -131,6 +131,9 @@ def is_job_cancelled(job_id: str, run_id: str | None = None) -> bool:
         return False
 
 
+_UNSET: Any = object()
+
+
 def mark_job(
     target: Any,
     job_or_none: Any = None,
@@ -138,10 +141,11 @@ def mark_job(
     status: JobStatus | None = None,
     overall_status: JobStatus | None = None,
     current_step: Any = None,
-    error: str | None = None,
-    error_message: str | None = None,
+    error: Any = _UNSET,
+    error_message: Any = _UNSET,
     work_dir: str | None = None,
     extra_params: dict[str, Any] | None = None,
+    session_factory: Any = None,
     **fields: Any,
 ) -> None:
     """
@@ -158,12 +162,12 @@ def mark_job(
         job = job_or_none
     elif isinstance(target, AnalysisJob):
         job = target
-        db = SessionLocal()
+        db = (session_factory or SessionLocal)()
         close_db = True
     else:
         # target is job_id (str or UUID)
         job_id = target
-        db = SessionLocal()
+        db = (session_factory or SessionLocal)()
         close_db = True
         try:
             job_uuid = uuid.UUID(str(job_id)) if isinstance(job_id, str) else job_id
@@ -182,10 +186,10 @@ def mark_job(
             job.overall_status = new_status
         if current_step is not None:
             job.current_step = current_step
-        new_err = error_message or error
-        if new_err is not None:
-            job.error_message = new_err
-            job.error_log = new_err
+        err_val = error_message if error_message is not _UNSET else error
+        if err_val is not _UNSET:
+            job.error_message = err_val
+            job.error_log = err_val
         if work_dir is not None:
             job.work_dir = work_dir
         if extra_params is not None:

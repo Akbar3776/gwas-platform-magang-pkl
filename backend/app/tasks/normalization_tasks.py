@@ -7,7 +7,6 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
-import uuid
 
 from app.core.config import settings
 from app.db.engine.database import SessionLocal
@@ -18,6 +17,7 @@ from app.tasks._common import (
     ensure_not_cancelled,
     guard_status_change,
     is_job_cancelled,
+    mark_job,
     which_tool,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
@@ -25,31 +25,6 @@ from app.utils.process import CLICancelledError, CLIExecutionError, run_cli_comm
 
 logger = get_task_logger(__name__)
 NORMALIZATION_TIMEOUT_SECONDS = int(os.getenv("NORMALIZATION_TIMEOUT_SECONDS", str(2 * 60 * 60)))
-
-
-def _mark_job(job_id: str, *, status: JobStatus | None = None, error: str | None = None, **fields: Any) -> None:
-    db = SessionLocal()
-    try:
-        try:
-            target_id = uuid.UUID(str(job_id))
-        except (ValueError, TypeError):
-            target_id = job_id
-        job = db.get(AnalysisJob, target_id)
-        if job is None:
-            return
-        if status is not None and guard_status_change(db, job.id, status):
-            job.overall_status = status
-        if error is not None:
-            job.error_message = error
-            job.error_log = error
-        for key, value in fields.items():
-            setattr(job, key, value)
-        db.commit()
-    except JobCancelledError:
-        db.rollback()
-        raise
-    finally:
-        db.close()
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -277,10 +252,11 @@ def run_vcf_normalization(
             )
 
         # Keep job status as RUNNING_QC so the frontend polling hook knows the pipeline is still active.
-        _mark_job(
+        mark_job(
             job_id,
             status=JobStatus.RUNNING_QC,
             current_step=PipelineStep.QC,
+            session_factory=SessionLocal,
         )
         db = SessionLocal()
         try:
@@ -311,6 +287,12 @@ def run_vcf_normalization(
         raise
     except Exception as exc:
         message = _friendly_error(exc)
-        _mark_job(job_id, status=JobStatus.FAILED, failed_step="normalization", error=message)
+        mark_job(
+            job_id,
+            status=JobStatus.FAILED,
+            failed_step="normalization",
+            error=message,
+            session_factory=SessionLocal,
+        )
         logger.exception("Normalisasi VCF gagal untuk job=%s", job_id)
         raise RuntimeError(message) from exc

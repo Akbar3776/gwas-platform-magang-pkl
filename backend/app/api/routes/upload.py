@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import get_current_user
+from app.core.security import get_current_user, is_admin
 from app.db.engine.database import get_db
 from app.db.engine.models import ACTIVE_JOB_STATUSES, AnalysisJob, Dataset, UploadStatus, User
 from app.schemas.upload import (
@@ -36,14 +36,9 @@ from app.tasks.upload_tasks import assemble_dataset_task
 router = APIRouter(prefix="/upload", tags=["upload"])
 
 
-def _is_admin(user: User) -> bool:
-    role_val = user.role.value if hasattr(user.role, "value") else str(user.role)
-    return role_val == "admin"
-
-
 def _owned_dataset(file_id: uuid.UUID, user: User, db: Session) -> Dataset:
     dataset = db.get(Dataset, file_id)
-    if dataset is None or (dataset.owner_id != user.id and not _is_admin(user)):
+    if dataset is None or (dataset.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload tidak ditemukan")
     return dataset
 
@@ -65,7 +60,7 @@ def list_uploaded_datasets(
 ) -> list[dict]:
     """Mengembalikan daftar file dataset yang sudah diunggah oleh user."""
     query = db.query(Dataset).filter(Dataset.deleted_at.is_(None))
-    if not _is_admin(user):
+    if not is_admin(user):
         query = query.filter(Dataset.owner_id == user.id)
     datasets = query.order_by(Dataset.uploaded_at.desc()).limit(50).all()
 

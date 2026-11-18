@@ -312,7 +312,6 @@ def build_full_pipeline(
     *,
     job_id: str,
     dataset_id: str,
-    raw_vcf_path: str,
     phenotype_params: dict[str, Any] | None = None,
     qc_params: dict[str, Any] | None = None,
     imputation_params: dict[str, Any] | None = None,
@@ -325,16 +324,6 @@ def build_full_pipeline(
     run_id: str | None = None,
 ) -> Signature:
     """Build the complete 10-step Celery chain without executing it."""
-    job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
-    imputation_config = dict(imputation_params or {})
-    imputation_config.setdefault("output_dir", str(job_root / "imputation"))
-    ref_vcf = imputation_config.pop("reference_vcf_path", "")
-
-    gwas_config = dict(gwas_params or {})
-    gwas_config.setdefault("output_dir", str(job_root / "gwas"))
-    pheno_path = gwas_config.pop("phenotype_path", "") or ""
-    gwas_model = gwas_config.pop("model", "lmm")
-
     return chain(
         *_build_stage_signatures(
             job_id=job_id,
@@ -357,7 +346,6 @@ def trigger_retry_pipeline(
     *,
     job_id: str,
     dataset_id: str,
-    raw_vcf_path: str,
     job_parameters: dict[str, Any] | None = None,
     failed_step: str | None = None,
     from_scratch: bool = False,
@@ -432,7 +420,6 @@ def trigger_full_pipeline(
     *,
     job_id: str,
     dataset_id: str,
-    raw_vcf_path: str,
     phenotype_params: dict[str, Any] | None = None,
     qc_params: dict[str, Any] | None = None,
     imputation_params: dict[str, Any] | None = None,
@@ -448,7 +435,6 @@ def trigger_full_pipeline(
     pipeline = build_full_pipeline(
         job_id=job_id,
         dataset_id=dataset_id,
-        raw_vcf_path=raw_vcf_path,
         phenotype_params=phenotype_params,
         qc_params=qc_params,
         imputation_params=imputation_params,
@@ -461,8 +447,3 @@ def trigger_full_pipeline(
         run_id=run_id,
     )
     return pipeline.apply_async().id
-
-
-# Compatibility aliases
-build_pipeline_chain = build_full_pipeline
-start_pipeline = trigger_full_pipeline

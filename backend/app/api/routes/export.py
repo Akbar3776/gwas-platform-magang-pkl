@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.core.security import get_current_user
+from app.core.security import get_current_user, is_admin
 from app.db.engine.database import get_db
 from app.db.engine.models import AnalysisJob, JobStatus, Result
 from app.services.export_service import ExportFile, generate_zip_stream
@@ -36,11 +36,6 @@ RESULT_TYPE_ARCNAME = {
     "peak_comparison": "results/peak_comparison.json",
     "candidate_genes": "results/candidate_genes.json",
 }
-
-
-def _is_admin(user) -> bool:
-    role_val = user.role.value if hasattr(user.role, "value") else str(user.role)
-    return role_val == "admin"
 
 
 def _collect_job_export_files(job: AnalysisJob, results: list[Result]) -> list[ExportFile]:
@@ -80,7 +75,7 @@ def export_job_results(
     if job is None:
         raise HTTPException(status_code=404, detail="Job tidak ditemukan")
 
-    if job.triggered_by != user.id and not _is_admin(user):
+    if job.triggered_by != user.id and not is_admin(user):
         raise HTTPException(status_code=403, detail="Anda tidak memiliki akses ke job ini")
 
     if job.overall_status not in {JobStatus.COMPLETED, JobStatus.SUCCESS}:

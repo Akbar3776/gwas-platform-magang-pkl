@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import get_current_user
+from app.core.security import get_current_user, is_admin
 from app.db.engine.database import get_db
 from app.db.engine.models import (
     TERMINAL_JOB_STATUSES,
@@ -101,11 +101,6 @@ _PREVIEWABLE_SUFFIXES = (
     ".gff3.gz",
     ".nosex",
 )
-
-
-def _is_admin(user: User) -> bool:
-    role_val = user.role.value if hasattr(user.role, "value") else str(user.role)
-    return role_val == "admin"
 
 
 _LOG_TAIL_BYTES = 65536
@@ -430,7 +425,7 @@ def list_user_jobs(
 ) -> list[dict]:
     """Mengembalikan daftar seluruh AnalysisJob milik user (sedang berjalan maupun selesai)."""
     query = db.query(AnalysisJob).filter(AnalysisJob.deleted_at.is_(None))
-    if not _is_admin(user):
+    if not is_admin(user):
         query = query.filter(AnalysisJob.triggered_by == user.id)
     jobs_list = query.order_by(AnalysisJob.created_at.desc()).limit(50).all()
 
@@ -485,7 +480,7 @@ def trigger_qc_job(
     if dataset is None:
         raise HTTPException(status_code=404, detail="Dataset tidak ditemukan.")
 
-    if dataset.owner_id != user.id and not _is_admin(user):
+    if dataset.owner_id != user.id and not is_admin(user):
         raise HTTPException(status_code=404, detail="Dataset tidak ditemukan.")
 
     if dataset.upload_status != UploadStatus.UPLOADED and dataset.upload_status != UploadStatus.READY:
@@ -539,7 +534,7 @@ def get_job_status(
     job = db.get(AnalysisJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
-    if job.triggered_by != user.id and not _is_admin(user):
+    if job.triggered_by != user.id and not is_admin(user):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
     step_logs, last_log_line = _collect_step_logs(job)
@@ -584,7 +579,7 @@ def get_job_logs(
     Mengembalikan seluruh log eksekusi per tahap untuk sebuah AnalysisJob.
     """
     job = db.get(AnalysisJob, job_id)
-    if job is None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
     step_logs, last_log_line = _collect_step_logs(job)
@@ -610,7 +605,7 @@ def list_job_files(
     maupun file yang dihasilkan pada setiap tahap saat job sedang berjalan / selesai).
     """
     job = db.get(AnalysisJob, job_id)
-    if job is None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
     dataset = db.get(Dataset, job.dataset_id)
@@ -637,7 +632,7 @@ def get_job_file_content(
 ):
     """Mengunduh atau melihat pratinjau isi file spesifik dari sebuah job."""
     job = db.get(AnalysisJob, job_id)
-    if job is None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
     dataset = db.get(Dataset, job.dataset_id)
@@ -685,7 +680,7 @@ def get_job_results_summary(
     yang ditampilkan oleh ResultDashboard.jsx.
     """
     job = db.get(AnalysisJob, job_id)
-    if job is None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
     if job.overall_status not in {JobStatus.COMPLETED, JobStatus.SUCCESS}:
@@ -729,7 +724,7 @@ def cancel_job(
 ) -> dict:
     """Menghentikan eksekusi AnalysisJob yang sedang berjalan."""
     job = db.get(AnalysisJob, job_id)
-    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
     if job.overall_status in TERMINAL_JOB_STATUSES:
@@ -775,7 +770,7 @@ def retry_job(
     from app.tasks.pipeline_orchestrator import STAGE_TO_JOB_STATE, trigger_retry_pipeline
 
     job = db.get(AnalysisJob, job_id)
-    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
     if job.overall_status not in {JobStatus.FAILED, JobStatus.CANCELLED}:
@@ -824,7 +819,6 @@ def retry_job(
         task_id, start_idx, start_stage = trigger_retry_pipeline(
             job_id=str(job.id),
             dataset_id=str(dataset.id),
-            raw_vcf_path=str(getattr(dataset, "storage_path", "") or ""),
             job_parameters=job.parameters or {},
             failed_step=previous_failed_step,
             from_scratch=from_scratch,
@@ -867,7 +861,7 @@ def delete_job(
 ) -> dict:
     """Menghapus AnalysisJob beserta file artefak di direktori kerja job."""
     job = db.get(AnalysisJob, job_id)
-    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not _is_admin(user)):
+    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
     if job.overall_status not in TERMINAL_JOB_STATUSES:

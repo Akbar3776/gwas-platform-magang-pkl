@@ -9,18 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import get_current_user
+from app.core.security import get_current_user, is_admin
 from app.db.engine.database import get_db
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, ReferencePanel, UploadStatus, User
 from app.schemas.pipeline import FullPipelineRequest, PipelineStartResponse
 from app.tasks.pipeline_orchestrator import trigger_full_pipeline
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
-
-
-def _is_admin(user: User) -> bool:
-    role_val = user.role.value if hasattr(user.role, "value") else str(user.role)
-    return role_val == "admin"
 
 
 @router.post(
@@ -36,7 +31,7 @@ def start_pipeline_endpoint(
     user: User = Depends(get_current_user),
 ) -> PipelineStartResponse:
     dataset = db.get(Dataset, dataset_id)
-    if dataset is None or (dataset.owner_id != user.id and not _is_admin(user)):
+    if dataset is None or (dataset.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset tidak ditemukan")
     if dataset.upload_status not in {UploadStatus.UPLOADED, UploadStatus.READY}:
         raise HTTPException(
@@ -113,7 +108,6 @@ def start_pipeline_endpoint(
         celery_task_id = trigger_full_pipeline(
             job_id=str(job.id),
             dataset_id=str(dataset.id),
-            raw_vcf_path=dataset.storage_path,
             phenotype_params=payload.phenotype.model_dump(),
             qc_params=payload.qc.model_dump(),
             imputation_params=imputation_params,

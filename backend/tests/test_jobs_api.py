@@ -178,7 +178,6 @@ def test_trigger_retry_pipeline_strips_legacy_client_paths(monkeypatch):
     pipeline_orchestrator.trigger_retry_pipeline(
         job_id=str(uuid.uuid4()),
         dataset_id=str(uuid.uuid4()),
-        raw_vcf_path="",
         job_parameters={
             "gwas": {"phenotype_path": "/etc/passwd"},
             "imputation": {

@@ -104,7 +104,7 @@ def test_run_gemma_reuses_candidate_bfile_from_imputation(tmp_path):
 
     with (
         patch("app.tasks.gemma_tasks.SessionLocal", return_value=mock_db),
-        patch("app.tasks.gemma_tasks._mark_job"),
+        patch("app.tasks.gemma_tasks.mark_job"),
         patch("app.tasks.gemma_tasks._upsert_result"),
         patch("app.tasks.gemma_tasks.GEMMA_BINARY", str(dummy_gemma)),
         patch("app.tasks.gemma_tasks.PLINK_BINARY", str(dummy_plink)),
