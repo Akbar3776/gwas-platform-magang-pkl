@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
 import { Pagination } from "./Pagination";
+import { toCsv } from "../utils/csv";
 
 function interpolateColor(t) {
   // Gradien p.adjust: t=0 (p.adjust paling kecil/signifikan) -> merah (#e25856), t=1 -> biru (#2c7bb6)
@@ -190,22 +191,18 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
   const handleDownloadEnrichmentCsv = () => {
     if (!allTerms.length) return;
     const headers = ["ID", "Description", "Ontology", "GeneRatio", "BgRatio", "pvalue", "p.adjust", "Count", "geneID"];
-    const lines = allTerms.map((t) =>
-      [
-        t.go_id || "",
-        (t.description || "").replace(/"/g, '""'),
-        t.ontology || "BP",
-        t.gene_ratio_str || "",
-        t.bg_ratio || "",
-        t.pvalue ?? "",
-        t.p_adjust ?? "",
-        t.count ?? "",
-        t.gene_id_str || (t.genes || []).join("/"),
-      ]
-        .map((v) => `"${v}"`)
-        .join(",")
-    );
-    const blob = new Blob([[headers.join(","), ...lines].join("\n")], { type: "text/csv;charset=utf-8" });
+    const rows = allTerms.map((t) => [
+      t.go_id || "",
+      t.description || "",
+      t.ontology || "BP",
+      t.gene_ratio_str || "",
+      t.bg_ratio || "",
+      t.pvalue ?? "",
+      t.p_adjust ?? "",
+      t.count ?? "",
+      t.gene_id_str || (t.genes || []).join("/"),
+    ]);
+    const blob = new Blob([toCsv(headers, rows)], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -219,19 +216,15 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
   const handleDownloadGoTableCsv = () => {
     if (!goTable.length) return;
     const headers = ["Gene_ID", "Ortholog", "Biological_Process", "Cellular_Component", "Molecular_Function", "Source"];
-    const lines = goTable.map((r) =>
-      [
-        r.gene_id || "",
-        (r.ortholog || "").replace(/"/g, '""'),
-        (r.biological_process || "").replace(/"/g, '""'),
-        (r.cellular_component || "").replace(/"/g, '""'),
-        (r.molecular_function || "").replace(/"/g, '""'),
-        r.source_url || "",
-      ]
-        .map((v) => `"${v}"`)
-        .join(",")
-    );
-    const blob = new Blob([[headers.join(","), ...lines].join("\n")], { type: "text/csv;charset=utf-8" });
+    const rows = goTable.map((r) => [
+      r.gene_id || "",
+      r.ortholog || "",
+      r.biological_process || "",
+      r.cellular_component || "",
+      r.molecular_function || "",
+      r.source_url || "",
+    ]);
+    const blob = new Blob([toCsv(headers, rows)], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;

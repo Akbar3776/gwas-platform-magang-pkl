@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { Pagination } from "./Pagination";
+import { toCsv } from "../utils/csv";
 
 function renderHighlightedFlanking(seqStr) {
   if (!seqStr) return "-";
@@ -97,62 +98,54 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
     const rows = [];
     for (const m of markers) {
       if (!m.primer_pairs || m.primer_pairs.length === 0) {
-        rows.push(
-          [
+        rows.push([
+          m.rank,
+          m.marker_id,
+          m.snp,
+          m.chr,
+          m.pos,
+          m.nearest_gene || "-",
+          0,
+          "-",
+          "-",
+          "-",
+          "-",
+          m.status === "no_reference" ? "no reference FASTA" : "no primers found",
+          "-",
+          "-",
+          "-",
+          "-",
+          m.status === "no_reference" ? "no reference FASTA" : "no primers found",
+          "-",
+          m.flanking_sequence,
+        ]);
+      } else {
+        m.primer_pairs.forEach((p, idx) => {
+          rows.push([
             m.rank,
             m.marker_id,
             m.snp,
             m.chr,
             m.pos,
             m.nearest_gene || "-",
-            0,
-            "-",
-            "-",
-            "-",
-            "-",
-            "no primers found",
-            "-",
-            "-",
-            "-",
-            "-",
-            "no primers found",
-            "-",
+            idx + 1,
+            p.left.start,
+            p.left.len,
+            p.left.tm,
+            p.left.gc,
+            p.left.seq,
+            p.right.start,
+            p.right.len,
+            p.right.tm,
+            p.right.gc,
+            p.right.seq,
+            p.product_size,
             m.flanking_sequence,
-          ]
-            .map((v) => `"${v}"`)
-            .join(",")
-        );
-      } else {
-        m.primer_pairs.forEach((p, idx) => {
-          rows.push(
-            [
-              m.rank,
-              m.marker_id,
-              m.snp,
-              m.chr,
-              m.pos,
-              m.nearest_gene || "-",
-              idx + 1,
-              p.left.start,
-              p.left.len,
-              p.left.tm,
-              p.left.gc,
-              p.left.seq,
-              p.right.start,
-              p.right.len,
-              p.right.tm,
-              p.right.gc,
-              p.right.seq,
-              p.product_size,
-              m.flanking_sequence,
-            ]
-              .map((v) => `"${v}"`)
-              .join(",")
-          );
+          ]);
         });
       }
     }
-    const blob = new Blob([[headers.join(","), ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob([toCsv(headers, rows)], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
