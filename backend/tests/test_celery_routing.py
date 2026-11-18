@@ -97,3 +97,58 @@ def test_celery_task_queue_attributes_covered_by_compose():
         assert q in WORKER_QUEUES
         assert q in dev_queues
         assert q in prod_queues
+
+
+def _eval_static_expr(node: ast.AST):
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+        return _eval_static_expr(node.left) * _eval_static_expr(node.right)
+    if isinstance(node, ast.Dict):
+        return {_eval_static_expr(k): _eval_static_expr(v) for k, v in zip(node.keys, node.values) if k is not None}
+    raise ValueError(f"Unsupported AST node: {ast.dump(node)}")
+
+
+def test_celery_visibility_timeout_source_configured():
+    from app.tasks.gemma_tasks import GEMMA_TIMEOUT_SECONDS
+    from app.tasks.imputation_tasks import IMPUTATION_TIMEOUT_SECONDS
+
+    celery_src = (TASKS_DIR / "celery_app.py").read_text(encoding="utf-8")
+    tree = ast.parse(celery_src, filename="celery_app.py")
+    conf_kwargs: dict[str, ast.AST] = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "update"
+        ):
+            for kw in node.keywords:
+                if kw.arg:
+                    conf_kwargs[kw.arg] = kw.value
+
+    assert "broker_transport_options" in conf_kwargs
+    assert "result_backend_transport_options" in conf_kwargs
+    assert "worker_prefetch_multiplier" in conf_kwargs
+
+    prefetch_val = _eval_static_expr(conf_kwargs["worker_prefetch_multiplier"])
+    assert prefetch_val == 1
+
+    for key in ("broker_transport_options", "result_backend_transport_options"):
+        opts = _eval_static_expr(conf_kwargs[key])
+        assert opts["visibility_timeout"] > IMPUTATION_TIMEOUT_SECONDS + 120
+        assert opts["visibility_timeout"] > GEMMA_TIMEOUT_SECONDS + 120
+
+
+def test_celery_visibility_timeout_exceeds_longest_task():
+    pytest.importorskip("celery")
+    from app.tasks.celery_app import celery_app
+    from app.tasks.gemma_tasks import GEMMA_TIMEOUT_SECONDS
+    from app.tasks.imputation_tasks import IMPUTATION_TIMEOUT_SECONDS
+
+    broker_timeout = celery_app.conf.broker_transport_options["visibility_timeout"]
+    backend_timeout = celery_app.conf.result_backend_transport_options["visibility_timeout"]
+    assert broker_timeout > IMPUTATION_TIMEOUT_SECONDS + 120
+    assert broker_timeout > GEMMA_TIMEOUT_SECONDS + 120
+    assert backend_timeout > IMPUTATION_TIMEOUT_SECONDS + 120
+    assert backend_timeout > GEMMA_TIMEOUT_SECONDS + 120
+    assert celery_app.conf.worker_prefetch_multiplier == 1

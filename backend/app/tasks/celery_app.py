@@ -158,6 +158,10 @@ celery_app.conf.update(
     # crash akan otomatis di-requeue ke worker lain, bukan hilang begitu saja.
     task_acks_late=True,
     task_reject_on_worker_lost=True,
+    # Harus lebih besar dari time_limit task terpanjang (IMPUTATION_TIMEOUT_SECONDS / GEMMA_TIMEOUT_SECONDS + margin).
+    broker_transport_options={"visibility_timeout": 8 * 3600},
+    result_backend_transport_options={"visibility_timeout": 8 * 3600},
+    worker_prefetch_multiplier=1,
 )
 
 celery_app.conf.beat_schedule = {
