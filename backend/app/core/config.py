@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # -- Storage --
     STORAGE_ROOT: str = _raw_storage
 
+    # -- Upload Constraints --
+    MAX_UPLOAD_SIZE_BYTES: int = int(os.getenv("MAX_UPLOAD_SIZE_BYTES", "0"))
+    MAX_CHUNK_SIZE_BYTES: int = int(os.getenv("MAX_CHUNK_SIZE_BYTES", str(16 * 1024 * 1024)))
+
     # -- Security (dipakai modul auth, disiapkan di sini agar terpusat) --
     SECRET_KEY: str = os.getenv("SECRET_KEY", "")
     JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "")

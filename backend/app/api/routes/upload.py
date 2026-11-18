@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import gzip
+import math
 from pathlib import Path
 import re
 import shutil
@@ -106,6 +107,12 @@ def init_upload(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> InitUploadResponse:
+    if settings.MAX_UPLOAD_SIZE_BYTES > 0 and payload.total_size_bytes > settings.MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Ukuran total berkas melebihi batas maksimal yang diizinkan.",
+        )
+
     dataset = Dataset(
         owner_id=user.id,
         original_filename=payload.original_filename,
@@ -136,10 +143,33 @@ def upload_chunk(
     if chunk_index >= total_chunks:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="chunk_index di luar rentang")
 
+    max_chunks = math.ceil((dataset.file_size_bytes or 0) / (1024 * 1024)) + 1
+    if total_chunks > max_chunks:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Jumlah chunk melebihi batas yang wajar untuk ukuran berkas.",
+        )
+
     try:
-        upload_service.save_chunk(str(file_id), chunk_index, chunk)
+        saved_path = upload_service.save_chunk(
+            str(file_id),
+            chunk_index,
+            chunk,
+            max_bytes=settings.MAX_CHUNK_SIZE_BYTES,
+        )
     except upload_service.InvalidFileIdError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="file_id tidak valid") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)) from exc
+
+    staging_dir = upload_service.get_staging_dir(str(file_id))
+    total_staged_bytes = sum(p.stat().st_size for p in staging_dir.glob("chunk_*.part"))
+    if total_staged_bytes > (dataset.file_size_bytes or 0) + settings.MAX_CHUNK_SIZE_BYTES:
+        saved_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Total ukuran chunk yang diterima melebihi batas ukuran berkas.",
+        )
 
     received_indices = upload_service.get_received_chunk_indices(str(file_id))
     return ChunkUploadResponse(

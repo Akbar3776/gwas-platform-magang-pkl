@@ -40,6 +40,13 @@ class _FakeSession:
     def commit(self):
         self.committed = True
 
+    def add(self, item):
+        pass
+
+    def refresh(self, item):
+        if getattr(item, "id", None) is None:
+            item.id = uuid.uuid4()
+
 
 def test_init_upload_request_sanitizes_path_traversal():
     req_abs = InitUploadRequest(original_filename="/app/app/main.py", total_size_bytes=1)
@@ -159,3 +166,112 @@ def test_delete_uploaded_dataset_rejects_active_structure_job(tmp_path, monkeypa
     with pytest.raises(HTTPException) as exc:
         upload_routes.delete_uploaded_dataset(file_id=ds.id, db=fake_db, user=owner)
     assert exc.value.status_code == 409
+
+
+def test_save_chunk_rejects_oversized_chunk_and_cleans_temp_files(tmp_path, monkeypatch):
+    staging_root = tmp_path / "staging"
+    monkeypatch.setattr(upload_service, "_STAGING_ROOT", staging_root)
+    file_id = str(uuid.uuid4())
+    oversized = UploadFile(file=io.BytesIO(b"x" * (2 * 1024 * 1024)), filename="chunk.bin")
+
+    with pytest.raises(ValueError, match="Chunk terlalu besar"):
+        upload_service.save_chunk(file_id, 0, oversized, max_bytes=1 * 1024 * 1024)
+
+    staging_dir = staging_root / file_id
+    assert list(staging_dir.glob("chunk_*")) == []
+
+
+def test_upload_chunk_validates_chunk_count_and_accepts_10mib_chunk(tmp_path, monkeypatch):
+    staging_root = tmp_path / "staging"
+    monkeypatch.setattr(upload_service, "_STAGING_ROOT", staging_root)
+    monkeypatch.setattr(upload_routes.settings, "STORAGE_ROOT", str(tmp_path))
+
+    owner = User(
+        id=uuid.uuid4(),
+        email="owner@example.com",
+        hashed_password="x",
+        role=UserRole.RESEARCHER,
+    )
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=owner.id,
+        original_filename="big.vcf.gz",
+        storage_path="",
+        file_size_bytes=25 * 1024 * 1024,
+        upload_status=UploadStatus.UPLOADING,
+    )
+    fake_db = _FakeSession(ds)
+
+    tiny_chunk = UploadFile(file=io.BytesIO(b"a"), filename="c.bin")
+    with pytest.raises(HTTPException) as exc_many:
+        upload_routes.upload_chunk(
+            file_id=ds.id,
+            chunk_index=0,
+            total_chunks=1000,
+            chunk=tiny_chunk,
+            db=fake_db,
+            user=owner,
+        )
+    assert exc_many.value.status_code == 400
+
+    ten_mib_chunk = UploadFile(file=io.BytesIO(b"a" * (10 * 1024 * 1024)), filename="c10.bin")
+    res = upload_routes.upload_chunk(
+        file_id=ds.id,
+        chunk_index=0,
+        total_chunks=3,
+        chunk=ten_mib_chunk,
+        db=fake_db,
+        user=owner,
+    )
+    assert res.chunks_received == 1
+
+    # Total staged bytes exceeding file_size_bytes + MAX_CHUNK_SIZE_BYTES must return 413
+    monkeypatch.setattr(upload_routes.settings, "MAX_CHUNK_SIZE_BYTES", 16 * 1024 * 1024)
+    # 10 MiB already staged; add three 12 MiB chunks -> exceeds 25 + 16 = 41 MiB
+    for idx in (1, 2):
+        upload_routes.upload_chunk(
+            file_id=ds.id,
+            chunk_index=idx,
+            total_chunks=4,
+            chunk=UploadFile(file=io.BytesIO(b"b" * (12 * 1024 * 1024)), filename=f"c{idx}.bin"),
+            db=fake_db,
+            user=owner,
+        )
+    with pytest.raises(HTTPException) as exc_overflow:
+        upload_routes.upload_chunk(
+            file_id=ds.id,
+            chunk_index=3,
+            total_chunks=4,
+            chunk=UploadFile(file=io.BytesIO(b"c" * (12 * 1024 * 1024)), filename="c3.bin"),
+            db=fake_db,
+            user=owner,
+        )
+    assert exc_overflow.value.status_code == 413
+    assert not (staging_root / str(ds.id) / "chunk_00000003.part").exists()
+
+
+def test_init_upload_enforces_max_upload_size_bytes(monkeypatch):
+    monkeypatch.setattr(upload_routes.settings, "MAX_UPLOAD_SIZE_BYTES", 1024)
+    owner = User(
+        id=uuid.uuid4(),
+        email="owner@example.com",
+        hashed_password="x",
+        role=UserRole.RESEARCHER,
+    )
+    fake_db = _FakeSession(
+        Dataset(
+            id=uuid.uuid4(),
+            owner_id=owner.id,
+            original_filename="x.vcf",
+            storage_path="",
+            file_size_bytes=10,
+            upload_status=UploadStatus.UPLOADING,
+        )
+    )
+    with pytest.raises(HTTPException) as exc:
+        upload_routes.init_upload(
+            payload=InitUploadRequest(original_filename="x.vcf", total_size_bytes=2048),
+            db=fake_db,
+            user=owner,
+        )
+    assert exc.value.status_code == 413
