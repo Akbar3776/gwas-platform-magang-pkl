@@ -89,7 +89,8 @@ for (m in models_to_run) {
       GM = myGM,
       CV = myCV,
       model = model_clean,
-      memo = model_clean
+      memo = model_clean,
+      Geno.View.output = FALSE
     )
     cat(sprintf("[GAPIT] Model %s selesai dieksekusi.\n", model_clean))
     TRUE

@@ -740,15 +740,18 @@ def _run_gapit_models(
     results: dict[str, dict[str, Any]] = {}
     for m in methods:
         candidates = sorted(
-            {
+            p for p in {
                 *workspace.glob(f"GAPIT.Association.GWAS_Results.{m}.*.csv"),
                 *workspace.glob(f"GAPIT.{m}.*.GWAS.Results.csv"),
             }
+            if "GWAS_StdErr" not in p.name and "Filter_GWAS_results" not in p.name
         )
         if not candidates:
             continue
+        nyc_candidates = [p for p in candidates if "(NYC)" in p.name]
+        chosen_csv = nyc_candidates[0] if nyc_candidates else candidates[0]
         tsv_target = workspace / f"{m.lower()}_results.tsv"
-        normalize_association_results(candidates[0], tsv_target)
+        normalize_association_results(chosen_csv, tsv_target)
         results[m.upper()] = {
             "status": "completed",
             "tsv_file": str(tsv_target),

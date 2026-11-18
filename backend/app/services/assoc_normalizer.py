@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import gzip
+import re
 from pathlib import Path
 from typing import Any, Generator
 
@@ -66,7 +67,6 @@ def iter_normalized_rows(source_file: Path | str) -> Generator[dict[str, Any], N
         fmt = detect_association_format(header)
 
         # Buat mapping indeks kolom
-        idx_map: dict[str, int] = {col: i for i, col in enumerate(header)}
         lower_map: dict[str, int] = {col.lower(): i for i, col in enumerate(header)}
 
         for raw_line in f:
@@ -158,21 +158,21 @@ def iter_normalized_rows(source_file: Path | str) -> Generator[dict[str, Any], N
                     }
 
                 elif fmt == "gapit":
-                    # GAPIT: SNP Chromosome Position P.value maf nobs Effect
-                    p_rs = parts[idx_map.get("SNP", 0)]
-                    p_chr = parts[idx_map.get("Chromosome", 1)]
-                    p_pos = parts[idx_map.get("Position", 2)]
-                    p_val_raw = parts[idx_map.get("P.value", 3)]
-                    p_af = parts[idx_map.get("maf", -1)] if "maf" in idx_map else "NA"
-                    p_n = parts[idx_map.get("nobs", -1)] if "nobs" in idx_map else "NA"
-                    p_beta = parts[idx_map.get("Effect", -1)] if "Effect" in idx_map else "0.0"
+                    # GAPIT: SNP Chromosome/Chr Position/Pos P.value maf/MAF nobs Effect/effect
+                    p_rs = parts[lower_map.get("snp", 0)]
+                    p_chr = parts[lower_map.get("chromosome", lower_map.get("chr", 1))]
+                    p_pos = parts[lower_map.get("position", lower_map.get("pos", 2))]
+                    p_val_raw = parts[lower_map.get("p.value", 3)]
+                    p_af = parts[lower_map["maf"]] if "maf" in lower_map else "NA"
+                    p_n = parts[lower_map["nobs"]] if "nobs" in lower_map else "NA"
+                    p_beta = parts[lower_map["effect"]] if "effect" in lower_map else "0.0"
 
                     p_val = float(p_val_raw)
                     if p_val <= 0 or p_val > 1.0 or not (p_val == p_val):
                         continue
 
                     row_out = {
-                        "chr": str(p_chr).lstrip("chrCHR"),
+                        "chr": re.sub(r"^chr", "", str(p_chr).strip(), flags=re.IGNORECASE),
                         "pos": int(float(p_pos)),
                         "rs": str(p_rs),
                         "a1": "A1",

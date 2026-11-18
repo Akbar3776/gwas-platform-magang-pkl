@@ -303,3 +303,38 @@ def test_python_multilocus_engine_plink_preserves_non_numeric_chr_labels(tmp_pat
         rows = list(csv.DictReader(tf, delimiter="\t"))
     assert [r["chr"] for r in rows] == ["Gm01", "Gm07"]
     assert rows[0]["rs"] == "Gm01:1000"
+
+
+def test_run_gapit_models_prefers_nyc_csv_over_kansas(tmp_path, monkeypatch):
+    import csv
+
+    workspace, log_file, runner_script = _setup_gapit_fixture(tmp_path / "jobs" / "gapit_nyc", monkeypatch)
+
+    def fake_run_cli(cmd, **kwargs):
+        (workspace / "GAPIT.Association.GWAS_Results.FarmCPU.T(Kansas).csv").write_text(
+            "SNP,Chr,Pos,P.value,MAF,effect,nobs,H&B.P.Value\nrs1,1,100,0.9,0.3,0.1,3,0.95\n",
+            encoding="utf-8",
+        )
+        (workspace / "GAPIT.Association.GWAS_Results.FarmCPU.T(NYC).csv").write_text(
+            "SNP,Chr,Pos,P.value,MAF,effect,nobs,H&B.P.Value\nrs1,1,100,0.01,0.3,0.4,3,0.05\n",
+            encoding="utf-8",
+        )
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(multilocus_tasks, "run_cli_command", fake_run_cli)
+
+    results = multilocus_tasks._run_gapit_models(
+        rscript="/usr/bin/Rscript",
+        runner_script=runner_script,
+        methods=["FarmCPU"],
+        workspace=workspace,
+        log_file=log_file,
+    )
+
+    assert set(results.keys()) == {"FARMCPU"}
+    tsv_file = workspace / "farmcpu_results.tsv"
+    assert tsv_file.is_file()
+    with tsv_file.open("r", encoding="utf-8") as tf:
+        rows = list(csv.DictReader(tf, delimiter="\t"))
+    assert len(rows) == 1
+    assert float(rows[0]["p"]) == pytest.approx(0.01)
