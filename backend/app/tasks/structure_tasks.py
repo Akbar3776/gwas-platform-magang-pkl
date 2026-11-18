@@ -39,7 +39,7 @@ logger = get_task_logger(__name__)
 @celery_app.task(
     bind=True,
     name="app.tasks.structure_tasks.run_structure_analysis",
-    queue="structure",
+    queue="gwas",
     max_retries=0,
 )
 def run_structure_analysis(
