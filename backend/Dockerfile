@@ -97,6 +97,18 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
+# ------------------------------------------------------------------------------
+# 5b. Instalasi PLINK 2 (binary statis resmi, diletakkan setelah pip agar layer
+#     R + GAPIT3 dan dependensi Python tetap memakai cache)
+# ------------------------------------------------------------------------------
+ARG PLINK2_VERSION=20261107
+RUN wget -q "https://s3.amazonaws.com/plink2-assets/beta1/plink2_linux_x86_64_20261107.zip" \
+    -O /tmp/plink2.zip \
+    && echo "16b5cf92faed7e8b8aa1010c6eab9bac17c92b57ccfa69c4d059b1b17b98eb70  /tmp/plink2.zip" | sha256sum -c - \
+    && unzip -o -q /tmp/plink2.zip plink2 -d /usr/local/bin \
+    && chmod +x /usr/local/bin/plink2 \
+    && rm -f /tmp/plink2.zip
+
 COPY ./app ./app
 
 # ------------------------------------------------------------------------------
