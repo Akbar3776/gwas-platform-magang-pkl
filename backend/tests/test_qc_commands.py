@@ -13,6 +13,7 @@ from app.services.qc_service import (
     resolve_pheno_flags,
     run_python_fallback_qc,
 )
+from tests.fixtures.make_fixtures import ensure_fixtures
 
 
 def test_build_plink2_qc_commands_inbred():
@@ -152,9 +153,7 @@ def test_encode_plink_bed_row():
 
 def test_run_python_fallback_qc(tmp_path):
     fixture_vcf = Path(__file__).parent / "fixtures" / "data" / "toy_gwas.vcf.gz"
-    if not fixture_vcf.is_file():
-        from tests.fixtures.make_fixtures import generate_toy_fixtures
-        generate_toy_fixtures()
+    ensure_fixtures()
 
     out_prefix = tmp_path / "plink_qc"
     log_file = tmp_path / "plink_qc.log"

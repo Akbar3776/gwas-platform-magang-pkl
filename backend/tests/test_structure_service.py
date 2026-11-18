@@ -13,14 +13,13 @@ from app.services.structure_service import (
     read_plink_binary,
     run_pca_decomposition,
 )
+from tests.fixtures.make_fixtures import ensure_fixtures
 
 
 @pytest.fixture
 def toy_bfile(tmp_path):
     fixture_vcf = Path(__file__).parent / "fixtures" / "data" / "toy_gwas.vcf.gz"
-    if not fixture_vcf.is_file():
-        from tests.fixtures.make_fixtures import generate_toy_fixtures
-        generate_toy_fixtures()
+    ensure_fixtures()
 
     out_prefix = tmp_path / "plink_qc"
     cfg = QCPipelineConfig(maf=0.01, geno=0.2, mind=0.2)
