@@ -198,3 +198,43 @@ def test_run_greedy_clumping_preserves_ca_and_contig_chr_labels(tmp_path):
     assert chr_label("chrC") == "C"
     assert chr_label("Chr01") == "01"
     assert chr_label("chrchr1") == "chr1"
+
+
+def test_multilocus_leads_peak_comparison_and_primers_preserve_ca_contig(tmp_path):
+    from app.services.primer_service import generate_flanking_and_primers
+    from app.tasks.multilocus_tasks import (
+        extract_multilocus_leads_from_tsv,
+        generate_peak_comparison,
+    )
+
+    ml_tsv = tmp_path / "farmcpu_results.tsv"
+    ml_tsv.write_text(
+        "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn\n"
+        "Ca1\t1000\trs_ca\tA\tG\t0.25\t0.5\t0.1\t1e-8\t100\n"
+        "contig_12\t2000\trs_ctg\tC\tT\t0.30\t0.4\t0.1\t2e-7\t100\n",
+        encoding="utf-8",
+    )
+    ml_leads = extract_multilocus_leads_from_tsv(ml_tsv, method_name="FarmCPU", trait_name="trait")
+    assert [m["chr"] for m in ml_leads] == ["Ca1", "contig_12"]
+
+    single_leads = [
+        {"snp": "rs_ca", "chr": "Ca1", "pos": 1000, "p": 1e-8, "beta": 0.5, "a1": "A"},
+        {"snp": "rs_ctg", "chr": "contig_12", "pos": 2000, "p": 2e-7, "beta": 0.4, "a1": "C"},
+    ]
+    peak = generate_peak_comparison(
+        single_lead_snps=single_leads,
+        multi_lead_snps=ml_leads,
+        output_csv=tmp_path / "peak.csv",
+        output_json=tmp_path / "peak.json",
+        window_kb=50,
+    )
+    assert len(peak["consistent"]) == 2
+    assert [r["chr"] for r in peak["consistent"]] == ["Ca1", "contig_12"]
+
+    primer_payload = generate_flanking_and_primers(
+        lead_snps=single_leads,
+        trait_name="trait",
+        output_dir=None,
+    )
+    assert [m["chr"] for m in primer_payload["markers"]] == ["Ca1", "contig_12"]
+    assert primer_payload["markers"][0]["marker_id"] == "trait_Ca1_1000"

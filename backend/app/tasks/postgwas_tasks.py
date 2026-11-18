@@ -21,6 +21,7 @@ from app.services.postgwas_service import (
 from app.tasks._common import (
     JobCancelledError,
     append_log,
+    chr_label,
     ensure_not_cancelled,
     guard_status_change,
     is_job_cancelled,
@@ -214,7 +215,7 @@ def run_postgwas_analysis(
                                     continue
                                 lead_snps.append({
                                     "snp": str(s_id),
-                                    "chr": str(s_chr).lstrip("chrCHR"),
+                                    "chr": chr_label(s_chr),
                                     "pos": int(s_pos),
                                     "p": float(s_p),
                                     "beta": 0.0,
@@ -337,7 +338,7 @@ def run_postgwas_analysis(
                             for r in rows:
                                 multi_leads.append({
                                     "snp": r.get("rs"),
-                                    "chr": str(r.get("chr", "")).lstrip("chrCHR"),
+                                    "chr": chr_label(r.get("chr", "")),
                                     "pos": int(r.get("pos", 0)),
                                     "p": float(r.get("p", 1.0)),
                                     "method": method_name.upper(),

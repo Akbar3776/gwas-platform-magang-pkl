@@ -15,6 +15,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from app.tasks._common import chr_label
+
 
 # Parameter termodinamika Nearest-Neighbor SantaLucia (1998) (dH dalam cal/mol, dS dalam cal/(K·mol))
 NN_PARAMS: dict[str, tuple[float, float]] = {
@@ -432,7 +434,7 @@ def generate_flanking_and_primers(
 
     items: list[dict[str, Any]] = []
     for idx, s in enumerate(selected_snps, start=1):
-        raw_chr = str(s.get("chr", "1")).lstrip("chrCHR") or str(s.get("chr", "1"))
+        raw_chr = chr_label(s.get("chr") or "1")
         pos = int(s.get("pos", 0))
         allele = str(s.get("a1") or s.get("alt") or "C")
         marker_label = f"{clean_trait}_{raw_chr}_{pos}"

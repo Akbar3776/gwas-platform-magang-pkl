@@ -20,6 +20,7 @@ from app.services.manhattan_parser import _build_chr_mapping
 from app.tasks._common import (
     JobCancelledError,
     append_log,
+    chr_label,
     ensure_not_cancelled,
     is_job_cancelled,
     mark_job,
@@ -29,7 +30,6 @@ from app.tasks._common import (
     write_json,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
-from app.tasks.gemma_tasks import _chr_label
 from app.utils.process import CLICancelledError, run_cli_command
 
 logger = get_task_logger(__name__)
@@ -141,7 +141,7 @@ def extract_multilocus_leads_from_tsv(
                 p_v = float(r.get("p", 1.0))
                 rows.append({
                     "rs": r.get("rs") or f"{r.get('chr')}:{r.get('pos')}",
-                    "chr": str(r.get("chr", "")).lstrip("chrCHR"),
+                    "chr": chr_label(r.get("chr", "")),
                     "pos": int(float(r.get("pos", 0))),
                     "af": float(r.get("af", 0.25) or 0.25),
                     "beta": float(r.get("beta", 0.0) or 0.0),
@@ -212,7 +212,7 @@ def _run_python_multilocus_engine(
     """
     from scipy.special import erfc
     from app.services.structure_service import compute_centered_kinship, read_plink_binary
-    from app.tasks.gemma_tasks import _chr_label, _parse_vcf_genotypes, _prepare_phenotype_vector
+    from app.tasks.gemma_tasks import _parse_vcf_genotypes, _prepare_phenotype_vector
 
     append_log(log_file, "[INFO] Menginisialisasi Python Native Engine untuk Multi-Locus GWAS...")
 
@@ -226,11 +226,11 @@ def _run_python_multilocus_engine(
         try:
             samples, plink_vars, G_mat = read_plink_binary(str(candidate_bfile))
             for pv in plink_vars:
-                chr_label = _chr_label(pv["chrom"])
+                chrom_label = chr_label(pv["chrom"])
                 variants_meta.append(
                     {
-                        "chr": chr_label,
-                        "rs": pv["rsid"] if pv["rsid"] and pv["rsid"] != "." else f"{chr_label}:{pv['pos']}",
+                        "chr": chrom_label,
+                        "rs": pv["rsid"] if pv["rsid"] and pv["rsid"] != "." else f"{chrom_label}:{pv['pos']}",
                         "ps": int(pv["pos"]),
                         "alt": pv["a1"],
                         "ref": pv["a2"],
@@ -676,7 +676,7 @@ def _write_gapit_inputs(workspace: Path, log_file: Path) -> tuple[Path, Path, Pa
     chr_idx_to_label: dict[int, str] = {}
     for chrom_raw in dict.fromkeys(raw_chroms):
         gm_idx = chr_map.get(chrom_raw, 0)
-        label = _chr_label(chrom_raw)
+        label = chr_label(chrom_raw)
         if gm_idx in chr_idx_to_label:
             append_log(
                 log_file,
@@ -1095,13 +1095,13 @@ def generate_peak_comparison(
     matched_multi_indices: set[int] = set()
 
     for s in single_lead_snps:
-        s_chr = _chr_label(s.get("chr", ""))
+        s_chr = chr_label(s.get("chr", ""))
         s_pos = int(s.get("pos", 0))
 
         # Cari kecocokan di multi-locus
         matched_multi = None
         for m_idx, m in enumerate(multi_lead_snps):
-            m_chr = _chr_label(m.get("chr", ""))
+            m_chr = chr_label(m.get("chr", ""))
             m_pos = int(m.get("pos", 0))
             if s_chr == m_chr and abs(s_pos - m_pos) <= window_bp:
                 matched_multi = m
@@ -1141,7 +1141,7 @@ def generate_peak_comparison(
         if m_idx not in matched_multi_indices:
             multi_only.append({
                 "snp": m.get("snp"),
-                "chr": _chr_label(m.get("chr", "")),
+                "chr": chr_label(m.get("chr", "")),
                 "pos": int(m.get("pos", 0)),
                 "p_single": None,
                 "p_multi": m.get("p"),
