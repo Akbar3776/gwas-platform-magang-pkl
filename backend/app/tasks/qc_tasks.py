@@ -182,7 +182,7 @@ def run_qc_pipeline(
             f"Input VCF        : {input_vcf_path}\n"
             f"Fase 0 Overflow  : {overflow_removed} varian tereliminasi (POS > {MAX_32BIT_POS} / 32-bit overflow)\n"
             f"Populasi         : {cfg.population_type.value} (HWE: {'Nonaktif' if cfg.population_type.value == 'inbred' else cfg.hwe})\n"
-            f"Parameter        : MAF={cfg.maf}, GENO={cfg.geno}, MIND={cfg.mind}\n"
+            f"Parameter        : MAF={cfg.maf}, GENO={'Nonaktif' if cfg.geno is None else cfg.geno}, MIND={cfg.mind}\n"
             f"SNP-only/Bi-all  : {cfg.snps_only} / max-alleles={cfg.max_alleles}\n"
             f"Keep IDs         : {keep_ids_candidate or 'Semua sampel'}\n"
         )

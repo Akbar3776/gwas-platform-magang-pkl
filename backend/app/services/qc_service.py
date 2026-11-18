@@ -187,25 +187,29 @@ def build_plink_qc_command(
     input_vcf_path: str,
     output_prefix: str,
     maf: float = 0.01,
-    geno: float = 0.05,
+    geno: float | None = 0.05,
     mind: float = 0.1,
     hwe: float = 1e-6,
 ) -> list[str]:
     """Legacy helper untuk kompatibilitas PLINK 1.9 satu tahap."""
-    return [
+    cmd = [
         "plink",
         "--vcf", input_vcf_path,
         "--double-id",
         "--biallelic-only",
         "--allow-extra-chr",
         "--maf", str(maf),
-        "--geno", str(geno),
+    ]
+    if geno is not None:
+        cmd.extend(["--geno", str(geno)])
+    cmd.extend([
         "--mind", str(mind),
         "--hwe", str(hwe),
         "--make-bed",
         "--recode", "vcf", "bgz",
         "--out", output_prefix,
-    ]
+    ])
+    return cmd
 
 
 def build_plink2_qc_commands(
@@ -255,7 +259,9 @@ def build_plink2_qc_commands(
         cmd1.extend(["--set-all-var-ids", "@:#"])
     cmd1.extend(resolve_pheno_flags(pheno_path, trait, is_plink2=True))
 
-    cmd1.extend(["--maf", str(cfg.maf), "--geno", str(cfg.geno)])
+    cmd1.extend(["--maf", str(cfg.maf)])
+    if cfg.geno is not None:
+        cmd1.extend(["--geno", str(cfg.geno)])
 
     # HARDY-WEINBERG: HANYA untuk outcross, TIDAK PERNAH untuk inbred
     if cfg.population_type == PopulationType.OUTCROSS and cfg.hwe is not None:
@@ -342,7 +348,9 @@ def build_plink19_qc_commands(
         cmd_main.extend(["--set-missing-var-ids", "@:#"])
     cmd_main.extend(resolve_pheno_flags(pheno_path, trait, is_plink2=False))
 
-    cmd_main.extend(["--maf", str(cfg.maf), "--geno", str(cfg.geno), "--mind", str(cfg.mind)])
+    cmd_main.extend(["--maf", str(cfg.maf), "--mind", str(cfg.mind)])
+    if cfg.geno is not None:
+        cmd_main.extend(["--geno", str(cfg.geno)])
     if cfg.population_type == PopulationType.OUTCROSS and cfg.hwe is not None:
         cmd_main.extend(["--hwe", str(cfg.hwe)])
 
@@ -804,7 +812,7 @@ def run_python_fallback_qc(
         # Missingness SNP (--geno)
         valid = [g for g in gts_arr if g >= 0]
         miss_rate = (len(gts_arr) - len(valid)) / max(len(gts_arr), 1)
-        if miss_rate > cfg.geno:
+        if cfg.geno is not None and miss_rate > cfg.geno:
             removed_counts["geno"] += 1
             continue
 
