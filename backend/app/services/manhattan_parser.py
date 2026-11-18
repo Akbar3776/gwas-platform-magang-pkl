@@ -17,8 +17,10 @@ jutaan baris SNP pada studi genom skala penuh):
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
@@ -103,6 +105,79 @@ def load_manhattan_cache(
     return cap_manhattan_dataframe(df, max_points=max_points)
 
 
+_SEX_CHR_MAP = {"X": 23, "Y": 24, "MT": 25, "M": 25}
+_CHR_PREFIX_RE = re.compile(r"^chr", re.IGNORECASE)
+_ALNUM_PREFIX_CHR_RE = re.compile(r"^([A-Za-z]+)(\d+)$")
+
+
+def _natural_chr_sort_key(label: str) -> list[tuple[int, int | str]]:
+    return [
+        (0, int(part)) if part.isdigit() else (1, part.lower())
+        for part in re.split(r"(\d+)", label)
+        if part != ""
+    ]
+
+
+def _build_chr_mapping(raw_tokens: set[str]) -> tuple[dict[str, int], dict[int, str]]:
+    """Map raw chromosome tokens to distinct integer indices plus optional display labels."""
+    token_to_idx: dict[str, int] = {}
+    non_numeric: list[str] = []
+
+    for tok in raw_tokens:
+        if not tok:
+            continue
+        stripped = _CHR_PREFIX_RE.sub("", tok)
+        if stripped.isdigit():
+            token_to_idx[tok] = int(stripped)
+        elif stripped.upper() in _SEX_CHR_MAP:
+            token_to_idx[tok] = _SEX_CHR_MAP[stripped.upper()]
+        else:
+            non_numeric.append(tok)
+
+    chr_labels: dict[int, str] = {}
+    if not non_numeric:
+        return token_to_idx, chr_labels
+
+    prefix_matches = [_ALNUM_PREFIX_CHR_RE.fullmatch(tok) for tok in non_numeric]
+    if all(m is not None for m in prefix_matches):
+        prefixes = {m.group(1).lower() for m in prefix_matches if m is not None}
+        nums = [int(m.group(2)) for m in prefix_matches if m is not None]
+        if (
+            len(prefixes) == 1
+            and len(set(nums)) == len(non_numeric)
+            and all(n >= 1 for n in nums)
+            and not (set(nums) & set(token_to_idx.values()))
+        ):
+            for tok, num in zip(non_numeric, nums):
+                token_to_idx[tok] = num
+                chr_labels[num] = tok
+            return token_to_idx, chr_labels
+
+    next_idx = max(token_to_idx.values(), default=0) + 1
+    for tok in sorted(non_numeric, key=_natural_chr_sort_key):
+        token_to_idx[tok] = next_idx
+        chr_labels[next_idx] = tok
+        next_idx += 1
+
+    return token_to_idx, chr_labels
+
+
+def load_manhattan_chr_labels(cache_path: str) -> dict[int, str] | None:
+    """Load chromosome display label map adjacent to the Manhattan cache if present."""
+    labels_path = Path(cache_path).with_name("manhattan_chr_labels.json")
+    if not labels_path.is_file():
+        return None
+    try:
+        raw = json.loads(labels_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return None
+        parsed = {int(k): str(v) for k, v in raw.items()}
+        return parsed or None
+    except Exception as exc:
+        logger.warning("Gagal membaca chr labels Manhattan (%s): %s", labels_path, exc)
+        return None
+
+
 def compute_assoc_summary_stats(
     assoc_file_path: str,
     genome_wide_threshold: float = 5e-8,
@@ -184,12 +259,14 @@ def generate_manhattan_cache(
     usecols = [chr_col, rs_col, ps_col, pvalue_col]
 
     kept_chunks: list[pd.DataFrame] = []
+    observed_chr_tokens: set[str] = set()
     total_read = 0
 
     reader = pd.read_csv(
         assoc_file_path,
         sep=r"\s+",
         usecols=usecols,
+        dtype={chr_col: str},
         chunksize=chunksize,
     )
 
@@ -212,20 +289,16 @@ def generate_manhattan_cache(
         if not keep_mask.any():
             continue
 
-        chr_series = (
-            chunk[chr_col]
-            .astype(str)
-            .str.replace("^chr", "", case=False, regex=True)
-            .replace({"X": "23", "Y": "24", "MT": "25", "M": "25"})
-        )
-        chr_vals = pd.to_numeric(chr_series, errors="coerce").fillna(1).astype("uint32").to_numpy()
+        kept_raw_chr = chunk[chr_col].iloc[keep_mask].fillna("").astype(str).str.strip().to_numpy()
+        observed_chr_tokens.update(tok for tok in kept_raw_chr if tok)
+
         bp_vals = pd.to_numeric(chunk[ps_col], errors="coerce").fillna(0).astype("uint32").to_numpy()
         snp_vals = chunk[rs_col].astype(str).to_numpy()
 
         kept_chunks.append(
             pd.DataFrame(
                 {
-                    "CHR": chr_vals[keep_mask],
+                    "CHR_RAW": kept_raw_chr,
                     "BP": bp_vals[keep_mask],
                     "SNP": snp_vals[keep_mask],
                     "LOG10_P": log10p[keep_mask].astype("float32"),
@@ -242,8 +315,26 @@ def generate_manhattan_cache(
     result = pd.concat(kept_chunks, ignore_index=True)
     del kept_chunks
 
+    token_to_idx, chr_labels = _build_chr_mapping(observed_chr_tokens)
+    result["CHR"] = pd.Series(
+        [token_to_idx.get(tok, 0) for tok in result["CHR_RAW"]],
+        dtype="uint32",
+    )
+    result.drop(columns=["CHR_RAW"], inplace=True)
+
     result = cap_manhattan_dataframe(result, max_points=max_points)
     saved_path = _save_cache_df(result, output_cache_path)
+
+    present_chrs = set(result["CHR"].tolist())
+    active_chr_labels = {int(k): v for k, v in chr_labels.items() if k in present_chrs}
+    labels_path = Path(saved_path).with_name("manhattan_chr_labels.json")
+    if active_chr_labels:
+        labels_path.write_text(
+            json.dumps({str(k): v for k, v in sorted(active_chr_labels.items())}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    elif labels_path.exists():
+        labels_path.unlink()
 
     summary = {
         "total_snps_read": int(total_read),

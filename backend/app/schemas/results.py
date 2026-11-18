@@ -1,4 +1,4 @@
-from typing import List
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,10 @@ class ManhattanDataResponse(BaseModel):
     bp: List[int] = Field(..., description="Posisi basepair per titik")
     snp: List[str] = Field(..., description="ID SNP (rsID) per titik")
     log10_p: List[float] = Field(..., description="-log10(p-value) per titik")
+    chr_labels: Optional[Dict[int, str]] = Field(
+        default=None,
+        description="Peta indeks kromosom -> label asli untuk kromosom/scaffold non-numerik",
+    )
 
     model_config = {
         "json_schema_extra": {

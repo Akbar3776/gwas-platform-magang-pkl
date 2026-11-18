@@ -158,3 +158,14 @@ export function log10ToPValue(log10p) {
   if (p < 0.0001) return p.toExponential(2);
   return p.toFixed(4);
 }
+
+/** Kembalikan label tampilan kromosom (mis. "Gm01") jika tersedia di chr_labels. */
+export function formatChromosomeLabel(chr, chrLabels) {
+  if (chrLabels && typeof chrLabels === "object") {
+    const label = chrLabels[String(chr)] ?? chrLabels[chr];
+    if (label !== undefined && label !== null && label !== "") {
+      return String(label);
+    }
+  }
+  return String(chr);
+}
