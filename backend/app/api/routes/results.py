@@ -136,6 +136,15 @@ def get_manhattan_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> Manh
     if not cache_path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cache Manhattan Plot tidak ditemukan")
 
+    labels_path = Path(cache_path).with_name("manhattan_chr_labels.json")
+    if not labels_path.is_file() and job.assoc_output_path:
+        assoc_path = Path(job.assoc_output_path)
+        if assoc_path.is_file():
+            generate_manhattan_cache(
+                assoc_file_path=str(assoc_path),
+                output_cache_path=str(cache_path),
+            )
+
     try:
         df = load_manhattan_cache(cache_path)
     except FileNotFoundError as exc:

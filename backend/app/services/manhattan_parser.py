@@ -328,13 +328,10 @@ def generate_manhattan_cache(
     present_chrs = set(result["CHR"].tolist())
     active_chr_labels = {int(k): v for k, v in chr_labels.items() if k in present_chrs}
     labels_path = Path(saved_path).with_name("manhattan_chr_labels.json")
-    if active_chr_labels:
-        labels_path.write_text(
-            json.dumps({str(k): v for k, v in sorted(active_chr_labels.items())}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-    elif labels_path.exists():
-        labels_path.unlink()
+    labels_path.write_text(
+        json.dumps({str(k): v for k, v in sorted(active_chr_labels.items())}, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     summary = {
         "total_snps_read": int(total_read),
