@@ -10,7 +10,6 @@ from pathlib import Path
 import shutil
 from typing import Any
 
-from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, ResultType
 from app.schemas.pipeline import ClumpConfig, ThresholdConfig
@@ -32,7 +31,7 @@ from app.tasks._common import (
     write_json,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
-from app.utils.process import CLICancelledError, CLIExecutionError, SubprocessFailed, run_cli_command
+from app.utils.process import CLICancelledError, run_cli_command
 
 logger = get_task_logger(__name__)
 

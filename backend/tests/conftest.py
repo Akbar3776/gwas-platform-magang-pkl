@@ -15,7 +15,7 @@ if BACKEND_ROOT not in sys.path:
 
 import fastapi.testclient
 import pytest
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 

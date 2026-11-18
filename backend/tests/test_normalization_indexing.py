@@ -1,7 +1,7 @@
 """Tests for VCF normalization indexing with TBI and CSI fallback support."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 

@@ -15,7 +15,6 @@ Fitur:
 from __future__ import annotations
 
 import bisect
-import csv
 import gzip
 import re
 from pathlib import Path

@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, ResultType
-from app.schemas.pipeline import PopulationType, StructureConfig
+from app.schemas.pipeline import StructureConfig
 from app.services.structure_service import (
     compute_centered_kinship,
     compute_king_robust_table,
@@ -29,7 +27,6 @@ from app.tasks._common import (
     mark_job,
     stage_dir,
     upsert_result,
-    which_tool,
     write_json,
 )
 from app.tasks.celery_app import celery_app, get_task_logger

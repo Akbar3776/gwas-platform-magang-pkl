@@ -9,9 +9,7 @@ from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, 
 from app.main import _ensure_sqlite_columns
 from app.schemas.pipeline import (
     FullPipelineRequest,
-    GWASPipelineConfig,
     ImputationPipelineConfig,
-    PhenotypeConfig,
     PopulationType,
     QCPipelineConfig,
 )

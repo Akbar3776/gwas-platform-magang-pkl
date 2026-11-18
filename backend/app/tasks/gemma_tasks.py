@@ -16,7 +16,7 @@ import numpy as np
 from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, Result, ResultType
-from app.services.manhattan_parser import compute_assoc_summary_stats, generate_manhattan_cache
+from app.services.manhattan_parser import compute_assoc_summary_stats
 from app.tasks._common import (
     JobCancelledError,
     append_log,
@@ -596,7 +596,6 @@ def run_gemma_gwas(
             if qc_bed.is_file():
                 candidate_bfile = str(qc_bed.with_suffix(""))
 
-        ran_cli_gemma = False
         if has_gemma_binaries:
             try:
                 if (
@@ -707,7 +706,6 @@ def run_gemma_gwas(
                 lines = assoc_path.read_text(encoding="utf-8", errors="replace").splitlines()
                 if len(lines) <= 1:
                     raise RuntimeError("GEMMA selesai tetapi tidak menghasilkan baris varian pada file asosiasi.")
-                ran_cli_gemma = True
                 append_log(
                     log_file,
                     f"[6.5] GEMMA CLI berhasil menganalisis {len(lines) - 1} SNP -> {assoc_path}",

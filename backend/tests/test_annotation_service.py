@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 from app.services.annotation_service import (
     map_lead_snps_to_genes,
     normalize_chr_name,

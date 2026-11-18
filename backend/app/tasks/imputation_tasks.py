@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.core.config import settings
 from app.core.resource_limits import (
     build_java_command,
     make_memory_limited_preexec_fn,

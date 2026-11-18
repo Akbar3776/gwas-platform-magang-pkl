@@ -12,13 +12,10 @@ Fitur:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-from app.schemas.pipeline import PopulationType, StructureConfig
 
 
 def read_plink_binary(bfile_prefix: str | Path) -> tuple[list[str], list[dict[str, Any]], np.ndarray]:
@@ -65,7 +62,6 @@ def read_plink_binary(bfile_prefix: str | Path) -> tuple[list[str], list[dict[st
     # 3. Baca .bed
     # Header: 3 bytes: 0x6c, 0x1b, 0x01 (mode SNP-major)
     bytes_per_snp = (n_samples + 3) // 4
-    expected_bed_size = 3 + bytes_per_snp * n_variants
     bed_bytes = bed_path.read_bytes()
 
     if len(bed_bytes) < 3 or bed_bytes[:3] != b"\x6c\x1b\x01":
