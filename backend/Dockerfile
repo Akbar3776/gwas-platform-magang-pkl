@@ -1,10 +1,10 @@
 # ==============================================================================
 # GWAS Pipeline - Backend Dockerfile
-# Base: python:3.10-slim-trixie
+# Base: python:3.11-slim-trixie
 # Menyertakan dependensi OS untuk build tools bioinformatika (PLINK, GEMMA)
 # ==============================================================================
 
-FROM python:3.10-slim-trixie
+FROM python:3.11-slim-trixie
 
 LABEL maintainer="GWAS Platform Team"
 LABEL description="FastAPI + Celery backend, membungkus PLINK & GEMMA sebagai subprocess"
