@@ -30,6 +30,7 @@ from app.db.engine.models import (
 from app.schemas.pipeline import FullPipelineRequest, GWASPipelineConfig, ImputationPipelineConfig, QCPipelineConfig
 from app.services.export_service import generate_zip_stream
 from app.tasks import (
+    _common as task_common,
     annotation_tasks,
     gemma_tasks,
     imputation_tasks,
@@ -81,8 +82,9 @@ class InMemoryDB:
             return self.reference_panels.get(key)
         return None
 
-    def query(self, model):
+    def query(self, *models):
         db = self
+        model = models[0] if len(models) == 1 else None
 
         class _Query:
             def __init__(self):
@@ -121,12 +123,19 @@ class InMemoryDB:
     def close(self):
         pass
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
 
 def test_full_gwas_pipeline_and_results_end_to_end(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
 
     db = InMemoryDB()
+    monkeypatch.setattr(task_common, "SessionLocal", lambda: db)
     monkeypatch.setattr(inspection_tasks, "SessionLocal", lambda: db)
     monkeypatch.setattr(normalization_tasks, "SessionLocal", lambda: db)
     monkeypatch.setattr(qc_tasks, "SessionLocal", lambda: db)

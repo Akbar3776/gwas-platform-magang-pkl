@@ -252,7 +252,7 @@ def _run_python_multilocus_engine(
 
         samples, raw_variants = _parse_vcf_genotypes(norm_vcf)
         if not samples:
-            samples = [f"S{i+1}" for i in range(20)]
+            samples = [f"S{i + 1}" for i in range(20)]
         n_s = len(samples)
         n_v = len(raw_variants)
         G_mat = np.full((n_s, n_v), -1, dtype=np.int8)
@@ -422,7 +422,7 @@ def _run_python_multilocus_engine(
                         pseudo_qtns.append(top_cand)
                         append_log(
                             log_file,
-                            f"  [Iterasi {it+1}] Pseudo-QTN terpilih: {variants_meta[top_cand]['rs']} "
+                            f"  [Iterasi {it + 1}] Pseudo-QTN terpilih: {variants_meta[top_cand]['rs']} "
                             f"(Chr {variants_meta[top_cand]['chr']}:{variants_meta[top_cand]['ps']}, p={cur_p[top_cand]:.2e})",
                         )
                         cur_p, cur_b, cur_se = _scan_genome(pseudo_qtns)
@@ -490,7 +490,7 @@ def _run_python_multilocus_engine(
                         mlmm_cofactors.append(top_m)
                         append_log(
                             log_file,
-                            f"  [Forward Step {step+1}] Menambahkan kofaktor: {variants_meta[top_m]['rs']} "
+                            f"  [Forward Step {step + 1}] Menambahkan kofaktor: {variants_meta[top_m]['rs']} "
                             f"(Chr {variants_meta[top_m]['chr']}:{variants_meta[top_m]['ps']}, p={cur_p[top_m]:.2e})",
                         )
                         cur_p, cur_b, cur_se = _scan_genome(mlmm_cofactors)

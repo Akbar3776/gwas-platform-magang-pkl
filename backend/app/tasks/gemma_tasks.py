@@ -363,7 +363,7 @@ def _run_statistical_gwas_fallback(
             f"[6.3] Centered Relatedness Matrix (Kinship K = W*W^T / p) siap digunakan -> {kinship_path.name}:",
         )
         for idx, row in enumerate(kinship_mat[:6]):
-            sname = samples[idx] if idx < len(samples) else f"S{idx+1}"
+            sname = samples[idx] if idx < len(samples) else f"S{idx + 1}"
             append_log(log_file, f"      {sname:<10}: [" + ", ".join(f"{v:+.4f}" for v in row[:6]) + "]")
 
     append_log(

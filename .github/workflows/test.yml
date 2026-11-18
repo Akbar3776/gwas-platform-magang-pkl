@@ -18,7 +18,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
           cache: pip
           cache-dependency-path: |
             backend/requirements.txt
@@ -28,6 +28,22 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-test.txt
+
+      - name: Install system bioinformatics tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bcftools libgomp1 unzip
+          # Sama persis dengan backend/Dockerfile (PLINK 1.9 20260913, GEMMA 0.98.5)
+          wget -q "https://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20260913.zip" -O /tmp/plink.zip
+          echo "cafa2752e2ea9a69d3a7668be4e2cdc6522095645121d2ac2787866f99a3147f  /tmp/plink.zip" | sha256sum -c -
+          sudo unzip -o -q /tmp/plink.zip plink -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/plink
+          wget -q "https://github.com/genetics-statistics/GEMMA/releases/download/v0.98.5/gemma-0.98.5-linux-static-AMD64.gz" -O /tmp/gemma.gz
+          echo "bd4abd32433a660f7dda929e703f7f5d4fcbfc7c9330b66e287fb53013feb59d  /tmp/gemma.gz" | sha256sum -c -
+          gunzip -c /tmp/gemma.gz | sudo tee /usr/local/bin/gemma > /dev/null
+          sudo chmod +x /usr/local/bin/gemma
+          plink --version
+          gemma -h 2>&1 | head -3 || true
 
       - name: Audit backend dependencies
         run: |

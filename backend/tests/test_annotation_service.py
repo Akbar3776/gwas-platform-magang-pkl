@@ -5,6 +5,7 @@ from app.services.annotation_service import (
     normalize_chr_name,
     parse_gff3_genes,
 )
+from tests.fixtures.make_fixtures import ensure_fixtures
 
 
 def test_normalize_chr_name():
@@ -18,9 +19,7 @@ def test_normalize_chr_name():
 
 def test_parse_gff3_genes():
     gff_fixture = Path(__file__).parent / "fixtures" / "data" / "toy_annotation.gff3"
-    if not gff_fixture.is_file():
-        from tests.fixtures.make_fixtures import generate_toy_fixtures
-        generate_toy_fixtures()
+    ensure_fixtures()
 
     genes_by_chr, seqids = parse_gff3_genes(gff_fixture, feature_type="gene")
     assert len(genes_by_chr) > 0

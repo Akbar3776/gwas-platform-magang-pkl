@@ -264,4 +264,3 @@ def test_normalization_executes_fase0_qc_overflowing_before_bcftools_sort(monkey
     assert res["qc_overflow_removed"] == 1
     assert job.parameters["qc_overflow_removed"] == 1
     assert not (tmp_path / "jobs" / str(job.id) / "normalization" / "clean.vcf").exists()
-

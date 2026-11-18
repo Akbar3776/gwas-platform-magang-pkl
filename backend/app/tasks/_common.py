@@ -241,6 +241,24 @@ def upsert_result(
     return new_result
 
 
+_IS_WINDOWS = os.name == "nt"
+_WINDOWS_ONLY_SUFFIXES = {".cmd", ".bat", ".exe"}
+
+
+def _is_usable_local_tool(path: Path) -> bool:
+    """Kandidat lokal hanya dipakai bila bisa dijalankan di OS saat ini."""
+    if not path.is_file():
+        return False
+    if _IS_WINDOWS:
+        return True
+    suffix = path.suffix.lower()
+    if suffix in _WINDOWS_ONLY_SUFFIXES:
+        return False
+    if suffix == "":
+        return os.access(path, os.X_OK)
+    return True  # mis. .jar dijalankan lewat `java -jar`, tidak perlu bit executable
+
+
 def which_tool(name: str, default: str | None = None) -> str | None:
     """Resolve CLI executable path from environment variable, local backend folders, or system PATH."""
     clean_name = name.strip()
@@ -314,7 +332,7 @@ def which_tool(name: str, default: str | None = None) -> str | None:
         ])
 
     for cand in local_candidates:
-        if cand.is_file():
+        if _is_usable_local_tool(cand):
             return str(cand.resolve())
 
     # 3. System PATH fallback

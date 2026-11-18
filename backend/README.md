@@ -192,7 +192,7 @@ Seluruh endpoint berada di bawah prefix `/api/v1` (kecuali `/health`). Dokumenta
 ## ⚙️ 6. Prasyarat & Konfigurasi Environment (`.env`)
 
 ### Prasyarat
-- **Python 3.10 – 3.13**
+- **Python 3.11 – 3.13**
 - **Docker Desktop** dengan Docker Compose *(opsional untuk mode lokal, wajib untuk deployment kontainer penuh)*
 - **PostgreSQL 15 & Redis 7** *(opsional pada pengembangan lokal karena backend memiliki fallback otomatis ke SQLite & local thread runner)*
 

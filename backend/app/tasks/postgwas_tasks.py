@@ -409,4 +409,3 @@ def run_postgwas_analysis(
         raise
     finally:
         db.close()
-

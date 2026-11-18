@@ -329,4 +329,3 @@ def inspect_phenotype(
         "blocking_errors": blocking_errors,
         "matched_ids": matched_ids,
     }
-

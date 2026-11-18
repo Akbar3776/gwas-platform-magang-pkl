@@ -30,7 +30,7 @@ def ensure_fixtures(force: bool = False) -> tuple[Path, Path, Path]:
 
     rng = np.random.default_rng(42)
     n_samples = 120
-    sample_ids = [f"SAMPLE_{i+1:03d}" for i in range(n_samples)]
+    sample_ids = [f"SAMPLE_{i + 1:03d}" for i in range(n_samples)]
 
     # Subpopulations: Pop1 (0..39), Pop2 (40..79), Pop3 (80..119)
     subpop = np.zeros(n_samples, dtype=int)
