@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useChunkUpload, UPLOAD_STAGE } from "../hooks/useChunkUpload";
 import { UploadProgressBar } from "./UploadProgressBar";
 
@@ -24,13 +24,23 @@ export function VcfUploader({ onDatasetReady }) {
   const { stage, progress, etaLabel, errorMessage, startUpload, cancelUpload, reset } = useChunkUpload();
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const fileInputRef = useRef(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const isBusy = stage === UPLOAD_STAGE.UPLOADING || stage === UPLOAD_STAGE.PROCESSING;
 
   const handleFile = useCallback(
     async (file) => {
-      if (!file) return;
+      if (!file || isBusy) return;
       try {
         const readyFileId = await startUpload(file);
-        if (readyFileId) {
+        if (readyFileId && isMountedRef.current) {
           onDatasetReady?.(readyFileId);
         }
       } catch {
@@ -38,17 +48,18 @@ export function VcfUploader({ onDatasetReady }) {
         // dari hook — tidak perlu penanganan tambahan di sini.
       }
     },
-    [startUpload, onDatasetReady]
+    [isBusy, startUpload, onDatasetReady]
   );
 
   const handleDrop = useCallback(
     (event) => {
       event.preventDefault();
       setIsDraggingOver(false);
+      if (isBusy) return;
       const file = event.dataTransfer.files?.[0];
       handleFile(file);
     },
-    [handleFile]
+    [isBusy, handleFile]
   );
 
   const handleFileInputChange = useCallback(
@@ -58,8 +69,6 @@ export function VcfUploader({ onDatasetReady }) {
     },
     [handleFile]
   );
-
-  const isBusy = stage === UPLOAD_STAGE.UPLOADING || stage === UPLOAD_STAGE.PROCESSING;
 
   return (
     <div>

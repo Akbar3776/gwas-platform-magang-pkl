@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { httpClient } from "../api/httpClient";
 
 const CHUNK_SIZE = 10 * 1024 * 1024;
@@ -14,8 +14,28 @@ export const UPLOAD_STAGE = {
   ERROR: "error",
 };
 
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function isAborted(token, mountedRef) {
+  return Boolean(
+    !token ||
+      token.cancelled ||
+      token.controller?.signal?.aborted ||
+      (mountedRef && !mountedRef.current)
+  );
+}
+
+function wait(ms, signal) {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+  });
 }
 
 function formatEta(seconds) {
@@ -24,14 +44,20 @@ function formatEta(seconds) {
   return `${Math.ceil(seconds / 60)} menit`;
 }
 
-async function postChunkWithRetry(formData) {
+async function postChunkWithRetry(formData, token, mountedRef) {
   let lastError;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
+    if (isAborted(token, mountedRef)) return null;
     try {
-      return await httpClient.post("/upload/chunk", formData);
+      return await httpClient.post("/upload/chunk", formData, {
+        signal: token.controller.signal,
+      });
     } catch (error) {
+      if (isAborted(token, mountedRef)) return null;
       lastError = error;
-      if (attempt < MAX_RETRIES) await wait(RETRY_DELAY_MS * attempt);
+      if (attempt < MAX_RETRIES) {
+        await wait(RETRY_DELAY_MS * attempt, token.controller.signal);
+      }
     }
   }
   throw lastError;
@@ -44,11 +70,25 @@ export function useChunkUpload() {
   const [etaSeconds, setEtaSeconds] = useState(null);
   const [fileId, setFileId] = useState(null);
   const [errorMessage, setErrorMessage] = useState(null);
-  const cancelledRef = useRef(false);
+  const activeTokenRef = useRef(null);
+  const mountedRef = useRef(true);
   const startedAtRef = useRef(null);
 
-  const reset = useCallback(() => {
-    cancelledRef.current = false;
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      const activeToken = activeTokenRef.current;
+      if (activeToken) {
+        activeToken.cancelled = true;
+        activeToken.controller.abort();
+        activeTokenRef.current = null;
+      }
+    };
+  }, []);
+
+  const clearUiState = useCallback(() => {
+    if (!mountedRef.current) return;
     setStage(UPLOAD_STAGE.IDLE);
     setProgress(0);
     setUploadedBytes(0);
@@ -58,72 +98,121 @@ export function useChunkUpload() {
   }, []);
 
   const cancelUpload = useCallback(() => {
-    cancelledRef.current = true;
-  }, []);
+    const activeToken = activeTokenRef.current;
+    if (activeToken) {
+      activeToken.cancelled = true;
+      activeToken.controller.abort();
+      activeTokenRef.current = null;
+    }
+    clearUiState();
+  }, [clearUiState]);
 
-  const waitUntilReady = useCallback(async (id) => {
-    while (!cancelledRef.current) {
-      const { data } = await httpClient.get(`/upload/${id}/status`);
+  const reset = useCallback(() => {
+    cancelUpload();
+  }, [cancelUpload]);
+
+  const waitUntilReady = useCallback(async (id, token) => {
+    while (!isAborted(token, mountedRef)) {
+      const { data } = await httpClient.get(`/upload/${id}/status`, {
+        signal: token.controller.signal,
+      });
+      if (isAborted(token, mountedRef)) return null;
       const status = String(data.upload_status).toUpperCase();
       if (status === "UPLOADED" || status === "READY") return data;
       if (status === "FAILED") throw new Error("Server gagal merakit file upload.");
-      await wait(STATUS_POLL_MS);
+      await wait(STATUS_POLL_MS, token.controller.signal);
     }
     return null;
   }, []);
 
-  const startUpload = useCallback(async (file) => {
-    reset();
-    cancelledRef.current = false;
-    startedAtRef.current = performance.now();
-    setStage(UPLOAD_STAGE.UPLOADING);
-
-    try {
-      const { data: init } = await httpClient.post("/upload/init", {
-        original_filename: file.name,
-        total_size_bytes: file.size,
-      });
-      const id = init.file_id;
-      setFileId(id);
-      const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-
-      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
-        if (cancelledRef.current) return null;
-        const start = chunkIndex * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, file.size);
-        const formData = new FormData();
-        formData.append("file_id", id);
-        formData.append("chunk_index", String(chunkIndex));
-        formData.append("total_chunks", String(totalChunks));
-        formData.append("chunk", file.slice(start, end), file.name);
-        await postChunkWithRetry(formData);
-
-        const bytes = end;
-        const elapsed = (performance.now() - startedAtRef.current) / 1000;
-        const speed = bytes / Math.max(elapsed, 0.1);
-        setUploadedBytes(bytes);
-        setProgress(Math.min(100, Math.round((bytes / file.size) * 100)));
-        setEtaSeconds((file.size - bytes) / speed);
+  const startUpload = useCallback(
+    async (file) => {
+      if (!file) return null;
+      if (activeTokenRef.current && !activeTokenRef.current.cancelled) {
+        return null;
       }
 
-      const finalizeData = new FormData();
-      finalizeData.append("file_id", id);
-      finalizeData.append("total_chunks", String(totalChunks));
-      setStage(UPLOAD_STAGE.PROCESSING);
-      await httpClient.post("/upload/finalize", finalizeData);
-      await waitUntilReady(id);
-      if (cancelledRef.current) return null;
-      setProgress(100);
-      setEtaSeconds(null);
-      setStage(UPLOAD_STAGE.READY);
-      return id;
-    } catch (error) {
-      if (cancelledRef.current) return null;
-      setErrorMessage(error.response?.data?.detail || error.message || "Upload gagal.");
-      setStage(UPLOAD_STAGE.ERROR);
-      throw error;
-    }
-  }, [reset, waitUntilReady]);
+      const token = { cancelled: false, controller: new AbortController() };
+      activeTokenRef.current = token;
+      clearUiState();
+      startedAtRef.current = performance.now();
+      if (mountedRef.current) {
+        setStage(UPLOAD_STAGE.UPLOADING);
+      }
+
+      try {
+        const { data: init } = await httpClient.post(
+          "/upload/init",
+          {
+            original_filename: file.name,
+            total_size_bytes: file.size,
+          },
+          { signal: token.controller.signal }
+        );
+        if (isAborted(token, mountedRef) || activeTokenRef.current !== token) {
+          return null;
+        }
+        const id = init.file_id;
+        setFileId(id);
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+        for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+          if (isAborted(token, mountedRef) || activeTokenRef.current !== token) {
+            return null;
+          }
+          const start = chunkIndex * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, file.size);
+          const formData = new FormData();
+          formData.append("file_id", id);
+          formData.append("chunk_index", String(chunkIndex));
+          formData.append("total_chunks", String(totalChunks));
+          formData.append("chunk", file.slice(start, end), file.name);
+          const res = await postChunkWithRetry(formData, token, mountedRef);
+          if (res === null || isAborted(token, mountedRef) || activeTokenRef.current !== token) {
+            return null;
+          }
+
+          const bytes = end;
+          const elapsed = (performance.now() - startedAtRef.current) / 1000;
+          const speed = bytes / Math.max(elapsed, 0.1);
+          setUploadedBytes(bytes);
+          setProgress(Math.min(100, Math.round((bytes / file.size) * 100)));
+          setEtaSeconds((file.size - bytes) / speed);
+        }
+
+        const finalizeData = new FormData();
+        finalizeData.append("file_id", id);
+        finalizeData.append("total_chunks", String(totalChunks));
+        setStage(UPLOAD_STAGE.PROCESSING);
+        await httpClient.post("/upload/finalize", finalizeData, {
+          signal: token.controller.signal,
+        });
+        if (isAborted(token, mountedRef) || activeTokenRef.current !== token) {
+          return null;
+        }
+        await waitUntilReady(id, token);
+        if (isAborted(token, mountedRef) || activeTokenRef.current !== token) {
+          return null;
+        }
+        setProgress(100);
+        setEtaSeconds(null);
+        setStage(UPLOAD_STAGE.READY);
+        return id;
+      } catch (error) {
+        if (isAborted(token, mountedRef) || activeTokenRef.current !== token) {
+          return null;
+        }
+        setErrorMessage(error.response?.data?.detail || error.message || "Upload gagal.");
+        setStage(UPLOAD_STAGE.ERROR);
+        throw error;
+      } finally {
+        if (activeTokenRef.current === token) {
+          activeTokenRef.current = null;
+        }
+      }
+    },
+    [clearUiState, waitUntilReady]
+  );
 
   return {
     stage,
