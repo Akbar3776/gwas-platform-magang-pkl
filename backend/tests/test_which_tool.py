@@ -47,3 +47,30 @@ def test_which_tool_bcftools_falls_back_to_path_on_posix(monkeypatch):
         lambda name: "/usr/bin/bcftools" if name == "bcftools" else None,
     )
     assert which_tool("bcftools") == "/usr/bin/bcftools"
+
+
+def test_which_tool_plink2_ignores_plink_binary_path(monkeypatch):
+    monkeypatch.setattr(task_common, "_IS_WINDOWS", False)
+    for key in ("plink2", "PLINK2", "PLINK2_BINARY_PATH", "plink", "PLINK", "PLINK_BINARY_PATH"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("PLINK_BINARY_PATH", "plink")
+    monkeypatch.setattr(
+        task_common.shutil,
+        "which",
+        lambda name: "/usr/local/bin/plink" if name == "plink" else None,
+    )
+    assert which_tool("plink2") is None
+    assert which_tool("plink") == "/usr/local/bin/plink"
+
+
+def test_which_tool_plink2_accepts_plink2_env_vars(monkeypatch):
+    monkeypatch.setattr(task_common, "_IS_WINDOWS", False)
+    for key in ("plink2", "PLINK2", "PLINK2_BINARY_PATH", "PLINK_BINARY_PATH"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("PLINK2", "plink2")
+    monkeypatch.setattr(
+        task_common.shutil,
+        "which",
+        lambda name: "/usr/local/bin/plink2" if name == "plink2" else None,
+    )
+    assert which_tool("plink2") == "/usr/local/bin/plink2"

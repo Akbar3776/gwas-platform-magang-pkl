@@ -379,8 +379,10 @@ def which_tool(name: str, default: str | None = None) -> str | None:
 
     # 1. Direct environment variable lookup
     env_keys = [clean_name, f"{norm_upper}_BINARY_PATH"]
-    if norm_upper in {"PLINK2", "PLINK"}:
-        env_keys.extend(["PLINK2_BINARY_PATH", "PLINK_BINARY_PATH"])
+    if norm_upper == "PLINK2":
+        env_keys.extend(["PLINK2", "PLINK2_PATH"])
+    elif norm_upper == "PLINK":
+        env_keys.extend(["PLINK", "PLINK_PATH"])
     elif norm_upper == "BCFTOOLS":
         env_keys.extend(["BCFTOOLS_BINARY_PATH", "BCFTOOLS_PATH"])
     elif norm_upper == "GEMMA":
@@ -404,13 +406,19 @@ def which_tool(name: str, default: str | None = None) -> str | None:
     # 2. Local backend directories lookup
     backend_root = Path(__file__).resolve().parent.parent.parent
     local_candidates: list[Path] = []
-    if norm_upper in {"PLINK2", "PLINK"}:
+    if norm_upper == "PLINK2":
         local_candidates.extend([
             backend_root / "plink2_win64_20261012" / "plink2.exe",
             backend_root / "plink" / "plink2.exe",
-            backend_root / "plink" / "plink.exe",
             backend_root / "bin" / "plink2.exe",
+        ])
+    elif norm_upper == "PLINK":
+        local_candidates.extend([
+            backend_root / "plink" / "plink.exe",
             backend_root / "bin" / "plink.exe",
+            backend_root / "plink2_win64_20261012" / "plink2.exe",
+            backend_root / "plink" / "plink2.exe",
+            backend_root / "bin" / "plink2.exe",
         ])
     elif norm_upper == "BCFTOOLS":
         local_candidates.extend([
