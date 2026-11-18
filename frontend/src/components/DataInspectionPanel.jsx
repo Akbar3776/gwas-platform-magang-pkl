@@ -1,7 +1,8 @@
 import React from "react";
 import { HistogramChart } from "./HistogramChart";
 import { BoxPlotChart } from "./BoxPlotChart";
-import { downloadInspectionFile, downloadJobFile } from "../api/jobsApi";
+import { downloadInspectionFile } from "../api/jobsApi";
+import { downloadJobFileByName } from "../utils/jobFiles";
 
 function formatStat(val) {
   if (val === null || val === undefined) return "-";
@@ -41,7 +42,7 @@ export function DataInspectionPanel({ report, fileId, jobId }) {
       if (fileId) {
         await downloadInspectionFile(fileId, filename);
       } else if (jobId) {
-        await downloadJobFile(jobId, filename, filename);
+        await downloadJobFileByName(jobId, filename, "inspection");
       }
     } catch (err) {
       alert(`Gagal mengunduh file ${filename}: ${err.message}`);

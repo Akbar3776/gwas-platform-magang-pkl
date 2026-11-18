@@ -416,3 +416,57 @@ def test_list_user_jobs_skips_full_log_scan_and_caches_terminal_file_count(tmp_p
     second = jobs.list_user_jobs(db=db, user=user)
     assert second[0]["file_count"] == 2
     assert db.commits == 1
+
+
+def test_get_job_file_content_requires_exact_file_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs.settings, "STORAGE_ROOT", str(tmp_path))
+    user = User(
+        id=uuid.uuid4(),
+        email="researcher@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path=str(tmp_path / "missing.vcf.gz"),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="qc_only",
+        overall_status=JobStatus.COMPLETED,
+        current_step=PipelineStep.QC,
+    )
+    log_file = tmp_path / "jobs" / str(job.id) / "qc" / "plink_qc.log"
+    log_file.parent.mkdir(parents=True)
+    log_file.write_text("qc-log-content\n", encoding="utf-8")
+    session = FakeSession(dataset, job=job)
+
+    listed = jobs.list_job_files(job_id=job.id, db=session, user=user)
+    assert listed["files"][0]["file_key"] == "job:qc/plink_qc.log"
+
+    for non_exact in ("log", "plink_qc.log", "JOB:QC/PLINK_QC.LOG"):
+        with pytest.raises(HTTPException) as exc:
+            jobs.get_job_file_content(
+                job_id=job.id,
+                file_key=non_exact,
+                preview=True,
+                db=session,
+                user=user,
+            )
+        assert exc.value.status_code == 404
+
+    resp = jobs.get_job_file_content(
+        job_id=job.id,
+        file_key="job:qc/plink_qc.log",
+        preview=True,
+        db=session,
+        user=user,
+    )
+    assert resp.status_code == 200
+    assert resp.body.decode("utf-8") == "qc-log-content"
