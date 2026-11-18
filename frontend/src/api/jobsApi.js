@@ -249,3 +249,8 @@ export async function fetchCapabilities() {
   const { data } = await httpClient.get("/pipeline/capabilities");
   return data;
 }
+
+export async function fetchReferencePanels() {
+  const { data } = await httpClient.get("/reference-panels");
+  return data;
+}

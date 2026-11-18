@@ -22,6 +22,7 @@ from app.db.engine.models import (
     Dataset,
     JobStatus,
     PipelineStep,
+    ReferencePanel,
     Result,
     UploadStatus,
     User,
@@ -50,6 +51,7 @@ class InMemoryDB:
         self.users = {}
         self.datasets = {}
         self.jobs = {}
+        self.reference_panels = {}
         self.results = []
 
     def add(self, obj):
@@ -63,6 +65,8 @@ class InMemoryDB:
             if obj.created_at is None:
                 obj.created_at = datetime.now(timezone.utc)
             self.jobs[str(obj.id)] = obj
+        elif isinstance(obj, ReferencePanel):
+            self.reference_panels[str(obj.id)] = obj
         elif isinstance(obj, Result):
             self.results.append(obj)
 
@@ -74,6 +78,8 @@ class InMemoryDB:
             return self.datasets.get(key)
         if model is AnalysisJob:
             return self.jobs.get(key)
+        if model is ReferencePanel:
+            return self.reference_panels.get(key)
         return None
 
     def query(self, model):
@@ -268,14 +274,25 @@ def test_full_gwas_pipeline_and_results_end_to_end(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr("app.api.routes.pipeline.trigger_full_pipeline", _run_chain_sync)
 
+    panel = ReferencePanel(
+        id=uuid.uuid4(),
+        name="1000 Genomes Phase 3",
+        population="ALL",
+        genome_build="GRCh38",
+        vcf_paths={"ALL": "/data/reference-panels/1000g_phase3_grch38/reference.vcf.gz"},
+        genetic_map_paths={},
+        is_active=True,
+    )
+    db.add(panel)
+
     payload = FullPipelineRequest(
         qc=QCPipelineConfig(maf=0.01, geno=0.05, mind=0.1, hwe=1e-6),
         imputation=ImputationPipelineConfig(
-            reference_vcf_path="/data/reference-panels/1000g_phase3_grch38/reference.vcf.gz",
+            reference_panel_id=panel.id,
             nthreads=2,
             beagle_max_memory="-Xmx4g",
         ),
-        gwas=GWASPipelineConfig(phenotype_path=None, model="lmm"),
+        gwas=GWASPipelineConfig(model="lmm"),
     )
 
     start_resp = start_pipeline_endpoint(dataset_id=dataset.id, payload=payload, db=db, user=user)

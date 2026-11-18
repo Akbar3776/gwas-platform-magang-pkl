@@ -28,16 +28,17 @@ def test_schema_qc_population_type_hwe_validation():
 
 
 def test_schema_imputation_mode_validation():
-    # mode='none' does not require reference_vcf_path
+    # mode='none' does not require reference_panel_id
     imp_none = ImputationPipelineConfig(mode="none")
     assert imp_none.mode == "none"
 
-    # mode='reference' requires reference_vcf_path
+    # mode='reference' requires reference_panel_id
     with pytest.raises(ValidationError):
-        ImputationPipelineConfig(mode="reference", reference_vcf_path=None)
+        ImputationPipelineConfig(mode="reference", reference_panel_id=None)
 
-    # legacy dict with reference_vcf_path infers mode='reference'
-    imp_legacy = ImputationPipelineConfig(reference_vcf_path="/path/to/ref.vcf.gz")
+    # dict with reference_panel_id infers mode='reference'
+    panel_id = uuid.uuid4()
+    imp_legacy = ImputationPipelineConfig(reference_panel_id=panel_id)
     assert imp_legacy.mode == "reference"
 
 

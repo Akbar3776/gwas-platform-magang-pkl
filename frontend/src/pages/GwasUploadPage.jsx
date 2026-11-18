@@ -1,6 +1,6 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { triggerFullPipeline } from "../api/jobsApi";
+import { fetchReferencePanels, triggerFullPipeline } from "../api/jobsApi";
 import { JobFilesPanel } from "../components/JobFilesPanel";
 import { JobStatusTracker } from "../components/JobStatusTracker";
 import { VcfUploader } from "../components/VcfUploader";
@@ -8,18 +8,6 @@ import { WorkspaceExplorer } from "../components/WorkspaceExplorer";
 import { PhenotypeUploader } from "../components/PhenotypeUploader";
 import { AnnotationUploader } from "../components/AnnotationUploader";
 import { DataInspectionPanel } from "../components/DataInspectionPanel";
-
-// Path reference panel adalah path internal worker Docker, bukan path komputer user.
-const REFERENCE_PANELS = [
-  {
-    value: "/data/reference-panels/1000g_phase3_grch38/reference.vcf.gz",
-    label: "1000 Genomes Phase 3 - GRCh38",
-  },
-  {
-    value: "/data/reference-panels/1000g_phase3_grch37/reference.vcf.gz",
-    label: "1000 Genomes Phase 3 - GRCh37",
-  },
-];
 
 const INITIAL_FORM = {
   // QC
@@ -32,7 +20,7 @@ const INITIAL_FORM = {
   set_missing_var_ids: true,
   // Imputasi
   imputation_mode: "none",
-  reference_vcf_path: REFERENCE_PANELS[0].value,
+  reference_panel_id: "",
   nthreads: "2",
   beagle_max_memory: "-Xmx8g",
   // Struktur Populasi & LD Decay
@@ -86,6 +74,7 @@ export function GwasUploadPage() {
   const [autoRedirectOnComplete, setAutoRedirectOnComplete] = useState(true);
   const [refreshCount, setRefreshCount] = useState(0);
   const [form, setForm] = useState(INITIAL_FORM);
+  const [referencePanels, setReferencePanels] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -96,6 +85,27 @@ export function GwasUploadPage() {
   const [hasAnnotation, setHasAnnotation] = useState(false);
 
   const hasRedirectedRef = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    fetchReferencePanels()
+      .then((panels) => {
+        if (!active) return;
+        const list = Array.isArray(panels) ? panels : [];
+        setReferencePanels(list);
+        if (list.length > 0) {
+          setForm((current) =>
+            current.reference_panel_id ? current : { ...current, reference_panel_id: list[0].id }
+          );
+        }
+      })
+      .catch(() => {
+        if (active) setReferencePanels([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleJobComplete = useCallback(() => {
     setRefreshCount((c) => c + 1);
@@ -216,7 +226,7 @@ export function GwasUploadPage() {
         },
         imputation: {
           mode: form.imputation_mode,
-          reference_vcf_path: form.imputation_mode === "reference" ? form.reference_vcf_path : null,
+          reference_panel_id: form.imputation_mode === "reference" ? form.reference_panel_id || null : null,
           nthreads: Number(form.nthreads),
           beagle_max_memory: form.beagle_max_memory,
         },
@@ -550,16 +560,21 @@ export function GwasUploadPage() {
                 {form.imputation_mode === "reference" && (
                   <Field label="Panel Referensi VCF">
                     <select
-                      name="reference_vcf_path"
-                      value={form.reference_vcf_path}
+                      name="reference_panel_id"
+                      value={form.reference_panel_id}
                       onChange={updateField}
                       style={inputStyle}
+                      required
                     >
-                      {REFERENCE_PANELS.map((panel) => (
-                        <option key={panel.value} value={panel.value}>
-                          {panel.label}
-                        </option>
-                      ))}
+                      {referencePanels.length === 0 ? (
+                        <option value="">Panel referensi tidak tersedia</option>
+                      ) : (
+                        referencePanels.map((panel) => (
+                          <option key={panel.id} value={panel.id}>
+                            {`${panel.name} - ${panel.genome_build}`}
+                          </option>
+                        ))
+                      )}
                     </select>
                   </Field>
                 )}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Any, Literal
+import uuid
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -50,11 +51,10 @@ class QCPipelineConfig(BaseModel):
 
 class ImputationPipelineConfig(BaseModel):
     mode: Literal["none", "reference", "reference_free"] = "none"
-    reference_vcf_path: str | None = None
+    reference_panel_id: uuid.UUID | None = None
     nthreads: int = Field(default=2, ge=1, le=64)
     beagle_max_memory: str | None = Field(default=None, pattern=r"^-Xmx\d+[mMgG]$")
     chromosome: str | None = None
-    map_path: str | None = None
     window: float | None = Field(default=None, gt=0)
     overlap: float | None = Field(default=None, gt=0)
 
@@ -63,7 +63,7 @@ class ImputationPipelineConfig(BaseModel):
     def infer_mode(cls, data: Any) -> Any:
         if isinstance(data, dict):
             if "mode" not in data:
-                if data.get("reference_vcf_path"):
+                if data.get("reference_panel_id"):
                     data["mode"] = "reference"
                 else:
                     data["mode"] = "none"
@@ -71,8 +71,8 @@ class ImputationPipelineConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_reference(self) -> "ImputationPipelineConfig":
-        if self.mode == "reference" and not self.reference_vcf_path:
-            raise ValueError("reference_vcf_path wajib diisi jika mode imputasi adalah 'reference'")
+        if self.mode == "reference" and not self.reference_panel_id:
+            raise ValueError("reference_panel_id wajib diisi jika mode imputasi adalah 'reference'")
         return self
 
 
@@ -89,7 +89,6 @@ class StructureConfig(BaseModel):
 
 
 class GWASPipelineConfig(BaseModel):
-    phenotype_path: str | None = Field(default=None)
     model: Literal["auto", "glm", "lmm", "lm", "farmcpu", "blink", "mlmm"] = "auto"
     n_pc_covariates: int = Field(default=3, ge=0, le=20)
     enable_multilocus: bool = False
