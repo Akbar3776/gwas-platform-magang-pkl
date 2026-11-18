@@ -54,13 +54,15 @@ def _build_engine():
             finally:
                 sock.close()
 
-    return create_engine(
-        db_url,
-        pool_pre_ping=True,
-        pool_size=10,
-        max_overflow=20,
-        future=True,
-    )
+    engine_kwargs: dict = {
+        "pool_pre_ping": True,
+        "pool_size": 10,
+        "max_overflow": 20,
+        "future": True,
+    }
+    if db_url.startswith("postgresql"):
+        engine_kwargs["connect_args"] = {"connect_timeout": 5}
+    return create_engine(db_url, **engine_kwargs)
 
 
 engine = _build_engine()

@@ -115,7 +115,7 @@ app.include_router(reference_panels.router, prefix=API_PREFIX, tags=["Reference 
 
 
 @app.get("/health", tags=["Health"])
-async def health_check():
+def health_check():
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
