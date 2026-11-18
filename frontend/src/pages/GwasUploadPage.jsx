@@ -13,6 +13,7 @@ const INITIAL_FORM = {
   // QC
   population_type: "inbred",
   maf: "0.05",
+  enable_geno: true,
   geno: "0.05",
   mind: "0.05",
   hwe: "0.000001",
@@ -47,11 +48,11 @@ const INITIAL_FORM = {
 
 function Field({ label, hint, children }) {
   return (
-    <label style={{ display: "grid", gap: 6, color: "#334155", fontSize: 13 }}>
+    <div style={{ display: "grid", gap: 6, color: "#334155", fontSize: 13 }}>
       <span style={{ fontWeight: 700 }}>{label}</span>
       {children}
       {hint && <span style={{ color: "#64748b", fontSize: 11 }}>{hint}</span>}
-    </label>
+    </div>
   );
 }
 
@@ -217,7 +218,7 @@ export function GwasUploadPage() {
         qc: {
           population_type: form.population_type,
           maf: Number(form.maf),
-          geno: Number(form.geno),
+          geno: form.enable_geno ? Number(form.geno) : null,
           mind: Number(form.mind),
           hwe: form.population_type === "outcross" ? Number(form.hwe) : null,
           snps_only: Boolean(form.snps_only),
@@ -475,7 +476,23 @@ export function GwasUploadPage() {
                     required
                   />
                 </Field>
-                <Field label="GENO" hint="Batas missingness varian SNP">
+                <Field
+                  label={
+                    <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+                      <span>GENO</span>
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer", fontWeight: 500, fontSize: 12, color: form.enable_geno ? "#1e293b" : "#64748b" }}>
+                        <input
+                          type="checkbox"
+                          name="enable_geno"
+                          checked={form.enable_geno}
+                          onChange={updateField}
+                        />
+                        <span>Aktifkan</span>
+                      </label>
+                    </span>
+                  }
+                  hint={form.enable_geno ? "Batas missingness varian SNP (default 0.05)" : "Filter missingness varian SNP dinonaktifkan (opsional)"}
+                >
                   <input
                     name="geno"
                     type="number"
@@ -484,8 +501,14 @@ export function GwasUploadPage() {
                     step="0.01"
                     value={form.geno}
                     onChange={updateField}
-                    style={inputStyle}
-                    required
+                    disabled={!form.enable_geno}
+                    style={{
+                      ...inputStyle,
+                      backgroundColor: form.enable_geno ? "#fff" : "#f1f5f9",
+                      color: form.enable_geno ? "#0f172a" : "#94a3b8",
+                      cursor: form.enable_geno ? "text" : "not-allowed",
+                    }}
+                    required={form.enable_geno}
                   />
                 </Field>
                 <Field label="MIND" hint="Batas missingness sampel individu">
