@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { GoEnrichmentPanel } from "./GoEnrichmentPanel";
 import { Pagination } from "./Pagination";
+import { toCsv } from "../utils/csv";
 
 export function CandidateGenesTable({ annotationData = null, goEnrichmentData = null, jobId = null }) {
   const [filterText, setFilterText] = useState("");
@@ -119,7 +120,7 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
         .map((g) => g.gene_id || g.id)
         .filter(Boolean)
         .join("; ");
-      const vals = [
+      return [
         r.snp || "",
         r.chr || "",
         r.pos ?? "",
@@ -129,12 +130,11 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
         gname,
         dist,
         r.strand || r.closest_gene?.strand || "-",
-        (r.description || r.closest_gene?.description || "").replace(/"/g, '""'),
+        r.description || r.closest_gene?.description || "",
         winIds,
       ];
-      return vals.map((v) => `"${v}"`).join(",");
     });
-    const csvContent = [headers.join(","), ...rowsCsv].join("\n");
+    const csvContent = toCsv(headers, rowsCsv);
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");

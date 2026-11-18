@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { Pagination } from "./Pagination";
+import { toCsv } from "../utils/csv";
 
 function formatP(val) {
   if (val === null || val === undefined || val === "") return "-";
@@ -164,24 +165,20 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
       "H&B.P.Value",
       "Phenotype_Variance_Explained(%)",
     ];
-    const csvLines = filteredPveRows.map((r) =>
-      [
-        r.trait || "Trait",
-        r.method || "",
-        r.snp || "",
-        r.chr ?? "",
-        r.pos ?? "",
-        r.p ?? "",
-        r.maf ?? "",
-        r.nobs ?? "",
-        r.effect ?? "",
-        r.h_b_p_value ?? "",
-        r.pve_pct ?? "",
-      ]
-        .map((v) => `"${v}"`)
-        .join(",")
-    );
-    const blob = new Blob([[headers.join(","), ...csvLines].join("\n")], {
+    const csvLines = filteredPveRows.map((r) => [
+      r.trait || "Trait",
+      r.method || "",
+      r.snp || "",
+      r.chr ?? "",
+      r.pos ?? "",
+      r.p ?? "",
+      r.maf ?? "",
+      r.nobs ?? "",
+      r.effect ?? "",
+      r.h_b_p_value ?? "",
+      r.pve_pct ?? "",
+    ]);
+    const blob = new Blob([toCsv(headers, csvLines)], {
       type: "text/csv;charset=utf-8",
     });
     const url = URL.createObjectURL(blob);
@@ -197,23 +194,19 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
   const handleDownloadPeakSummaryCsv = () => {
     if (!allRows.length) return;
     const headers = ["SNP", "Kromosom", "Posisi", "Metode", "P_Single", "P_Multi", "Effect", "PVE(%)", "Status", "Keterangan"];
-    const csvLines = allRows.map((r) =>
-      [
-        r.snp || "",
-        r.chr ?? "",
-        r.pos ?? "",
-        r.method || "-",
-        r.p_single ?? "NA",
-        r.p_multi ?? "NA",
-        r.effect ?? "",
-        r.pve_pct ?? "",
-        r.status || "",
-        (r.keterangan || "").replace(/"/g, '""'),
-      ]
-        .map((v) => `"${v}"`)
-        .join(",")
-    );
-    const blob = new Blob([[headers.join(","), ...csvLines].join("\n")], {
+    const csvLines = allRows.map((r) => [
+      r.snp || "",
+      r.chr ?? "",
+      r.pos ?? "",
+      r.method || "-",
+      r.p_single ?? "NA",
+      r.p_multi ?? "NA",
+      r.effect ?? "",
+      r.pve_pct ?? "",
+      r.status || "",
+      r.keterangan || "",
+    ]);
+    const blob = new Blob([toCsv(headers, csvLines)], {
       type: "text/csv;charset=utf-8",
     });
     const url = URL.createObjectURL(blob);
