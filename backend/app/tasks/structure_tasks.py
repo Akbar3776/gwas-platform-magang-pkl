@@ -25,6 +25,7 @@ from app.tasks._common import (
     JobCancelledError,
     append_log,
     ensure_not_cancelled,
+    guard_status_change,
     mark_job,
     stage_dir,
     upsert_result,
@@ -215,6 +216,7 @@ def run_structure_analysis(
             "recommended_model": rec_data["recommended_model"],
             "model_used": rec_data["model_used"],
         }
+        guard_status_change(db, job.id, JobStatus.RUNNING_GWAS)
         job.overall_status = JobStatus.RUNNING_GWAS
         job.current_step = PipelineStep.GWAS
         db.commit()

@@ -56,7 +56,10 @@ def ensure_not_cancelled(job_id: str, db: Any = None) -> None:
             target_id = uuid.UUID(str(job_id))
         except (ValueError, TypeError):
             target_id = job_id
-        job = db.get(AnalysisJob, target_id)
+        try:
+            job = db.get(AnalysisJob, target_id, populate_existing=True)
+        except TypeError:
+            job = db.get(AnalysisJob, target_id)
         if job is None:
             return
         status_val = job.overall_status.value if hasattr(job.overall_status, "value") else str(job.overall_status)
@@ -65,6 +68,34 @@ def ensure_not_cancelled(job_id: str, db: Any = None) -> None:
     finally:
         if close_db:
             db.close()
+
+
+def current_status(db: Any, job_id: Any) -> JobStatus | None:
+    try:
+        target_id = uuid.UUID(str(job_id))
+    except (ValueError, TypeError):
+        return None
+    q = db.query(AnalysisJob.overall_status).filter(AnalysisJob.id == target_id)
+    if hasattr(q, "with_for_update") and hasattr(q, "scalar"):
+        return q.with_for_update().scalar()
+    job = db.get(AnalysisJob, str(job_id))
+    return getattr(job, "overall_status", None) if job is not None else None
+
+
+def guard_status_change(db: Any, job_id: Any, new_status: JobStatus | None) -> bool:
+    """
+    Kembalikan True jika status boleh ditulis.
+    - Job sudah CANCELLED + new_status FAILED/CANCELLED -> False (biarkan CANCELLED, jangan raise)
+    - Job sudah CANCELLED + new_status lain (RUNNING_*, COMPLETED, ...) -> raise JobCancelledError
+    - Selain itu -> True
+    """
+    if new_status is None:
+        return True
+    if current_status(db, job_id) != JobStatus.CANCELLED:
+        return True
+    if new_status in {JobStatus.FAILED, JobStatus.CANCELLED}:
+        return False
+    raise JobCancelledError(f"Job {job_id} telah dibatalkan oleh pengguna.")
 
 
 def mark_job(
@@ -114,7 +145,7 @@ def mark_job(
 
     try:
         new_status = overall_status or status
-        if new_status is not None:
+        if new_status is not None and guard_status_change(db, job.id, new_status):
             job.overall_status = new_status
         if current_step is not None:
             job.current_step = current_step
@@ -131,6 +162,9 @@ def mark_job(
             if hasattr(job, k):
                 setattr(job, k, v)
         db.commit()
+    except JobCancelledError:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
         logger.warning("Gagal memperbarui job: %s", exc)

@@ -7,12 +7,13 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import uuid
 
 from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep
 from app.services.qc_service import MAX_32BIT_POS, filter_vcf_32bit_overflow
-from app.tasks._common import which_tool
+from app.tasks._common import JobCancelledError, ensure_not_cancelled, guard_status_change, which_tool
 from app.tasks.celery_app import celery_app, get_task_logger
 from app.utils.process import CLIExecutionError, run_cli_command
 
@@ -23,10 +24,14 @@ NORMALIZATION_TIMEOUT_SECONDS = int(os.getenv("NORMALIZATION_TIMEOUT_SECONDS", s
 def _mark_job(job_id: str, *, status: JobStatus | None = None, error: str | None = None, **fields: Any) -> None:
     db = SessionLocal()
     try:
-        job = db.get(AnalysisJob, job_id)
+        try:
+            target_id = uuid.UUID(str(job_id))
+        except (ValueError, TypeError):
+            target_id = job_id
+        job = db.get(AnalysisJob, target_id)
         if job is None:
             return
-        if status is not None:
+        if status is not None and guard_status_change(db, job.id, status):
             job.overall_status = status
         if error is not None:
             job.error_message = error
@@ -34,6 +39,9 @@ def _mark_job(job_id: str, *, status: JobStatus | None = None, error: str | None
         for key, value in fields.items():
             setattr(job, key, value)
         db.commit()
+    except JobCancelledError:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -114,6 +122,7 @@ def run_vcf_normalization(
     try:
         db = SessionLocal()
         try:
+            ensure_not_cancelled(job_id, db)
             job = db.get(AnalysisJob, job_id)
             dataset = db.get(Dataset, dataset_id)
             if job is None:
@@ -129,6 +138,7 @@ def run_vcf_normalization(
             workspace = Path(settings.STORAGE_ROOT) / "jobs" / str(job.id) / "normalization"
             output_path = workspace / "normalized.vcf.gz"
             log_path = workspace / "bcftools.log"
+            guard_status_change(db, job.id, JobStatus.RUNNING_NORMALIZATION)
             job.overall_status = JobStatus.RUNNING_NORMALIZATION
             job.current_step = PipelineStep.NORMALIZATION
             if job.started_at is None:
@@ -259,6 +269,9 @@ def run_vcf_normalization(
             "qc_overflow_stats": overflow_stats,
             "log_file": str(log_path),
         }
+    except JobCancelledError:
+        logger.info("Normalisasi VCF dibatalkan: job=%s", job_id)
+        raise
     except Exception as exc:
         message = _friendly_error(exc)
         _mark_job(job_id, status=JobStatus.FAILED, failed_step="normalization", error=message)

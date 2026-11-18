@@ -24,6 +24,7 @@ from app.tasks._common import (
     JobCancelledError,
     append_log,
     ensure_not_cancelled,
+    guard_status_change,
     mark_job,
     stage_dir,
     upsert_result,
@@ -48,7 +49,8 @@ def _error_text(exc: Exception) -> str:
 
 def _set_failed(job: AnalysisJob, exc: Exception, db) -> None:
     message = _error_text(exc)
-    job.overall_status = JobStatus.FAILED
+    if guard_status_change(db, job.id, JobStatus.FAILED):
+        job.overall_status = JobStatus.FAILED
     job.failed_step = "qc"
     job.error_message = message
     job.error_log = message
@@ -314,9 +316,11 @@ def run_qc_pipeline(
         }
 
         if job.pipeline_type == "qc_only":
+            guard_status_change(db, job.id, JobStatus.COMPLETED)
             job.overall_status = JobStatus.COMPLETED
             job.completed_at = datetime.now(timezone.utc)
         else:
+            guard_status_change(db, job.id, JobStatus.RUNNING_IMPUTATION)
             job.overall_status = JobStatus.RUNNING_IMPUTATION
             job.current_step = PipelineStep.IMPUTATION
         db.commit()

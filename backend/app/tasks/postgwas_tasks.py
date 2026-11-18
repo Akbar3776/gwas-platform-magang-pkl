@@ -23,6 +23,7 @@ from app.tasks._common import (
     JobCancelledError,
     append_log,
     ensure_not_cancelled,
+    guard_status_change,
     mark_job,
     stage_dir,
     upsert_result,
@@ -365,6 +366,7 @@ def run_postgwas_analysis(
             "thresholds": thresholds,
             "n_lead_snps": len(lead_snps),
         }
+        guard_status_change(db, job.id, JobStatus.RUNNING_PARSING)
         job.overall_status = JobStatus.RUNNING_PARSING
         job.current_step = PipelineStep.VISUALIZATION
         db.commit()

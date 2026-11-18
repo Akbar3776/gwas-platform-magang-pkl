@@ -14,6 +14,7 @@ from app.tasks._common import (
     JobCancelledError,
     append_log,
     ensure_not_cancelled,
+    guard_status_change,
     mark_job,
     stage_dir,
     upsert_result,
@@ -125,6 +126,7 @@ def run_visualization(
             "manhattan_cache_path": str(manhattan_cache_path),
             "summary_stats": full_summary,
         }
+        guard_status_change(db, job.id, JobStatus.RUNNING_ANNOTATION)
         job.overall_status = JobStatus.RUNNING_ANNOTATION
         job.current_step = PipelineStep.ANNOTATION
         db.commit()

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 from typing import Any
+import uuid
 
 import numpy as np
 
@@ -16,7 +17,7 @@ from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, Result, ResultType
 from app.services.manhattan_parser import compute_assoc_summary_stats, generate_manhattan_cache
-from app.tasks._common import which_tool
+from app.tasks._common import JobCancelledError, ensure_not_cancelled, guard_status_change, which_tool
 from app.tasks.celery_app import celery_app, get_task_logger
 from app.utils.process import CLIExecutionError, SubprocessFailed, run_cli_command
 
@@ -36,10 +37,14 @@ def _append_log(log_file: Path, message: str) -> None:
 def _mark_job(job_id: str, *, status: JobStatus | None = None, error: str | None = None, **fields: Any) -> None:
     db = SessionLocal()
     try:
-        job = db.get(AnalysisJob, job_id)
+        try:
+            target_id = uuid.UUID(str(job_id))
+        except (ValueError, TypeError):
+            target_id = job_id
+        job = db.get(AnalysisJob, target_id)
         if job is None:
             return
-        if status is not None:
+        if status is not None and guard_status_change(db, job.id, status):
             job.overall_status = status
         if error is not None:
             job.error_message = error
@@ -47,6 +52,9 @@ def _mark_job(job_id: str, *, status: JobStatus | None = None, error: str | None
         for key, value in fields.items():
             setattr(job, key, value)
         db.commit()
+    except JobCancelledError:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -542,6 +550,11 @@ def run_gemma_gwas(
 ) -> dict[str, str]:
     """Run GEMMA kinship and association analysis for an imputed dataset."""
     try:
+        check_db = SessionLocal()
+        try:
+            ensure_not_cancelled(job_id, check_db)
+        finally:
+            check_db.close()
         params = params or {}
         genotype_path = imputation_result.get("output_vcf") or imputation_result.get("genotype_vcf_path")
         if not genotype_path:
@@ -740,6 +753,7 @@ def run_gemma_gwas(
         try:
             job = db.get(AnalysisJob, job_id)
             if job is not None:
+                guard_status_change(db, job.id, JobStatus.RUNNING_MULTILOCUS)
                 job.overall_status = JobStatus.RUNNING_MULTILOCUS
                 job.current_step = PipelineStep.MULTILOCUS
                 job.assoc_output_path = str(assoc_path)
@@ -778,6 +792,9 @@ def run_gemma_gwas(
             "normalized_assoc_path": str(norm_path),
             "log_file": str(log_file),
         }
+    except JobCancelledError:
+        logger.info("GEMMA GWAS dibatalkan: job=%s", job_id)
+        raise
     except Exception as exc:
         message = str(exc)
         if isinstance(exc, CLIExecutionError):

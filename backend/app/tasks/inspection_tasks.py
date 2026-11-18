@@ -20,6 +20,7 @@ from app.tasks._common import (
     JobCancelledError,
     append_log,
     ensure_not_cancelled,
+    guard_status_change,
     mark_job,
     stage_dir,
     upsert_result,
@@ -173,6 +174,7 @@ def run_inspection(
             file_path=str(report_json_file),
             summary_stats=report,
         )
+        guard_status_change(db, job.id, JobStatus.RUNNING_NORMALIZATION)
         job.overall_status = JobStatus.RUNNING_NORMALIZATION
         job.current_step = PipelineStep.NORMALIZATION
         db.commit()
