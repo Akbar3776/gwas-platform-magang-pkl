@@ -104,6 +104,7 @@ _PREVIEWABLE_SUFFIXES = (
 
 
 _LOG_TAIL_BYTES = 65536
+_FILE_COUNT_CACHE: dict[tuple[str, str], int] = {}
 
 
 def _read_log_tail(candidates: list[Path], max_lines: int = 2000) -> tuple[str, int]:
@@ -430,19 +431,22 @@ def list_user_jobs(
     jobs_list = query.order_by(AnalysisJob.created_at.desc()).limit(50).all()
 
     items = []
-    dirty_params = False
     for job in jobs_list:
         dataset = db.get(Dataset, job.dataset_id)
         params = job.parameters if isinstance(job.parameters, dict) else {}
         last_log_line = params.get("last_log_line")
         is_terminal = job.overall_status in TERMINAL_JOB_STATUSES
-        if is_terminal and params.get("file_count") is not None:
-            file_count = int(params["file_count"])
+        if is_terminal and job.completed_at is not None:
+            cache_key = (str(job.id), job.completed_at.isoformat())
+            if cache_key in _FILE_COUNT_CACHE:
+                file_count = _FILE_COUNT_CACHE[cache_key]
+            else:
+                file_count = _count_job_files(job, dataset)
+                if len(_FILE_COUNT_CACHE) > 5000:
+                    _FILE_COUNT_CACHE.clear()
+                _FILE_COUNT_CACHE[cache_key] = file_count
         else:
             file_count = _count_job_files(job, dataset)
-            if is_terminal:
-                job.parameters = {**params, "file_count": file_count}
-                dirty_params = True
         overall_val = job.overall_status.value if hasattr(job.overall_status, "value") else str(job.overall_status)
         step_val = job.current_step.value if hasattr(job.current_step, "value") else str(job.current_step)
         items.append(
@@ -461,8 +465,6 @@ def list_user_jobs(
                 "completed_at": job.completed_at.isoformat() if job.completed_at else None,
             }
         )
-    if dirty_params:
-        db.commit()
     return items
 
 

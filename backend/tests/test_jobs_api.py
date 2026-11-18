@@ -342,7 +342,37 @@ def test_read_log_tail_reads_only_last_64kb_of_large_file(tmp_path):
     assert len(tail.splitlines()) <= 2000
 
 
+class _JobListQuery:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def limit(self, n):
+        return self
+
+    def all(self):
+        return list(self.rows)
+
+
+class _JobListSession(FakeSession):
+    def __init__(self, ds, j):
+        super().__init__(ds, job=j)
+        self.commits = 0
+
+    def query(self, model):
+        return _JobListQuery([self.job] if model is AnalysisJob else [])
+
+    def commit(self):
+        self.commits += 1
+
+
 def test_list_user_jobs_skips_full_log_scan_and_caches_terminal_file_count(tmp_path, monkeypatch):
+    jobs._FILE_COUNT_CACHE.clear()
     monkeypatch.setattr(jobs.settings, "STORAGE_ROOT", str(tmp_path))
     user = User(
         id=uuid.uuid4(),
@@ -368,53 +398,111 @@ def test_list_user_jobs_skips_full_log_scan_and_caches_terminal_file_count(tmp_p
         overall_status=JobStatus.COMPLETED,
         current_step=PipelineStep.ANNOTATION,
         parameters={"last_log_line": "Done annotation"},
+        completed_at=datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc),
     )
     stage_folder = tmp_path / "jobs" / str(job.id) / "qc"
     stage_folder.mkdir(parents=True)
     (stage_folder / "plink_qc.log").write_text("ok", encoding="utf-8")
 
-    class _ListQuery:
-        def __init__(self, rows):
-            self.rows = rows
-
-        def filter(self, *args, **kwargs):
-            return self
-
-        def order_by(self, *args, **kwargs):
-            return self
-
-        def limit(self, n):
-            return self
-
-        def all(self):
-            return list(self.rows)
-
-    class _ListSession(FakeSession):
-        def __init__(self, ds, j):
-            super().__init__(ds, job=j)
-            self.commits = 0
-
-        def query(self, model):
-            return _ListQuery([self.job] if model is AnalysisJob else [])
-
-        def commit(self):
-            self.commits += 1
-
-    db = _ListSession(dataset, job)
+    db = _JobListSession(dataset, job)
+    orig_count = jobs._count_job_files
+    count_calls = []
+    monkeypatch.setattr(
+        jobs,
+        "_count_job_files",
+        lambda j, ds=None: (count_calls.append(1), orig_count(j, ds))[1],
+    )
     monkeypatch.setattr(jobs, "_discover_job_files", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not scan")))
     monkeypatch.setattr(jobs, "_collect_step_logs", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not collect logs")))
 
     first = jobs.list_user_jobs(db=db, user=user)
     assert first[0]["last_log_line"] == "Done annotation"
     assert first[0]["file_count"] == 2
-    assert job.parameters["file_count"] == 2
-    assert db.commits == 1
+    assert "file_count" not in (job.parameters or {})
+    assert db.commits == 0
+    assert len(count_calls) == 1
 
-    # Next call should reuse cached file_count without re-walking disk or re-committing
+    # Next call should reuse in-memory cache without re-walking disk or writing to DB
     (stage_folder / "extra_after.log").write_text("extra", encoding="utf-8")
     second = jobs.list_user_jobs(db=db, user=user)
     assert second[0]["file_count"] == 2
-    assert db.commits == 1
+    assert db.commits == 0
+    assert len(count_calls) == 1
+
+
+def test_list_user_jobs_recomputes_when_completed_at_changes_and_ignores_stale_param(tmp_path, monkeypatch):
+    jobs._FILE_COUNT_CACHE.clear()
+    monkeypatch.setattr(jobs.settings, "STORAGE_ROOT", str(tmp_path))
+    user = User(
+        id=uuid.uuid4(),
+        email="researcher@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path=str(tmp_path / "missing.vcf.gz"),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    completed_a = datetime(2026, 11, 18, 10, 0, tzinfo=timezone.utc)
+    completed_b = datetime(2026, 11, 18, 11, 0, tzinfo=timezone.utc)
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.COMPLETED,
+        current_step=PipelineStep.ANNOTATION,
+        parameters={"file_count": 999},
+        completed_at=completed_a,
+    )
+    stage_folder = tmp_path / "jobs" / str(job.id) / "qc"
+    stage_folder.mkdir(parents=True)
+    (stage_folder / "one.log").write_text("1", encoding="utf-8")
+
+    db = _JobListSession(dataset, job)
+    orig_count = jobs._count_job_files
+    count_calls = []
+    monkeypatch.setattr(
+        jobs,
+        "_count_job_files",
+        lambda j, ds=None: (count_calls.append(1), orig_count(j, ds))[1],
+    )
+
+    res_a1 = jobs.list_user_jobs(db=db, user=user)
+    assert res_a1[0]["file_count"] == 1
+    assert len(count_calls) == 1
+    assert job.parameters == {"file_count": 999}
+    assert db.commits == 0
+
+    res_a2 = jobs.list_user_jobs(db=db, user=user)
+    assert res_a2[0]["file_count"] == 1
+    assert len(count_calls) == 1
+
+    # New completion timestamp (e.g. after retry) must recompute _count_job_files
+    (stage_folder / "two.log").write_text("2", encoding="utf-8")
+    job.completed_at = completed_b
+    res_b = jobs.list_user_jobs(db=db, user=user)
+    assert res_b[0]["file_count"] == 2
+    assert len(count_calls) == 2
+
+    # Terminal job with completed_at=None must not read/write cache
+    job.completed_at = None
+    (stage_folder / "three.log").write_text("3", encoding="utf-8")
+    res_none = jobs.list_user_jobs(db=db, user=user)
+    assert res_none[0]["file_count"] == 3
+    assert len(count_calls) == 3
+
+    # Cache clears before insert when exceeding 5000 entries
+    job.completed_at = completed_a
+    jobs._FILE_COUNT_CACHE.clear()
+    for i in range(5001):
+        jobs._FILE_COUNT_CACHE[(f"dummy-{i}", "2026-01-01T00:00:00+00:00")] = i
+    jobs.list_user_jobs(db=db, user=user)
+    assert len(jobs._FILE_COUNT_CACHE) == 1
 
 
 def test_get_job_file_content_requires_exact_file_key(tmp_path, monkeypatch):
