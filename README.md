@@ -67,7 +67,7 @@ Platform bioinformatika berbasis web (*full-stack*) untuk mengotomatisasi analis
 
 ### Opsi B: Menjalankan Lokal Tanpa Docker (Mode Pengembangan Cepat)
 
-Backend mendukung **SQLite fallback otomatis** dan perutean engine lokal sehingga Anda dapat menjalankan backend dan frontend tanpa perlu memasang PostgreSQL dan Redis.
+Backend dapat dijalankan dengan **SQLite lokal** tanpa perlu memasang PostgreSQL dan Redis (mode pengembangan; di produksi fallback dimatikan secara bawaan).
 
 1. **Setup & Jalankan Backend**:
    ```powershell
@@ -76,7 +76,11 @@ Backend mendukung **SQLite fallback otomatis** dan perutean engine lokal sehingg
    python -m venv venv
    .\venv\Scripts\Activate.ps1    # Linux/macOS: source venv/bin/activate
    pip install -r requirements.txt
-   
+
+   # Buat backend/.env dan aktifkan SQLite lokal (atau setel DATABASE_URL=sqlite:///./data/gwas.db)
+   Copy-Item .env.example .env
+   Add-Content .env "`nALLOW_SQLITE_FALLBACK=true"
+
    # Jalankan API server FastAPI
    uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
    ```

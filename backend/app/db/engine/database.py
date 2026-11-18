@@ -12,6 +12,7 @@ Catatan desain:
 from collections.abc import Generator
 from contextlib import contextmanager
 import logging
+import os
 from pathlib import Path
 import socket
 from urllib.parse import urlparse
@@ -27,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 def _build_engine():
     db_url = settings.DATABASE_URL
-    if db_url.startswith("postgresql"):
+    allow_sqlite_fallback = os.getenv("ALLOW_SQLITE_FALLBACK", "false").lower() == "true"
+    if db_url.startswith("postgresql") and allow_sqlite_fallback:
         parsed = urlparse(db_url)
         host = parsed.hostname or "localhost"
         port = parsed.port or 5432
@@ -36,7 +38,6 @@ def _build_engine():
             sock.settimeout(0.3)
             try:
                 sock.connect((host, port))
-                sock.close()
             except OSError:
                 sqlite_path = (Path(__file__).resolve().parents[3] / "gwas_local.db").as_posix()
                 logger.warning(
@@ -50,6 +51,8 @@ def _build_engine():
                     connect_args={"check_same_thread": False},
                     future=True,
                 )
+            finally:
+                sock.close()
 
     return create_engine(
         db_url,

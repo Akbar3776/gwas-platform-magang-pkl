@@ -6,6 +6,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Pastikan pytest di host/CI tanpa Postgres tetap memakai SQLite fallback kecuali test meng-override.
+os.environ.setdefault("ALLOW_SQLITE_FALLBACK", "true")
+
 BACKEND_ROOT = str(Path(__file__).resolve().parent.parent)
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)

@@ -3,6 +3,8 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from app.api.routes import (
     auth,
@@ -114,4 +116,10 @@ app.include_router(reference_panels.router, prefix=API_PREFIX, tags=["Reference 
 
 @app.get("/health", tags=["Health"])
 async def health_check():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.warning("Healthcheck database gagal: %s", exc)
+        return JSONResponse(status_code=503, content={"status": "db_unavailable"})
     return {"status": "ok"}
