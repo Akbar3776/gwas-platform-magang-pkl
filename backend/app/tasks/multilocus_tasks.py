@@ -211,7 +211,7 @@ def _run_python_multilocus_engine(
     """
     from scipy.special import erfc
     from app.services.structure_service import compute_centered_kinship, read_plink_binary
-    from app.tasks.gemma_tasks import _parse_vcf_genotypes, _prepare_phenotype_vector
+    from app.tasks.gemma_tasks import _chr_label, _parse_vcf_genotypes, _prepare_phenotype_vector
 
     append_log(log_file, "[INFO] Menginisialisasi Python Native Engine untuk Multi-Locus GWAS...")
 
@@ -224,13 +224,12 @@ def _run_python_multilocus_engine(
     if Path(f"{candidate_bfile}.bed").is_file():
         try:
             samples, plink_vars, G_mat = read_plink_binary(str(candidate_bfile))
-            for idx, pv in enumerate(plink_vars):
-                raw_chr = str(pv["chrom"]).lstrip("chrCHR")
-                chr_num = int(raw_chr) if raw_chr.isdigit() and 1 <= int(raw_chr) <= 26 else ((idx % 22) + 1)
+            for pv in plink_vars:
+                chr_label = _chr_label(pv["chrom"])
                 variants_meta.append(
                     {
-                        "chr": chr_num,
-                        "rs": pv["rsid"] if pv["rsid"] and pv["rsid"] != "." else f"chr{chr_num}:{pv['pos']}",
+                        "chr": chr_label,
+                        "rs": pv["rsid"] if pv["rsid"] and pv["rsid"] != "." else f"{chr_label}:{pv['pos']}",
                         "ps": int(pv["pos"]),
                         "alt": pv["a1"],
                         "ref": pv["a2"],

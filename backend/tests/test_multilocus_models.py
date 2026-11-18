@@ -258,3 +258,48 @@ def test_run_gapit_models_propagates_cli_cancelled_error(tmp_path, monkeypatch):
             log_file=log_file,
             cancel_check=lambda: True,
         )
+
+
+def test_python_multilocus_engine_plink_preserves_non_numeric_chr_labels(tmp_path, monkeypatch):
+    import csv
+
+    job_dir = tmp_path / "jobs" / "ml_chr_job"
+    multilocus_dir = job_dir / "multilocus"
+    qc_dir = job_dir / "qc"
+    inspect_dir = job_dir / "inspection"
+    multilocus_dir.mkdir(parents=True)
+    qc_dir.mkdir(parents=True)
+    inspect_dir.mkdir(parents=True)
+    (qc_dir / "plink_qc.bed").write_bytes(b"")
+    log_file = multilocus_dir / "multilocus.log"
+
+    (inspect_dir / "pheno_plink.txt").write_text(
+        "FID\tIID\tTRAIT\nS1\tS1\t10.0\nS2\tS2\t12.0\nS3\tS3\t14.0\nS4\tS4\t16.0\n",
+        encoding="utf-8",
+    )
+    samples = ["S1", "S2", "S3", "S4"]
+    variants = [
+        {"chrom": "Gm01", "rsid": ".", "pos": 1000, "a1": "A", "a2": "G"},
+        {"chrom": "Gm07", "rsid": "rs_g7", "pos": 2000, "a1": "C", "a2": "T"},
+    ]
+    g_mat = np.array([[0, 1], [1, 0], [2, 1], [0, 2]], dtype=np.int8)
+    monkeypatch.setattr(
+        "app.services.structure_service.read_plink_binary",
+        lambda prefix: (samples, variants, g_mat),
+    )
+
+    _run_python_multilocus_engine(
+        job_id="ml_chr_job",
+        dataset_id="ds_chr",
+        methods=["FarmCPU"],
+        workspace=multilocus_dir,
+        log_file=log_file,
+        ctx={},
+    )
+
+    tsv_file = multilocus_dir / "farmcpu_results.tsv"
+    assert tsv_file.is_file()
+    with tsv_file.open("r", encoding="utf-8") as tf:
+        rows = list(csv.DictReader(tf, delimiter="\t"))
+    assert [r["chr"] for r in rows] == ["Gm01", "Gm07"]
+    assert rows[0]["rs"] == "Gm01:1000"

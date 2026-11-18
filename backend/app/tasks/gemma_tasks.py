@@ -7,6 +7,7 @@ import gzip
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 from typing import Any, Callable
 
@@ -63,6 +64,12 @@ def _upsert_result(
             existing.summary_stats = summary_stats
 
 
+def _chr_label(raw: str) -> str:
+    """Label kromosom apa adanya, hanya prefix 'chr' (case-insensitive) yang dibuang."""
+    label = re.sub(r"^chr", "", str(raw).strip(), flags=re.IGNORECASE)
+    return label or "0"
+
+
 def _parse_vcf_genotypes(vcf_path: Path) -> tuple[list[str], list[dict[str, Any]]]:
     """Parse sample IDs and biallelic genotype dosage rows from a .vcf or .vcf.gz file."""
     samples: list[str] = []
@@ -85,10 +92,9 @@ def _parse_vcf_genotypes(vcf_path: Path) -> tuple[list[str], list[dict[str, Any]
             parts = line.split("\t")
             if len(parts) < 5:
                 continue
-            raw_chr = parts[0].lstrip("chrCHR")
-            chr_num = int(raw_chr) if raw_chr.isdigit() and 1 <= int(raw_chr) <= 26 else ((idx % 22) + 1)
+            chr_label = _chr_label(parts[0])
             pos = int(parts[1]) if parts[1].isdigit() else (idx + 1) * 1000
-            rsid = parts[2] if parts[2] and parts[2] != "." else f"chr{chr_num}:{pos}"
+            rsid = parts[2] if parts[2] and parts[2] != "." else f"{chr_label}:{pos}"
             ref = parts[3]
             alt = parts[4].split(",")[0]
 
@@ -108,7 +114,7 @@ def _parse_vcf_genotypes(vcf_path: Path) -> tuple[list[str], list[dict[str, Any]
 
             variants.append(
                 {
-                    "chr": chr_num,
+                    "chr": chr_label,
                     "rs": rsid,
                     "ps": pos,
                     "ref": ref,
@@ -287,13 +293,12 @@ def _run_statistical_gwas_fallback(
     if candidate_bfile and Path(f"{candidate_bfile}.bed").is_file():
         try:
             samples, plink_vars, G_mat = read_plink_binary(candidate_bfile)
-            for idx, pv in enumerate(plink_vars):
-                raw_chr = str(pv["chrom"]).lstrip("chrCHR")
-                chr_num = int(raw_chr) if raw_chr.isdigit() and 1 <= int(raw_chr) <= 26 else ((idx % 22) + 1)
+            for pv in plink_vars:
+                chr_label = _chr_label(pv["chrom"])
                 variants_meta.append(
                     {
-                        "chr": chr_num,
-                        "rs": pv["rsid"] if pv["rsid"] and pv["rsid"] != "." else f"chr{chr_num}:{pv['pos']}",
+                        "chr": chr_label,
+                        "rs": pv["rsid"] if pv["rsid"] and pv["rsid"] != "." else f"{chr_label}:{pv['pos']}",
                         "ps": int(pv["pos"]),
                         "alt": pv["a1"],
                         "ref": pv["a2"],
