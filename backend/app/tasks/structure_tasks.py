@@ -92,8 +92,15 @@ def run_structure_analysis(
         raw_struct = (job.parameters or {}).get("structure") or structure_params or {}
         cfg = StructureConfig(**raw_struct) if isinstance(raw_struct, dict) else raw_struct
 
+        raw_gwas = (job.parameters or {}).get("gwas") or {}
+        raw_n_pc_cov = raw_gwas.get("n_pc_covariates") if isinstance(raw_gwas, dict) else None
+        if raw_n_pc_cov is None and isinstance(structure_params, dict):
+            raw_n_pc_cov = structure_params.get("n_pc_covariates")
+        requested_cov_pcs = max(0, int(raw_n_pc_cov)) if raw_n_pc_cov is not None else None
+        pca_n_pcs = max(cfg.n_pcs, requested_cov_pcs) if requested_cov_pcs is not None else cfg.n_pcs
+
         pop_type = (job.parameters or {}).get("qc", {}).get("population_type", "inbred")
-        requested_model = (job.parameters or {}).get("gwas", {}).get("model", "auto")
+        requested_model = raw_gwas.get("model", "auto") if isinstance(raw_gwas, dict) else "auto"
 
         mark_job(
             db,
@@ -182,7 +189,7 @@ def run_structure_analysis(
 
         # 2. PCA Decomposition
         append_log(log_file, "Menjalankan Principal Component Analysis (PCA)...")
-        pca_data = run_pca_decomposition(G, samples, n_pcs=cfg.n_pcs)
+        pca_data = run_pca_decomposition(G, samples, n_pcs=pca_n_pcs)
         pca_file = workspace / "pca.json"
         write_json(pca_file, pca_data)
 
@@ -250,7 +257,20 @@ def run_structure_analysis(
 
         # 7. Siapkan file kovariat PC untuk tahap GWAS
         # File kovariat format GEMMA: Kolom 1 = Intercept (1), Kolom 2..k+1 = PC1..PCk
-        n_cov_pcs = min(cfg.n_pcs, rec_data.get("recommended_pc_covariates", 3), max(0, n_samples - 4))
+        available_pcs = len(pca_data["samples"][0]["pcs"]) if pca_data["samples"] else pca_n_pcs
+        rec_cov_pcs = int(rec_data.get("recommended_pc_covariates", 3))
+        target_cov_pcs = requested_cov_pcs if requested_cov_pcs is not None else rec_cov_pcs
+        n_cov_pcs = max(0, min(target_cov_pcs, available_pcs, max(0, n_samples - 4)))
+        if requested_cov_pcs is not None and n_cov_pcs < requested_cov_pcs:
+            append_log(
+                log_file,
+                f"[WARNING] n_pc_covariates={requested_cov_pcs} dibatasi menjadi {n_cov_pcs} "
+                f"(batas derajat kebebasan n={n_samples} atau PC tersedia={available_pcs}).",
+            )
+        append_log(
+            log_file,
+            f"Menyiapkan file kovariat ({n_cov_pcs} PC; diminta={requested_cov_pcs}, rekomendasi={rec_cov_pcs}).",
+        )
         gemma_cov_file = workspace / "covariates.txt"
         with gemma_cov_file.open("w", encoding="utf-8", newline="\n") as f_cov:
             for s in pca_data["samples"]:

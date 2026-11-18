@@ -282,3 +282,116 @@ def test_structure_matrices_use_float32(monkeypatch, toy_bfile):
     monkeypatch.setattr(scipy.linalg, "svd", spying_svd)
     run_pca_decomposition(G, samples, n_pcs=3)
     assert seen_dtypes and all(dt == np.float32 for dt in seen_dtypes)
+
+
+def test_run_structure_analysis_respects_user_n_pc_covariates(tmp_path, monkeypatch, toy_bfile):
+    import uuid
+    from app.db.engine.models import AnalysisJob
+    from app.tasks import structure_tasks
+    from app.utils.process import CLIExecutionResult
+
+    Session, job_id, ds_id, storage_root = _seed_structure_job(tmp_path, monkeypatch, toy_bfile)
+
+    db = Session()
+    try:
+        job = db.get(AnalysisJob, uuid.UUID(job_id))
+        job.parameters = {
+            "qc": {"population_type": "inbred"},
+            "gwas": {"model": "lmm", "n_pc_covariates": 3},
+            "structure": {"n_pcs": 10},
+        }
+        db.commit()
+    finally:
+        db.close()
+
+    def fake_run_cli(cmd, **kwargs):
+        out_prefix = Path(cmd[cmd.index("--out") + 1])
+        out_prefix.parent.mkdir(parents=True, exist_ok=True)
+        if "--indep-pairwise" in cmd:
+            Path(f"{out_prefix}.prune.in").write_text("snp1\nsnp2\n", encoding="utf-8")
+        elif "--make-bed" in cmd:
+            for ext in (".bed", ".bim", ".fam"):
+                Path(f"{out_prefix}{ext}").write_bytes(b"stub")
+        return CLIExecutionResult(command=tuple(cmd), returncode=0, log_file=Path(kwargs["log_file"]))
+
+    def fake_read_plink(prefix):
+        rng = np.random.default_rng(42)
+        samples = [f"S{i}" for i in range(10)]
+        variants = [
+            {"chrom": "1", "rsid": f"snp{i}", "pos": 100 * (i + 1), "a1": "A", "a2": "G"}
+            for i in range(12)
+        ]
+        G = rng.integers(0, 3, size=(10, 12), dtype=np.int8)
+        return samples, variants, G
+
+    monkeypatch.setattr(structure_tasks, "which_tool", lambda name: "/usr/local/bin/plink", raising=False)
+    monkeypatch.setattr(structure_tasks, "run_cli_command", fake_run_cli, raising=False)
+    monkeypatch.setattr(structure_tasks, "read_plink_binary", fake_read_plink)
+    monkeypatch.setattr(
+        structure_tasks,
+        "determine_model_recommendation",
+        lambda **kwargs: {
+            "recommended_model": "lmm",
+            "model_used": "lmm",
+            "recommended_pc_covariates": 1,
+            "structure_detected": False,
+            "kinship_detected": True,
+            "pca_finding": "ok",
+            "kinship_finding": "ok",
+            "rationale": [],
+        },
+    )
+
+    out = structure_tasks.run_structure_analysis(
+        {"genotype_bfile_prefix": str(toy_bfile)},
+        job_id=job_id,
+        dataset_id=ds_id,
+    )
+
+    gemma_cov_lines = Path(out["gemma_covariates_path"]).read_text(encoding="utf-8").splitlines()
+    assert len(gemma_cov_lines) == 10
+    # 1 intercept + 3 PC columns = 4 columns
+    assert all(len(line.split("\t")) == 4 for line in gemma_cov_lines)
+    assert all(line.startswith("1\t") for line in gemma_cov_lines)
+
+    plink_cov_lines = Path(out["plink_covariates_path"]).read_text(encoding="utf-8").splitlines()
+    assert plink_cov_lines[0].split("\t") == ["#FID", "IID", "PC1", "PC2", "PC3"]
+    assert len(plink_cov_lines) == 11
+    assert all(len(line.split("\t")) == 5 for line in plink_cov_lines[1:])
+
+    # Explicit 0 overrides non-zero recommendation (e.g. 3 -> 0 PC columns, intercept only)
+    db = Session()
+    try:
+        job = db.get(AnalysisJob, uuid.UUID(job_id))
+        job.parameters = {
+            "qc": {"population_type": "outcross"},
+            "gwas": {"model": "glm", "n_pc_covariates": 0},
+            "structure": {"n_pcs": 10},
+        }
+        db.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr(
+        structure_tasks,
+        "determine_model_recommendation",
+        lambda **kwargs: {
+            "recommended_model": "glm",
+            "model_used": "glm",
+            "recommended_pc_covariates": 3,
+            "structure_detected": True,
+            "kinship_detected": False,
+            "pca_finding": "ok",
+            "kinship_finding": "ok",
+            "rationale": [],
+        },
+    )
+    out0 = structure_tasks.run_structure_analysis(
+        {"genotype_bfile_prefix": str(toy_bfile)},
+        job_id=job_id,
+        dataset_id=ds_id,
+    )
+    gemma_cov_zero = Path(out0["gemma_covariates_path"]).read_text(encoding="utf-8").splitlines()
+    assert all(line == "1" for line in gemma_cov_zero)
+    plink_cov_zero = Path(out0["plink_covariates_path"]).read_text(encoding="utf-8").splitlines()
+    assert plink_cov_zero[0].split("\t") == ["#FID", "IID"]
