@@ -10,6 +10,7 @@ import { AnnotationUploader } from "../components/AnnotationUploader";
 import { DataInspectionPanel } from "../components/DataInspectionPanel";
 
 const EMPTY_ARRAY = [];
+const TERMINAL_JOB_STATUSES = new Set(["COMPLETED", "SUCCESS", "FAILED", "CANCELLED"]);
 
 const INITIAL_FORM = {
   // QC
@@ -74,6 +75,7 @@ export function GwasUploadPage() {
   const [datasetId, setDatasetId] = useState(null);
   const [datasetMeta, setDatasetMeta] = useState(null);
   const [jobId, setJobId] = useState(null);
+  const [polledJobStatus, setPolledJobStatus] = useState("");
   const [autoRedirectOnComplete, setAutoRedirectOnComplete] = useState(true);
   const [refreshCount, setRefreshCount] = useState(0);
   const [form, setForm] = useState(INITIAL_FORM);
@@ -158,6 +160,7 @@ export function GwasUploadPage() {
   const handleSelectExistingJob = useCallback((selectedJobId) => {
     setAutoRedirectOnComplete(false);
     hasRedirectedRef.current = true;
+    setPolledJobStatus("");
     setJobId(selectedJobId);
   }, []);
 
@@ -270,6 +273,7 @@ export function GwasUploadPage() {
       const response = await triggerFullPipeline(datasetId, payload);
       hasRedirectedRef.current = false;
       setAutoRedirectOnComplete(true);
+      setPolledJobStatus("PENDING");
       setJobId(response.job_id);
       setRefreshCount((c) => c + 1);
     } catch (requestError) {
@@ -356,8 +360,12 @@ export function GwasUploadPage() {
               onComplete={handleJobComplete}
               onCancelled={() => setRefreshCount((c) => c + 1)}
               onRetried={() => setRefreshCount((c) => c + 1)}
+              onStatusChange={setPolledJobStatus}
             />
-            <JobFilesPanel jobId={jobId} isRunning={true} />
+            <JobFilesPanel
+              jobId={jobId}
+              isRunning={!TERMINAL_JOB_STATUSES.has(String(polledJobStatus || "").toUpperCase())}
+            />
           </div>
 
           {/* Workspace Explorer di bagian bawah untuk referensi riwayat job */}

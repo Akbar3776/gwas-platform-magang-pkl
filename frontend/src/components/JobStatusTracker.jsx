@@ -79,7 +79,7 @@ const COLORS = {
   pending: { accent: "#94a3b8", background: "#f8fafc", border: "#e2e8f0" },
 };
 
-export function JobStatusTracker({ jobId, onComplete, onCancelled, onRetried }) {
+export function JobStatusTracker({ jobId, onComplete, onCancelled, onRetried, onStatusChange }) {
   const [pollTrigger, setPollTrigger] = useState(0);
   const { jobStatus, status, isPolling, pollError } = useJobPolling(jobId, {
     intervalMs: 2500,
@@ -94,6 +94,10 @@ export function JobStatusTracker({ jobId, onComplete, onCancelled, onRetried }) 
   const effectiveStatus = localCancelled ? "CANCELLED" : status;
   const isTerminal = ["COMPLETED", "SUCCESS", "FAILED", "CANCELLED"].includes(effectiveStatus);
   const isStopped = effectiveStatus === "FAILED" || effectiveStatus === "CANCELLED";
+
+  useEffect(() => {
+    onStatusChange?.(effectiveStatus);
+  }, [effectiveStatus, onStatusChange]);
 
   useEffect(() => {
     setLocalCancelled(false);

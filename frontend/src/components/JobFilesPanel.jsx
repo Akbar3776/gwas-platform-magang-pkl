@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { downloadJobFile, fetchJobFiles, previewJobFile } from "../api/jobsApi";
+
+const TERMINAL_STATUSES = new Set(["COMPLETED", "SUCCESS", "FAILED", "CANCELLED"]);
 
 const STAGE_BADGES = {
   input: { bg: "#e0e7ff", color: "#3730a3", label: "Input Dataset" },
@@ -40,33 +42,105 @@ function formatBytes(bytes) {
 export function JobFilesPanel({ jobId, isRunning = false }) {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [serverTerminal, setServerTerminal] = useState(false);
   const [stageFilter, setStageFilter] = useState("all");
   const [previewItem, setPreviewItem] = useState(null);
   const [previewText, setPreviewText] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [downloadingKey, setDownloadingKey] = useState(null);
 
-  const loadFiles = useCallback(async () => {
-    if (!jobId) return;
-    try {
-      setLoading(true);
-      const res = await fetchJobFiles(jobId);
-      if (res && Array.isArray(res.files)) {
-        setFiles(res.files);
-      }
-    } catch {
-      // Abaikan jika job belum memiliki direktori
-    } finally {
-      setLoading(false);
-    }
+  const activeJobIdRef = useRef(jobId);
+  const requestSeqRef = useRef(0);
+  const activeAbortRef = useRef(null);
+
+  useEffect(() => {
+    activeJobIdRef.current = jobId;
+    setFiles([]);
+    setServerTerminal(false);
+    setPreviewItem(null);
+    setPreviewText("");
   }, [jobId]);
 
   useEffect(() => {
-    loadFiles();
-    if (!isRunning) return undefined;
-    const interval = setInterval(loadFiles, 3000);
-    return () => clearInterval(interval);
-  }, [loadFiles, isRunning]);
+    if (!isRunning) {
+      setServerTerminal(false);
+    }
+  }, [isRunning]);
+
+  const loadFiles = useCallback(
+    async ({ signal } = {}) => {
+      if (!jobId) return null;
+      const targetJobId = jobId;
+      const seq = ++requestSeqRef.current;
+      try {
+        setLoading(true);
+        const res = await fetchJobFiles(targetJobId, { signal });
+        if (
+          signal?.aborted ||
+          activeJobIdRef.current !== targetJobId ||
+          requestSeqRef.current !== seq
+        ) {
+          return null;
+        }
+        if (res && Array.isArray(res.files)) {
+          setFiles(res.files);
+        }
+        const statusStr = String(res?.overall_status || "").toUpperCase();
+        const isTerminalRes = TERMINAL_STATUSES.has(statusStr);
+        if (isTerminalRes) {
+          setServerTerminal(true);
+        } else if (statusStr) {
+          setServerTerminal(false);
+        }
+        return res;
+      } catch {
+        // Abaikan jika request dibatalkan atau job belum memiliki direktori
+        return null;
+      } finally {
+        if (
+          !signal?.aborted &&
+          activeJobIdRef.current === targetJobId &&
+          requestSeqRef.current === seq
+        ) {
+          setLoading(false);
+        }
+      }
+    },
+    [jobId]
+  );
+
+  useEffect(() => {
+    if (!jobId) return undefined;
+    let cancelled = false;
+    let timer = null;
+    const controller = new AbortController();
+    activeAbortRef.current = controller;
+
+    const poll = async () => {
+      const res = await loadFiles({ signal: controller.signal });
+      if (cancelled || controller.signal.aborted) return;
+      const statusStr = String(res?.overall_status || "").toUpperCase();
+      if (!isRunning || TERMINAL_STATUSES.has(statusStr)) {
+        return;
+      }
+      timer = setTimeout(poll, 3000);
+    };
+
+    poll();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timer) {
+        clearTimeout(timer);
+      }
+      if (activeAbortRef.current === controller) {
+        activeAbortRef.current = null;
+      }
+    };
+  }, [jobId, isRunning, loadFiles]);
+
+  const effectiveRunning = Boolean(isRunning && !serverTerminal);
 
   const handlePreview = async (item) => {
     if (previewItem?.file_key === item.file_key) {
@@ -129,7 +203,7 @@ export function JobFilesPanel({ jobId, isRunning = false }) {
           <strong style={{ fontSize: 13, color: "#0f172a" }}>
             File Job & Output Setiap Tahap ({files.length} file)
           </strong>
-          {isRunning && (
+          {effectiveRunning && (
             <span
               style={{
                 fontSize: 11,
@@ -147,7 +221,7 @@ export function JobFilesPanel({ jobId, isRunning = false }) {
 
         <button
           type="button"
-          onClick={loadFiles}
+          onClick={() => loadFiles()}
           disabled={loading}
           style={{
             padding: "4px 10px",
