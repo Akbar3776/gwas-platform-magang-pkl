@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { formatApiError } from "../api/formatApiError";
 import { fetchReferencePanels, triggerFullPipeline } from "../api/jobsApi";
 import { JobFilesPanel } from "../components/JobFilesPanel";
 import { JobStatusTracker } from "../components/JobStatusTracker";
@@ -278,9 +279,10 @@ export function GwasUploadPage() {
       setRefreshCount((c) => c + 1);
     } catch (requestError) {
       setError(
-        requestError.response?.data?.detail ||
-          requestError.message ||
+        formatApiError(
+          requestError,
           "Pipeline tidak dapat dimulai. Periksa konfigurasi Anda."
+        )
       );
     } finally {
       setIsSubmitting(false);
