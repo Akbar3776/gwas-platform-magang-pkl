@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { uploadAnnotation, deleteAnnotation } from "../api/jobsApi";
 
 export function AnnotationUploader({
@@ -13,14 +13,19 @@ export function AnnotationUploader({
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState(null);
 
+  const onAnnotationChangedRef = useRef(onAnnotationChanged);
+  onAnnotationChangedRef.current = onAnnotationChanged;
+
   useEffect(() => {
     setFilename(initialAnnotationFilename || null);
     setGeneCount(null);
     setSeqids([]);
-    if (onAnnotationChanged) {
-      onAnnotationChanged(initialAnnotationFilename ? { filename: initialAnnotationFilename } : null);
+    if (onAnnotationChangedRef.current) {
+      onAnnotationChangedRef.current(
+        initialAnnotationFilename ? { filename: initialAnnotationFilename } : null
+      );
     }
-  }, [datasetId, initialAnnotationFilename, onAnnotationChanged]);
+  }, [datasetId, initialAnnotationFilename]);
 
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];

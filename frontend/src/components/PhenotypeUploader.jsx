@@ -1,11 +1,13 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { uploadPhenotype, deletePhenotype, fetchInspection } from "../api/jobsApi";
+
+const EMPTY_ARRAY = [];
 
 export function PhenotypeUploader({
   datasetId,
   initialPhenotypeFilename,
-  initialColumns = [],
-  initialNumericTraits = [],
+  initialColumns = EMPTY_ARRAY,
+  initialNumericTraits = EMPTY_ARRAY,
   onInspectionReady,
   onPhenotypeCleared,
 }) {
@@ -21,31 +23,40 @@ export function PhenotypeUploader({
   const [selectedIdCol, setSelectedIdCol] = useState("IID");
   const [selectedTrait, setSelectedTrait] = useState("");
 
-  // Sync initial props
+  const initialColumnsRef = useRef(initialColumns);
+  const initialNumericTraitsRef = useRef(initialNumericTraits);
+  const onInspectionReadyRef = useRef(onInspectionReady);
+  initialColumnsRef.current = initialColumns;
+  initialNumericTraitsRef.current = initialNumericTraits;
+  onInspectionReadyRef.current = onInspectionReady;
+
+  // Sync initial props only when dataset or initial phenotype filename changes
   useEffect(() => {
+    const cols = initialColumnsRef.current || EMPTY_ARRAY;
+    const traits = initialNumericTraitsRef.current || EMPTY_ARRAY;
     if (initialPhenotypeFilename) {
       setFilename(initialPhenotypeFilename);
-      setColumns(initialColumns);
-      setNumericTraits(initialNumericTraits);
-      if (initialColumns && initialColumns.length > 0) {
-        const autoId = initialColumns.find((c) => c.toUpperCase() === "IID") || initialColumns[0] || "IID";
+      setColumns(cols);
+      setNumericTraits(traits);
+      if (cols.length > 0) {
+        const autoId = cols.find((c) => c.toUpperCase() === "IID") || cols[0] || "IID";
         setSelectedIdCol(autoId);
       }
-      if (initialNumericTraits && initialNumericTraits.length > 0) {
-        setSelectedTrait((curr) => curr || initialNumericTraits[0]);
-      } else if (initialColumns && initialColumns.length > 0) {
-        const candidate = initialColumns.find((c) => !["FID", "IID", "ID", "FAMILY", "INDIVIDUAL"].includes(c.toUpperCase())) || initialColumns[0];
+      if (traits.length > 0) {
+        setSelectedTrait((curr) => curr || traits[0]);
+      } else if (cols.length > 0) {
+        const candidate = cols.find((c) => !["FID", "IID", "ID", "FAMILY", "INDIVIDUAL"].includes(c.toUpperCase())) || cols[0];
         if (candidate) {
           setSelectedTrait((curr) => curr || candidate);
         }
       }
     } else {
       setFilename(null);
-      setColumns([]);
-      setNumericTraits([]);
+      setColumns(EMPTY_ARRAY);
+      setNumericTraits(EMPTY_ARRAY);
       setSelectedTrait("");
     }
-  }, [initialPhenotypeFilename, initialColumns, initialNumericTraits]);
+  }, [datasetId, initialPhenotypeFilename]);
 
   // Run inspection whenever trait or ID col changes
   useEffect(() => {
@@ -60,8 +71,8 @@ export function PhenotypeUploader({
           trait: selectedTrait,
           idColumn: selectedIdCol,
         });
-        if (!isCancelled && onInspectionReady) {
-          onInspectionReady(report, selectedTrait, selectedIdCol);
+        if (!isCancelled && onInspectionReadyRef.current) {
+          onInspectionReadyRef.current(report, selectedTrait, selectedIdCol);
         }
       } catch (err) {
         if (!isCancelled) {
@@ -76,7 +87,7 @@ export function PhenotypeUploader({
     return () => {
       isCancelled = true;
     };
-  }, [datasetId, filename, selectedTrait, selectedIdCol, onInspectionReady]);
+  }, [datasetId, filename, selectedTrait, selectedIdCol]);
 
   const handleUpload = async (e) => {
     const selectedFile = e.target.files?.[0];

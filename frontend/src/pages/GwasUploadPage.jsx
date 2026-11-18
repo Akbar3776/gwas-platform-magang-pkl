@@ -9,6 +9,8 @@ import { PhenotypeUploader } from "../components/PhenotypeUploader";
 import { AnnotationUploader } from "../components/AnnotationUploader";
 import { DataInspectionPanel } from "../components/DataInspectionPanel";
 
+const EMPTY_ARRAY = [];
+
 const INITIAL_FORM = {
   // QC
   population_type: "inbred",
@@ -178,6 +180,10 @@ export function GwasUploadPage() {
   const handlePhenotypeCleared = useCallback(() => {
     setInspectionReport(null);
     setSelectedTrait("");
+  }, []);
+
+  const handleAnnotationChanged = useCallback((meta) => {
+    setHasAnnotation(Boolean(meta));
   }, []);
 
   const updateField = (event) => {
@@ -404,15 +410,15 @@ export function GwasUploadPage() {
                 <PhenotypeUploader
                   datasetId={datasetId}
                   initialPhenotypeFilename={datasetMeta?.phenotype_filename}
-                  initialColumns={datasetMeta?.phenotype_columns || []}
-                  initialNumericTraits={datasetMeta?.numeric_traits || []}
+                  initialColumns={datasetMeta?.phenotype_columns || EMPTY_ARRAY}
+                  initialNumericTraits={datasetMeta?.numeric_traits || EMPTY_ARRAY}
                   onInspectionReady={handleInspectionReady}
                   onPhenotypeCleared={handlePhenotypeCleared}
                 />
                 <AnnotationUploader
                   datasetId={datasetId}
                   initialAnnotationFilename={datasetMeta?.annotation_filename}
-                  onAnnotationChanged={(meta) => setHasAnnotation(Boolean(meta))}
+                  onAnnotationChanged={handleAnnotationChanged}
                 />
               </div>
 
