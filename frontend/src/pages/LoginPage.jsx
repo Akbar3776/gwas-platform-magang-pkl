@@ -13,6 +13,7 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false)
 
   const from = location.state?.from?.pathname || '/upload'
+  const errorId = 'login-form-error'
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -36,13 +37,35 @@ export default function LoginPage() {
       <form onSubmit={handleSubmit}>
         <label>
           Email
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <input
+            type="email"
+            name="email"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            aria-invalid={error ? 'true' : undefined}
+            aria-describedby={error ? errorId : undefined}
+            required
+          />
         </label>
         <label>
           Password
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          <input
+            type="password"
+            name="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            aria-invalid={error ? 'true' : undefined}
+            aria-describedby={error ? errorId : undefined}
+            required
+          />
         </label>
-        {error && <p className="form-error">{error}</p>}
+        {error && (
+          <p id={errorId} role="alert" className="form-error">
+            {error}
+          </p>
+        )}
         <button type="submit" disabled={submitting}>
           {submitting ? 'Memproses...' : 'Masuk'}
         </button>

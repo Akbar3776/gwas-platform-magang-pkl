@@ -121,7 +121,7 @@ body {
 .auth-page a {
   color: #2563eb;
   font-weight: 600;
-  text-decoration: none;
+  text-decoration: underline;
 }
 
 .form-error {

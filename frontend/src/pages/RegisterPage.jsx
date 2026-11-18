@@ -10,6 +10,7 @@ export default function RegisterPage() {
   const [form, setForm] = useState({ fullName: '', email: '', password: '' })
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+  const errorId = 'register-form-error'
 
   const handleChange = (e) => setForm((f) => ({ ...f, [e.target.name]: e.target.value }))
 
@@ -35,17 +36,48 @@ export default function RegisterPage() {
       <form onSubmit={handleSubmit}>
         <label>
           Nama Lengkap
-          <input name="fullName" value={form.fullName} onChange={handleChange} required />
+          <input
+            type="text"
+            name="fullName"
+            autoComplete="name"
+            value={form.fullName}
+            onChange={handleChange}
+            aria-invalid={error ? 'true' : undefined}
+            aria-describedby={error ? errorId : undefined}
+            required
+          />
         </label>
         <label>
           Email
-          <input type="email" name="email" value={form.email} onChange={handleChange} required />
+          <input
+            type="email"
+            name="email"
+            autoComplete="email"
+            value={form.email}
+            onChange={handleChange}
+            aria-invalid={error ? 'true' : undefined}
+            aria-describedby={error ? errorId : undefined}
+            required
+          />
         </label>
         <label>
           Password
-          <input type="password" name="password" value={form.password} onChange={handleChange} required />
+          <input
+            type="password"
+            name="password"
+            autoComplete="new-password"
+            value={form.password}
+            onChange={handleChange}
+            aria-invalid={error ? 'true' : undefined}
+            aria-describedby={error ? errorId : undefined}
+            required
+          />
         </label>
-        {error && <p className="form-error">{error}</p>}
+        {error && (
+          <p id={errorId} role="alert" className="form-error">
+            {error}
+          </p>
+        )}
         <button type="submit" disabled={submitting}>
           {submitting ? 'Memproses...' : 'Daftar'}
         </button>
