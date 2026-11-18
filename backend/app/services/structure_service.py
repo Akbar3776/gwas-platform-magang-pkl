@@ -13,7 +13,7 @@ Fitur:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -92,12 +92,19 @@ def read_plink_binary(bfile_prefix: str | Path) -> tuple[list[str], list[dict[st
     return samples, variants, G
 
 
-def _impute_and_center_float32(G: np.ndarray, *, standardize: bool = False) -> np.ndarray:
+def _impute_and_center_float32(
+    G: np.ndarray,
+    *,
+    standardize: bool = False,
+    cancel_check: Callable[[], None] | None = None,
+) -> np.ndarray:
     """Impute missing genotypes (-1) per column and center (optionally scale) in-place as float32."""
     M = G.astype(np.float32)
     missing_mask = G < 0
     n_variants = G.shape[1]
     for j in range(n_variants):
+        if cancel_check is not None and j % 1000 == 0:
+            cancel_check()
         miss = missing_mask[:, j]
         if np.any(miss):
             valid = M[~miss, j]
@@ -117,6 +124,7 @@ def run_pca_decomposition(
     G: np.ndarray,
     sample_ids: list[str],
     n_pcs: int = 10,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """
     Melakukan Principal Component Analysis (PCA) pada matriks genotipe:
@@ -139,7 +147,7 @@ def run_pca_decomposition(
         }
 
     k = min(n_pcs, n_samples - 1, n_variants)
-    M_norm = _impute_and_center_float32(G, standardize=True)
+    M_norm = _impute_and_center_float32(G, standardize=True, cancel_check=cancel_check)
 
     # SVD: M_norm = U * S * Vt
     try:
@@ -219,7 +227,10 @@ def run_pca_decomposition(
     }
 
 
-def compute_centered_kinship(G: np.ndarray) -> np.ndarray:
+def compute_centered_kinship(
+    G: np.ndarray,
+    cancel_check: Callable[[], None] | None = None,
+) -> np.ndarray:
     """
     Menghitung matriks kekerabatan (GEMMA centered relatedness matrix):
     K = (1 / p) * W * W^T
@@ -229,7 +240,7 @@ def compute_centered_kinship(G: np.ndarray) -> np.ndarray:
     if n_variants == 0 or n_samples == 0:
         return np.eye(n_samples, dtype=np.float32)
 
-    W = _impute_and_center_float32(G, standardize=False)
+    W = _impute_and_center_float32(G, standardize=False, cancel_check=cancel_check)
 
     # K = W * W.T / p
     K = np.dot(W, W.T) / np.float32(max(n_variants, 1))
@@ -245,6 +256,7 @@ def compute_centered_kinship(G: np.ndarray) -> np.ndarray:
 def compute_king_robust_table(
     G: np.ndarray,
     sample_ids: list[str],
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """
     Menghitung pasangan kekerabatan berdasarkan estimator KING-robust:
@@ -273,6 +285,8 @@ def compute_king_robust_table(
     # Hitung kinship KING-robust untuk setiap pasangan
     # Masking missing genotypes (-1)
     for i in range(n_samples):
+        if cancel_check is not None and i % 25 == 0:
+            cancel_check()
         for j in range(i + 1, n_samples):
             g_i = G[i, :]
             g_j = G[j, :]
@@ -336,6 +350,7 @@ def compute_ld_decay_curve(
     bin_kb: int = 10,
     cutoff_r2: float = 0.2,
     fallback_kb: int = 100,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """
     Menghitung kurva peluruhan Linkage Disequilibrium (LD Decay) streaming:
@@ -349,7 +364,7 @@ def compute_ld_decay_curve(
     counts = np.zeros(n_bins, dtype=np.int64)
 
     if n_variants >= 2 and n_samples >= 4:
-        M_std = _impute_and_center_float32(G, standardize=True)
+        M_std = _impute_and_center_float32(G, standardize=True, cancel_check=cancel_check)
 
         # Group variants by chromosome
         chr_map: dict[str, list[int]] = {}
@@ -361,6 +376,8 @@ def compute_ld_decay_curve(
         for c, indices in chr_map.items():
             n_chr = len(indices)
             for i in range(n_chr):
+                if cancel_check is not None and i % 250 == 0:
+                    cancel_check()
                 idx_i = indices[i]
                 pos_i = variants[idx_i]["pos"]
                 vec_i = M_std[:, idx_i]

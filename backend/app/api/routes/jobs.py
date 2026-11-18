@@ -706,6 +706,28 @@ def get_job_results_summary(
     }
 
 
+def _collect_job_task_ids(job: AnalysisJob) -> list[str]:
+    task_ids: list[str] = []
+    raw_ids = (job.parameters or {}).get("celery_task_ids")
+    if isinstance(raw_ids, list):
+        for tid in raw_ids:
+            if tid and str(tid) not in task_ids:
+                task_ids.append(str(tid))
+    if job.celery_task_id and str(job.celery_task_id) not in task_ids:
+        task_ids.append(str(job.celery_task_id))
+    return task_ids
+
+
+def _revoke_task_ids(task_ids: list[str]) -> None:
+    if not task_ids or not hasattr(celery_app, "control"):
+        return
+    for tid in task_ids:
+        try:
+            celery_app.control.revoke(tid, terminate=True)
+        except Exception:
+            pass
+
+
 @router.post("/{job_id}/cancel")
 def cancel_job(
     job_id: uuid.UUID,
@@ -725,18 +747,14 @@ def cancel_job(
             "detail": f"Job sudah berstatus {job.overall_status.value}.",
         }
 
-    celery_task_id = job.celery_task_id
+    task_ids = _collect_job_task_ids(job)
     now = datetime.now(timezone.utc)
     job.overall_status = JobStatus.CANCELLED
     job.completed_at = now
     job.error_message = "Job dihentikan oleh pengguna."
     db.commit()
 
-    if celery_task_id and hasattr(celery_app, "control"):
-        try:
-            celery_app.control.revoke(celery_task_id, terminate=True)
-        except Exception:
-            pass
+    _revoke_task_ids(task_ids)
 
     return {
         "job_id": str(job.id),
@@ -784,12 +802,8 @@ def retry_job(
                 detail="Job baru saja dibatalkan; tunggu beberapa detik sebelum retry.",
             )
 
-    # Jika masih ada task lama terdaftar, revoke terlebih dahulu
-    if job.celery_task_id and hasattr(celery_app, "control"):
-        try:
-            celery_app.control.revoke(job.celery_task_id, terminate=True)
-        except Exception:
-            pass
+    # Jika masih ada task lama terdaftar, revoke semuanya terlebih dahulu
+    _revoke_task_ids(_collect_job_task_ids(job))
 
     previous_failed_step = job.failed_step
 
@@ -855,7 +869,7 @@ def delete_job(
     if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
-    celery_task_id = job.celery_task_id
+    task_ids = _collect_job_task_ids(job)
     work_dir = job.work_dir
 
     if job.overall_status not in TERMINAL_JOB_STATUSES:
@@ -871,11 +885,7 @@ def delete_job(
     # Commit deleted state before revoking/cleaning so active workers immediately see deleted_at.
     db.commit()
 
-    if celery_task_id and hasattr(celery_app, "control"):
-        try:
-            celery_app.control.revoke(celery_task_id, terminate=True)
-        except Exception:
-            pass
+    _revoke_task_ids(task_ids)
 
     job_id_str = str(job.id)
     for cache_key in [key for key in _FILE_COUNT_CACHE if key[0] == job_id_str]:

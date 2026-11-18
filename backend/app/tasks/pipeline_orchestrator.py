@@ -15,12 +15,15 @@ Workflow:
 
 from __future__ import annotations
 
+import logging
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
-from app.db.engine.models import JobStatus, PipelineStep
+from app.db.engine.database import SessionLocal
+from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep
 from app.tasks.annotation_tasks import run_annotation
 from app.tasks.celery_app import Signature, chain
 from app.tasks.gemma_tasks import run_gemma_gwas
@@ -342,6 +345,47 @@ def build_full_pipeline(
     )
 
 
+logger = logging.getLogger(__name__)
+
+
+def collect_chain_task_ids(async_result: Any) -> list[str]:
+    """Walk Celery AsyncResult .parent links from tail to head and return all task IDs."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    curr = async_result
+    while curr is not None:
+        tid = getattr(curr, "id", None)
+        if tid:
+            tid_str = str(tid)
+            if tid_str not in seen:
+                seen.add(tid_str)
+                ids.append(tid_str)
+        curr = getattr(curr, "parent", None)
+    ids.reverse()
+    return ids
+
+
+def _persist_chain_task_ids(job_id: str, task_ids: list[str]) -> None:
+    if not task_ids:
+        return
+    try:
+        target_id = uuid.UUID(str(job_id))
+    except (ValueError, TypeError):
+        return
+    db = None
+    try:
+        db = SessionLocal()
+        job = db.get(AnalysisJob, target_id)
+        if job is not None:
+            job.parameters = {**(job.parameters or {}), "celery_task_ids": list(task_ids)}
+            db.commit()
+    except Exception as exc:
+        logger.debug("Lewati penyimpanan celery_task_ids untuk job %s: %s", job_id, exc)
+    finally:
+        if db is not None and hasattr(db, "close"):
+            db.close()
+
+
 def trigger_retry_pipeline(
     *,
     job_id: str,
@@ -412,8 +456,9 @@ def trigger_retry_pipeline(
         first_sig = remaining_sigs[0]
         first_sig.args = (initial_ctx, *first_sig.args)
 
-    task_id = chain(*remaining_sigs).apply_async().id
-    return task_id, start_idx, start_stage
+    async_res = chain(*remaining_sigs).apply_async()
+    _persist_chain_task_ids(job_id, collect_chain_task_ids(async_res))
+    return str(async_res.id), start_idx, start_stage
 
 
 def trigger_full_pipeline(
@@ -446,4 +491,6 @@ def trigger_full_pipeline(
         annotation_params=annotation_params,
         run_id=run_id,
     )
-    return pipeline.apply_async().id
+    async_res = pipeline.apply_async()
+    _persist_chain_task_ids(job_id, collect_chain_task_ids(async_res))
+    return str(async_res.id)

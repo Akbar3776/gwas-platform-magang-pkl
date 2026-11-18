@@ -206,3 +206,168 @@ def test_build_stage_signatures_attaches_run_id_to_all_stages():
     assert len(sigs) == 10
     for sig in sigs:
         assert sig.kwargs["run_id"] == "R"
+
+
+def _make_linked_async_chain(n: int = 10):
+    class _FakeNode:
+        def __init__(self, tid: str, parent=None):
+            self.id = tid
+            self.parent = parent
+
+    head = None
+    ids = []
+    for idx in range(1, n + 1):
+        tid = f"chain-task-{idx}"
+        ids.append(tid)
+        head = _FakeNode(tid, parent=head)
+    return head, ids
+
+
+def test_trigger_full_pipeline_stores_all_10_chain_ids_and_cancel_revokes_all(tmp_path, monkeypatch):
+    from app.api.routes import jobs as jobs_routes
+
+    _, Session, db, job = _setup_sqlite_job(tmp_path, JobStatus.PENDING)
+    try:
+        tail_res, expected_ids = _make_linked_async_chain(10)
+
+        class _FakeChain:
+            def __init__(self, *sigs):
+                self.sigs = sigs
+
+            def apply_async(self):
+                return tail_res
+
+        monkeypatch.setattr(pipeline_orchestrator, "SessionLocal", Session, raising=False)
+        monkeypatch.setattr(pipeline_orchestrator, "chain", lambda *sigs: _FakeChain(*sigs))
+
+        last_id = pipeline_orchestrator.trigger_full_pipeline(
+            job_id=str(job.id),
+            dataset_id=str(job.dataset_id),
+        )
+        assert last_id == expected_ids[-1]
+
+        db.expire_all()
+        reloaded = db.get(AnalysisJob, job.id)
+        assert (reloaded.parameters or {}).get("celery_task_ids") == expected_ids
+        assert len(reloaded.parameters["celery_task_ids"]) == 10
+
+        reloaded.celery_task_id = last_id
+        db.commit()
+
+        revoked = []
+
+        class _FakeControl:
+            def revoke(self, task_id, terminate=False):
+                revoked.append((task_id, terminate))
+
+        monkeypatch.setattr(jobs_routes.celery_app, "control", _FakeControl(), raising=False)
+        user = db.get(User, reloaded.triggered_by)
+        resp = jobs_routes.cancel_job(job_id=job.id, db=db, user=user)
+        assert resp["cancelled"] is True
+        assert [tid for tid, _ in revoked] == expected_ids
+        assert all(term is True for _, term in revoked)
+
+        revoked.clear()
+        del_resp = jobs_routes.delete_job(job_id=job.id, db=db, user=user)
+        assert del_resp["deleted"] is True
+        assert [tid for tid, _ in revoked] == expected_ids
+    finally:
+        db.close()
+
+
+def test_python_multilocus_and_structure_loops_call_ensure_not_cancelled(tmp_path, monkeypatch):
+    import numpy as np
+    from app.services import structure_service
+    from app.tasks import multilocus_tasks, structure_tasks
+    from app.utils.process import CLIExecutionResult
+
+    _, _, db, job = _setup_sqlite_job(tmp_path, JobStatus.RUNNING_MULTILOCUS)
+    try:
+        ws = tmp_path / "jobs" / str(job.id)
+        ml_dir = ws / "multilocus"
+        insp_dir = ws / "inspection"
+        norm_dir = ws / "normalization"
+        ml_dir.mkdir(parents=True)
+        insp_dir.mkdir(parents=True)
+        norm_dir.mkdir(parents=True)
+
+        vcf_path = norm_dir / "normalized.vcf"
+        vcf_path.write_text(
+            "##fileformat=VCFv4.2\n"
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\tS3\tS4\tS5\n"
+            "1\t100\trs1\tA\tG\t99\tPASS\t.\tGT\t0/0\t0/1\t1/1\t0/0\t0/1\n"
+            "1\t200\trs2\tC\tT\t99\tPASS\t.\tGT\t0/1\t1/1\t1/1\t0/0\t0/0\n",
+            encoding="utf-8",
+        )
+        (insp_dir / "pheno_plink.txt").write_text(
+            "FID\tIID\tPHENO1\nS1\tS1\t1.0\nS2\tS2\t2.0\nS3\tS3\t3.0\nS4\tS4\t1.5\nS5\tS5\t2.5\n",
+            encoding="utf-8",
+        )
+
+        ml_checks = []
+
+        def fake_ml_ensure(jid, session=None, run_id=None):
+            ml_checks.append(jid)
+            if len(ml_checks) >= 2:
+                raise JobCancelledError("cancelled inside multilocus")
+
+        monkeypatch.setattr(multilocus_tasks, "ensure_not_cancelled", fake_ml_ensure)
+        with pytest.raises(JobCancelledError, match="cancelled inside multilocus"):
+            multilocus_tasks._run_python_multilocus_engine(
+                job_id=str(job.id),
+                dataset_id=str(job.dataset_id),
+                methods=["FarmCPU", "BLINK"],
+                workspace=ml_dir,
+                log_file=ml_dir / "multilocus.log",
+                ctx={"normalized_vcf_path": str(vcf_path)},
+                db=db,
+            )
+        assert len(ml_checks) >= 2
+
+        struct_checks = []
+
+        def fake_struct_ensure(jid, session=None, run_id=None):
+            struct_checks.append(jid)
+            if len(struct_checks) >= 4:
+                raise JobCancelledError("cancelled inside structure")
+
+        def fake_run_cli(cmd, **kwargs):
+            out_prefix = tmp_path / "noop"
+            for i, part in enumerate(cmd):
+                if part == "--out" and i + 1 < len(cmd):
+                    from pathlib import Path
+                    out_prefix = Path(cmd[i + 1])
+                    break
+            out_prefix.parent.mkdir(parents=True, exist_ok=True)
+            if "--indep-pairwise" in cmd:
+                out_prefix.with_suffix(".prune.in").write_text("rs1\nrs2\n", encoding="utf-8")
+            elif "--make-bed" in cmd:
+                for ext in (".bed", ".bim", ".fam"):
+                    out_prefix.with_suffix(ext).write_bytes(b"stub")
+            return CLIExecutionResult(command=tuple(cmd), returncode=0, log_file=tmp_path / "x.log")
+
+        monkeypatch.setattr(structure_tasks, "SessionLocal", lambda: db)
+        monkeypatch.setattr(structure_tasks, "which_tool", lambda name: "/usr/local/bin/plink", raising=False)
+        monkeypatch.setattr(structure_tasks, "run_cli_command", fake_run_cli, raising=False)
+        monkeypatch.setattr(
+            structure_tasks,
+            "read_plink_binary",
+            lambda p: (
+                [f"S{i}" for i in range(6)],
+                [{"chrom": "1", "rsid": f"rs{i}", "pos": 100 * i, "a1": "A", "a2": "G"} for i in range(6)],
+                np.ones((6, 6), dtype=np.int8),
+            ),
+        )
+        monkeypatch.setattr(structure_tasks, "ensure_not_cancelled", fake_struct_ensure)
+        (tmp_path / "dummy.bed").write_bytes(b"stub")
+        with pytest.raises(JobCancelledError, match="cancelled inside structure"):
+            structure_tasks.run_structure_analysis(
+                {"genotype_bfile_prefix": str(tmp_path / "dummy")},
+                job_id=str(job.id),
+                dataset_id=str(job.dataset_id),
+            )
+        assert len(struct_checks) >= 4
+        # Verify structure_service accepts cancel_check cleanly in long loop
+        assert structure_service.compute_king_robust_table(np.zeros((2, 5), dtype=np.int8), ["A", "B"])
+    finally:
+        db.close()

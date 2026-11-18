@@ -187,9 +187,13 @@ def run_structure_analysis(
         n_samples, n_variants = G.shape
         append_log(log_file, f"Memuat data genotipe hasil pruning: {n_samples} individu x {n_variants} varian.")
 
+        def _check_not_cancelled() -> None:
+            ensure_not_cancelled(job_id, db, run_id=run_id)
+
         # 2. PCA Decomposition
+        _check_not_cancelled()
         append_log(log_file, "Menjalankan Principal Component Analysis (PCA)...")
-        pca_data = run_pca_decomposition(G, samples, n_pcs=pca_n_pcs)
+        pca_data = run_pca_decomposition(G, samples, n_pcs=pca_n_pcs, cancel_check=_check_not_cancelled)
         pca_file = workspace / "pca.json"
         write_json(pca_file, pca_data)
 
@@ -206,14 +210,16 @@ def run_structure_analysis(
                 f_val.write(f"{ev}\n")
 
         # 3. Kinship Matrix (GEMMA Centered)
+        _check_not_cancelled()
         append_log(log_file, "Menghitung Matriks Kekerabatan (Centered Kinship Matrix K)...")
-        K_matrix = compute_centered_kinship(G)
+        K_matrix = compute_centered_kinship(G, cancel_check=_check_not_cancelled)
         kinship_cxx_file = workspace / "kinship.cXX.txt"
         np.savetxt(kinship_cxx_file, K_matrix, fmt="%.8f", delimiter="\t")
 
         # 4. KING-robust Pairs Table
+        _check_not_cancelled()
         append_log(log_file, "Menghitung tabel derajat kekerabatan (KING-robust)...")
-        king_data = compute_king_robust_table(G, samples)
+        king_data = compute_king_robust_table(G, samples, cancel_check=_check_not_cancelled)
 
         # Downsample matriks kinship untuk heatmap di browser jika sampel > 300
         downsample_factor = max(1, n_samples // 300)
@@ -231,6 +237,7 @@ def run_structure_analysis(
         write_json(kinship_file, kinship_json)
 
         # 5. LD Decay Analysis
+        _check_not_cancelled()
         append_log(log_file, "Menghitung kurva peluruhan Linkage Disequilibrium (LD Decay)...")
         ld_decay_data = compute_ld_decay_curve(
             variants=variants,
@@ -239,6 +246,7 @@ def run_structure_analysis(
             bin_kb=cfg.ld_decay_bin_kb,
             cutoff_r2=cfg.ld_decay_r2_cutoff,
             fallback_kb=cfg.ld_decay_fallback_kb,
+            cancel_check=_check_not_cancelled,
         )
         ld_decay_file = workspace / "ld_decay.json"
         write_json(ld_decay_file, ld_decay_data)

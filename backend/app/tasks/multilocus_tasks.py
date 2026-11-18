@@ -205,15 +205,29 @@ def _run_python_multilocus_engine(
     workspace: Path,
     log_file: Path,
     ctx: dict[str, Any],
+    db: Any = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Eksekusi multi-locus GWAS (FarmCPU, BLINK, MLMM) di lingkungan Python murni
     berbasis NumPy/SciPy tervektorisasi ketika Rscript / GAPIT tidak tersedia.
     """
+    import uuid
     from scipy.special import erfc
     from app.services.structure_service import compute_centered_kinship, read_plink_binary
     from app.tasks.gemma_tasks import _parse_vcf_genotypes, _prepare_phenotype_vector
 
+    def _check_cancel() -> None:
+        if db is not None:
+            ensure_not_cancelled(job_id, db, run_id=run_id)
+            return
+        try:
+            uuid.UUID(str(job_id))
+        except (ValueError, TypeError):
+            return
+        ensure_not_cancelled(job_id, None, run_id=run_id)
+
+    _check_cancel()
     append_log(log_file, "[INFO] Menginisialisasi Python Native Engine untuk Multi-Locus GWAS...")
 
     # 1. Muat Genotipe
@@ -356,6 +370,7 @@ def _run_python_multilocus_engine(
 
         chunk_size = 5000
         for start in range(0, n_variants, chunk_size):
+            _check_cancel()
             end = min(start + chunk_size, n_variants)
             k = end - start
             g_chunk = G_mat[:, start:end]
@@ -408,6 +423,7 @@ def _run_python_multilocus_engine(
 
     # Eksekusi masing-masing model yang dipilih
     for m in methods:
+        _check_cancel()
         m_name = m.strip().upper()
         if m_name == "FARMCPU":
             append_log(log_file, "\n--- Eksekusi Model Multi-Locus: FarmCPU ---")
@@ -448,6 +464,7 @@ def _run_python_multilocus_engine(
             best_bic = n_valid_samples * np.log(max(rss0 / max(n_valid_samples, 1), 1e-9)) + k0 * np.log(max(n_valid_samples, 1))
 
             for cand in cand_indices[:15]:
+                _check_cancel()
                 trial = bic_qtns + [cand]
                 # Hitung residual sum of squares fenotipe sesungguhnya terhadap kovariat + trial QTNs
                 x_trial_cols = [c_mat]
@@ -929,6 +946,8 @@ def run_multilocus_gwas(
                 workspace=workspace,
                 log_file=log_file,
                 ctx=ctx,
+                db=db,
+                run_id=run_id,
             )
             py_results = engine_output.get("methods_results", {})
             for m_key, m_entry in py_results.items():
