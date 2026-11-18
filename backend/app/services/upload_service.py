@@ -15,7 +15,7 @@ file GB-an tanpa kebocoran memori):
 import hashlib
 import re
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from fastapi import UploadFile
 
@@ -121,7 +121,10 @@ def assemble_file(file_id: str, total_chunks: int, original_filename: str) -> tu
 
     final_dir = _DATASETS_ROOT / file_id
     final_dir.mkdir(parents=True, exist_ok=True)
-    final_path = final_dir / original_filename
+    safe_name = Path(PurePosixPath(original_filename.replace("\\", "/")).name).name
+    final_path = final_dir / safe_name
+    if not safe_name or safe_name in {".", ".."} or final_path.resolve().parent != final_dir.resolve():
+        raise ValueError("Nama file tidak aman")
 
     total_size = 0
     tmp_final_path = final_path.with_suffix(final_path.suffix + ".assembling")

@@ -46,6 +46,16 @@ def _owned_dataset(file_id: uuid.UUID, user: User, db: Session) -> Dataset:
     return dataset
 
 
+def _under_storage(p: Path) -> bool:
+    root = Path(settings.STORAGE_ROOT).resolve()
+    try:
+        resolved = p.resolve()
+        resolved.relative_to(root)
+        return resolved != root
+    except ValueError:
+        return False
+
+
 @router.get("/datasets")
 def list_uploaded_datasets(
     db: Session = Depends(get_db),
@@ -253,15 +263,18 @@ def delete_uploaded_dataset(
     # Hapus file fisik dataset dan direktori staging
     if dataset.storage_path:
         raw_path = Path(dataset.storage_path)
-        raw_path.unlink(missing_ok=True)
-        if raw_path.parent.is_dir() and raw_path.parent.name == str(dataset.id):
-            shutil.rmtree(raw_path.parent, ignore_errors=True)
+        if _under_storage(raw_path):
+            raw_path.unlink(missing_ok=True)
+            if raw_path.parent.is_dir() and raw_path.parent.name == str(dataset.id) and _under_storage(raw_path.parent):
+                shutil.rmtree(raw_path.parent, ignore_errors=True)
 
     if dataset.normalized_vcf_path:
-        Path(dataset.normalized_vcf_path).unlink(missing_ok=True)
+        norm_path = Path(dataset.normalized_vcf_path)
+        if _under_storage(norm_path):
+            norm_path.unlink(missing_ok=True)
 
     staging_dir = Path(settings.STORAGE_ROOT) / "staging" / str(dataset.id)
-    if staging_dir.is_dir():
+    if staging_dir.is_dir() and _under_storage(staging_dir):
         shutil.rmtree(staging_dir, ignore_errors=True)
 
     now = datetime.now(timezone.utc)
@@ -271,7 +284,7 @@ def delete_uploaded_dataset(
     for job in related_jobs:
         job.deleted_at = now
         job_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job.id)
-        if job_dir.is_dir():
+        if job_dir.is_dir() and _under_storage(job_dir):
             shutil.rmtree(job_dir, ignore_errors=True)
 
     db.commit()
@@ -399,7 +412,9 @@ def delete_phenotype_file(
             )
 
     if dataset.phenotype_file_path:
-        Path(dataset.phenotype_file_path).unlink(missing_ok=True)
+        pheno_path = Path(dataset.phenotype_file_path)
+        if _under_storage(pheno_path):
+            pheno_path.unlink(missing_ok=True)
     dataset.phenotype_file_path = None
     meta = dataset.extra_metadata or {}
     meta.pop("phenotype", None)
@@ -490,7 +505,9 @@ def delete_annotation_file(
     dataset = _owned_dataset(file_id, user, db)
 
     if dataset.annotation_file_path:
-        Path(dataset.annotation_file_path).unlink(missing_ok=True)
+        anno_path = Path(dataset.annotation_file_path)
+        if _under_storage(anno_path):
+            anno_path.unlink(missing_ok=True)
     dataset.annotation_file_path = None
     meta = dataset.extra_metadata or {}
     meta.pop("annotation", None)
