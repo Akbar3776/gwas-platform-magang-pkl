@@ -118,6 +118,7 @@ def test_lead_snps_http_endpoint_wraps_json_array(tmp_path, monkeypatch):
     import uuid
     from fastapi.testclient import TestClient
     from app.core.config import settings
+    from app.core.security import require_job_owner
     from app.main import app
 
     job_id = uuid.uuid4()
@@ -141,8 +142,12 @@ def test_lead_snps_http_endpoint_wraps_json_array(tmp_path, monkeypatch):
     (postgwas_dir / "lead_snps.json").write_text(json.dumps(sample_array), encoding="utf-8")
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
 
-    client = TestClient(app)
-    resp = client.get(f"/api/v1/results/{job_id}/lead-snps")
+    app.dependency_overrides[require_job_owner] = lambda: None
+    try:
+        client = TestClient(app)
+        resp = client.get(f"/api/v1/results/{job_id}/lead-snps")
+    finally:
+        app.dependency_overrides.pop(require_job_owner, None)
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body, dict)

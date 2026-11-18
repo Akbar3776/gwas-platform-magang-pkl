@@ -26,6 +26,7 @@ langsung ditolak karena versinya tidak cocok lagi.
 """
 
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -35,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.engine.database import get_db
-from app.db.engine.models import User, UserRole
+from app.db.engine.models import AnalysisJob, User, UserRole
 
 try:
     from jose import JWTError, jwt
@@ -186,6 +187,21 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != UserRole.ADMIN and _role_str(user.role) != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Khusus admin")
     return user
+
+
+def is_admin(user: User) -> bool:
+    return _role_str(user.role) == "admin"
+
+
+def require_job_owner(
+    job_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisJob:
+    job = db.get(AnalysisJob, job_id)
+    if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not is_admin(user)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job tidak ditemukan.")
+    return job
 
 
 def verify_refresh_token_and_get_user(

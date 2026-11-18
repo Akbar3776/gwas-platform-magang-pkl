@@ -15,12 +15,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.security import require_job_owner
 from app.db.engine.database import get_db
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, Result, ResultType
 from app.schemas.results import ManhattanDataResponse
 from app.services.manhattan_parser import generate_manhattan_cache, load_manhattan_cache
 
-router = APIRouter(prefix="/results", tags=["results"])
+router = APIRouter(prefix="/results", tags=["results"], dependencies=[Depends(require_job_owner)])
 
 
 def _load_job_json_result(
