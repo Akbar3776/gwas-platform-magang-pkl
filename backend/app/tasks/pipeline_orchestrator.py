@@ -360,6 +360,11 @@ def trigger_retry_pipeline(
     job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
 
     gwas_cfg = dict(params.get("gwas") or {})
+    gwas_cfg.pop("phenotype_path", None)
+    imputation_cfg = dict(params.get("imputation") or {})
+    if not imputation_cfg.get("reference_panel_id"):
+        imputation_cfg.pop("reference_vcf_path", None)
+        imputation_cfg.pop("map_path", None)
     multilocus_cfg = dict(params.get("multilocus") or {})
     if "enabled" not in multilocus_cfg and "enable_multilocus" in gwas_cfg:
         multilocus_cfg = {
@@ -372,7 +377,7 @@ def trigger_retry_pipeline(
         dataset_id=dataset_id,
         phenotype_params=params.get("phenotype"),
         qc_params=params.get("qc"),
-        imputation_params=params.get("imputation"),
+        imputation_params=imputation_cfg,
         structure_params=params.get("structure"),
         gwas_params=gwas_cfg,
         threshold_params=params.get("threshold"),

@@ -729,6 +729,12 @@ def retry_job(
     if job is None or job.deleted_at is not None or (job.triggered_by != user.id and not _is_admin(user)):
         raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
 
+    if job.overall_status not in {JobStatus.FAILED, JobStatus.CANCELLED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job berstatus {job.overall_status.value}; hanya job gagal/dibatalkan yang bisa di-retry.",
+        )
+
     dataset = db.get(Dataset, job.dataset_id)
     if dataset is None or dataset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Dataset untuk job ini tidak lagi tersedia.")
