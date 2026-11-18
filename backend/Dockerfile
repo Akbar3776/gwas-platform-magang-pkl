@@ -1,10 +1,10 @@
 # ==============================================================================
 # GWAS Pipeline - Backend Dockerfile
-# Base: python:3.10-slim
+# Base: python:3.10-slim-trixie
 # Menyertakan dependensi OS untuk build tools bioinformatika (PLINK, GEMMA)
 # ==============================================================================
 
-FROM python:3.10-slim
+FROM python:3.10-slim-trixie
 
 LABEL maintainer="GWAS Platform Team"
 LABEL description="FastAPI + Celery backend, membungkus PLINK & GEMMA sebagai subprocess"
@@ -80,8 +80,9 @@ ARG GAPIT_REF=b7b985fe83835089e1379e85284ff594cfdec0c6
 RUN if [ "$WITH_GAPIT" = "true" ]; then \
         apt-get update && apt-get install -y --no-install-recommends \
             r-base-core r-base-dev libcurl4-openssl-dev libssl-dev libxml2-dev \
-        && Rscript -e 'install.packages("remotes", repos="https://cloud.r-project.org")' \
-        && Rscript -e "remotes::install_github('jiabowang/GAPIT@${GAPIT_REF}', dependencies=TRUE, upgrade='never')" \
+            libuv1-dev libnlopt-dev cmake r-bioc-snpstats \
+        && Rscript -e 'install.packages("remotes", repos="https://cloud.r-project.org", Ncpus=parallel::detectCores())' \
+        && Rscript -e "remotes::install_github('jiabowang/GAPIT@${GAPIT_REF}', dependencies=NA, upgrade='never', Ncpus=parallel::detectCores())" \
         && Rscript -e 'library(GAPIT)' \
         && rm -rf /var/lib/apt/lists/*; \
     fi
