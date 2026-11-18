@@ -39,7 +39,7 @@ router = APIRouter(prefix="/upload", tags=["upload"])
 
 def _owned_dataset(file_id: uuid.UUID, user: User, db: Session) -> Dataset:
     dataset = db.get(Dataset, file_id)
-    if dataset is None or (dataset.owner_id != user.id and not is_admin(user)):
+    if dataset is None or dataset.deleted_at is not None or (dataset.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload tidak ditemukan")
     return dataset
 

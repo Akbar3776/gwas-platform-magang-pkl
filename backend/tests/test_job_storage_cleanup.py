@@ -360,3 +360,130 @@ def test_orphan_sweep_removes_single_stale_orphan_with_10_valid_jobs(tmp_path, m
     assert freed > 0
     assert not orphan.exists()
     assert all(p.exists() for p in active_dirs)
+
+
+def test_deleted_dataset_and_job_routes_return_404(tmp_path, monkeypatch):
+    import io
+    from fastapi import HTTPException, UploadFile
+    import pytest
+    from app.api.routes.jobs import (
+        get_job_file_content,
+        get_job_logs,
+        get_job_results_summary,
+        get_job_status,
+        list_job_files,
+        trigger_qc_job,
+    )
+    from app.api.routes.upload import (
+        download_uploaded_dataset,
+        finalize_upload,
+        get_upload_status,
+        upload_chunk,
+    )
+    from app.db.engine.models import UploadStatus, User, UserRole
+    from app.schemas.jobs import QCJobRequest
+
+    storage_root = tmp_path / "storage"
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(storage_root))
+    Session = _make_session(tmp_path)
+    db = Session()
+    try:
+        owner = User(
+            id=uuid.uuid4(),
+            email="a10@test.local",
+            hashed_password="x",
+            role=UserRole.RESEARCHER,
+        )
+        db.add(owner)
+        db.flush()
+        user_obj, ds, job = _seed_job(
+            db,
+            status=JobStatus.FAILED,
+            deleted_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+        )
+        ds.owner_id = owner.id
+        ds.upload_status = UploadStatus.UPLOADING
+        ds.deleted_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+        job.triggered_by = owner.id
+        db.commit()
+
+        chunk = UploadFile(filename="x.vcf", file=io.BytesIO(b"##fileformat=VCFv4.2\n"))
+        with pytest.raises(HTTPException) as exc1:
+            upload_chunk(file_id=ds.id, chunk_index=0, total_chunks=1, chunk=chunk, db=db, user=owner)
+        assert exc1.value.status_code == 404
+
+        with pytest.raises(HTTPException) as exc2:
+            finalize_upload(file_id=ds.id, total_chunks=1, expected_sha256=None, db=db, user=owner)
+        assert exc2.value.status_code == 404
+
+        with pytest.raises(HTTPException) as exc3:
+            get_upload_status(file_id=ds.id, db=db, user=owner)
+        assert exc3.value.status_code == 404
+
+        with pytest.raises(HTTPException) as exc4:
+            download_uploaded_dataset(file_id=ds.id, preview=False, db=db, user=owner)
+        assert exc4.value.status_code == 404
+
+        with pytest.raises(HTTPException) as exc5:
+            trigger_qc_job(payload=QCJobRequest(dataset_id=ds.id), db=db, user=owner)
+        assert exc5.value.status_code == 404
+
+        for fn in (
+            lambda: get_job_status(job_id=job.id, db=db, user=owner),
+            lambda: get_job_logs(job_id=job.id, db=db, user=owner),
+            lambda: list_job_files(job_id=job.id, db=db, user=owner),
+            lambda: get_job_file_content(job_id=job.id, file_key="dataset_input", preview=False, db=db, user=owner),
+            lambda: get_job_results_summary(job_id=job.id, db=db, user=owner),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                fn()
+            assert exc.value.status_code == 404
+    finally:
+        db.close()
+
+
+def test_staging_sweep_and_purge_dataset_remove_staging_dirs(tmp_path, monkeypatch):
+    storage_root = tmp_path / "storage"
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(storage_root))
+    db_path = tmp_path / "storage_cleanup.db"
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{db_path}")
+    Session = _make_session(tmp_path)
+    monkeypatch.setattr(retention_tasks, "SessionLocal", Session)
+
+    old_time = datetime.now(timezone.utc) - timedelta(days=retention_tasks.RETENTION_DAYS + 5)
+    db = Session()
+    try:
+        _, ds_expired, job_expired = _seed_job(db, status=JobStatus.COMPLETED, completed_at=old_time)
+        ds_expired.uploaded_at = old_time
+        expired_staging = storage_root / "staging" / str(ds_expired.id)
+        expired_staging.mkdir(parents=True)
+        (expired_staging / "chunk_000000.part").write_text("expired", encoding="utf-8")
+
+        _, ds_soft_deleted, _ = _seed_job(
+            db,
+            status=JobStatus.COMPLETED,
+            completed_at=datetime.now(timezone.utc),
+            deleted_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+        )
+        ds_soft_deleted.deleted_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+        deleted_staging = storage_root / "staging" / str(ds_soft_deleted.id)
+        deleted_staging.mkdir(parents=True)
+        part = deleted_staging / "chunk_000000.part"
+        part.write_text("deleted", encoding="utf-8")
+        stale_ts = time.time() - 7200
+        os.utime(part, (stale_ts, stale_ts))
+        os.utime(deleted_staging, (stale_ts, stale_ts))
+
+        _, ds_active, _ = _seed_job(db, status=JobStatus.COMPLETED, completed_at=datetime.now(timezone.utc))
+        active_staging = storage_root / "staging" / str(ds_active.id)
+        active_staging.mkdir(parents=True)
+        (active_staging / "chunk_000000.part").write_text("active", encoding="utf-8")
+        db.commit()
+    finally:
+        db.close()
+
+    res = retention_tasks.purge_expired_records()
+    assert res["datasets_purged"] >= 1
+    assert not expired_staging.exists()
+    assert not deleted_staging.exists()
+    assert active_staging.exists()

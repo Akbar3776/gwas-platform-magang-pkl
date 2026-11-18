@@ -126,7 +126,7 @@ def purge_orphan_storage_dirs(
             configured_scheme,
         )
 
-    for bucket_name, model in (("jobs", AnalysisJob), ("datasets", Dataset)):
+    for bucket_name, model in (("jobs", AnalysisJob), ("datasets", Dataset), ("staging", Dataset)):
         bucket_dir = storage_root / bucket_name
         if not bucket_dir.is_dir():
             continue
@@ -204,6 +204,10 @@ def _purge_dataset(db: Session, dataset: Dataset) -> int:
         # Hapus seluruh folder induk (biasanya .../{dataset_id}/raw/), bukan
         # cuma file VCF-nya, untuk menyapu file pendamping (.tbi, dsb) juga.
         freed += _remove_path(str(Path(dataset.storage_path).parent))
+
+    staging_dir = Path(settings.STORAGE_ROOT) / "staging" / str(dataset.id)
+    if staging_dir.is_dir():
+        freed += remove_tree_under_storage(staging_dir)
 
     if HARD_DELETE_DB_ROW:
         db.delete(dataset)  # cascade ke `analysis_jobs` -> `results` otomatis
