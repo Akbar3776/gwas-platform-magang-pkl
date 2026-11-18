@@ -273,4 +273,3 @@ def test_normalization_norm_uses_tmp_and_removes_final_on_cancel(tmp_path, monke
     assert seen_norm_out[0].endswith("normalized.vcf.gz.tmp")
     assert not (norm_dir / "normalized.vcf.gz.tmp").exists()
     assert not stale_final.exists()
-
