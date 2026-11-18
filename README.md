@@ -52,6 +52,14 @@ Platform bioinformatika berbasis web (*full-stack*) untuk mengotomatisasi analis
 
    > **Deploy Produksi (`infra/docker-compose.prod.yml`):** Produksi wajib menyetel `JWT_SECRET_KEY` acak >= 32 karakter di `backend/.env` sebelum menjalankan stack. Generate dengan: `python -c "import secrets; print(secrets.token_hex(32))"`.
 
+#### TLS produksi
+
+Produksi mengaktifkan cookie refresh `Secure`, sehingga aplikasi wajib disajikan melalui HTTPS (Nginx mendengarkan port `80` untuk healthcheck/ACME & redirect `301`, serta `443` dengan TLSv1.2/TLSv1.3; header `Strict-Transport-Security "max-age=86400"` sengaja disetel 1 hari lebih dulu dan dapat dinaikkan setelah TLS terbukti stabil). Pilih salah satu cara penyediaan sertifikat sebelum `docker compose -f infra/docker-compose.prod.yml up -d`:
+
+- **(a) Sertifikat dari kampus / CA:** salin sertifikat ke `infra/certs/` dengan nama `fullchain.pem` dan `privkey.pem`. (Untuk uji lokal semata, jalankan `sh infra/scripts/gen-selfsigned-cert.sh`.)
+- **(b) Let's Encrypt (butuh domain publik):** jalankan `certbot certonly --webroot -w infra/acme -d <domain>`, lalu salin atau symlink hasilnya ke `infra/certs/fullchain.pem` dan `infra/certs/privkey.pem`. Setiap kali pembaruan sertifikat selesai, muat ulang Nginx dengan `docker exec gwas_nginx_prod nginx -s reload`.
+- **(c) Di belakang reverse proxy kampus yang sudah terminasi TLS:** reverse proxy di depan container ini wajib meneruskan header `X-Forwarded-Proto: https`, dan Nginx stack ini cukup diakses melalui jaringan internal.
+
 4. **Jalankan Frontend (Vite Dev Server)**:
    ```bash
    cd frontend

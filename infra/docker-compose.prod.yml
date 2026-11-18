@@ -7,6 +7,10 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      - ${TLS_CERT_DIR:-./certs}:/etc/nginx/certs:ro
+      - ${ACME_WEBROOT:-./acme}:/var/www/certbot:ro
     depends_on:
       backend:
         condition: service_healthy

@@ -13,4 +13,4 @@ FROM nginx:1.27-alpine
 COPY infra/nginx/nginx.conf /etc/nginx/nginx.conf
 COPY --from=frontend-build /frontend/dist /usr/share/nginx/html
 
-EXPOSE 80
+EXPOSE 80 443

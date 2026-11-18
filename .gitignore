@@ -89,6 +89,12 @@ graphify-out
 # Generated
 /tasks/
 
+# TLS certificates and ACME challenges
+infra/certs/
+infra/acme/
+*.pem
+*.key
+
 # 
 GWAS WORKFLOW (SEMUA).md
 Hasil_Output
