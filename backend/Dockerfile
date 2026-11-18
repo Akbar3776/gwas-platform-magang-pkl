@@ -72,6 +72,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
 
+# ------------------------------------------------------------------------------
+# 4b. Opsional R + GAPIT3 untuk Multi-Locus GWAS (FarmCPU, BLINK, MLMM)
+# ------------------------------------------------------------------------------
+ARG WITH_GAPIT=true
+ARG GAPIT_REF=b7b985fe83835089e1379e85284ff594cfdec0c6
+RUN if [ "$WITH_GAPIT" = "true" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends \
+            r-base-core r-base-dev libcurl4-openssl-dev libssl-dev libxml2-dev \
+        && Rscript -e 'install.packages("remotes", repos="https://cloud.r-project.org")' \
+        && Rscript -e "remotes::install_github('jiabowang/GAPIT@${GAPIT_REF}', dependencies=TRUE, upgrade='never')" \
+        && Rscript -e 'library(GAPIT)' \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 
 # ------------------------------------------------------------------------------
 # 5. Setup direktori kerja & dependensi Python

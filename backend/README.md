@@ -372,6 +372,8 @@ docker compose -f infra/docker-compose.prod.yml build
 docker compose -f infra/docker-compose.prod.yml up -d
 ```
 
+> **Build R/GAPIT & Kebutuhan Memori (`WITH_GAPIT`):** Secara default image backend menginstal R dan GAPIT (`WITH_GAPIT=true`). Untuk build pengembangan yang lebih cepat tanpa R/GAPIT, gunakan `docker build --build-arg WITH_GAPIT=false backend/` — tahap multi-locus otomatis beralih ke Python Native Engine. Perhatikan bahwa service `celery_worker` produksi dibatasi memori `4 GB`, sementara GAPIT memuat seluruh matriks genotipe (`GD`) ke memori sehingga dataset dengan jumlah sampel dan penanda sangat besar perlu mempertimbangkan batas tersebut.
+
 ### Troubleshooting Umum
 
 1. **Job Berhenti di Tengah Tahap (Gagal / Dibatalkan)**:
