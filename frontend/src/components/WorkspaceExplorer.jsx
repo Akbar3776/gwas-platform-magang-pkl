@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { formatApiError } from "../api/formatApiError";
+import { JOB_STATUS_BADGE, formatBytes } from "../constants/pipelineStages";
 import { extractDownloadErrorMessage } from "../utils/download";
 import {
   cancelJob,
@@ -12,32 +13,6 @@ import {
   previewUploadedDataset,
   retryJob,
 } from "../api/jobsApi";
-
-const JOB_STATUS_BADGE = {
-  completed: { text: "Selesai (10/10)", bg: "#dcfce7", color: "#166534" },
-  success: { text: "Selesai (10/10)", bg: "#dcfce7", color: "#166534" },
-  failed: { text: "Gagal", bg: "#fee2e2", color: "#991b1b" },
-  cancelled: { text: "Dihentikan", bg: "#fef3c7", color: "#92400e" },
-  pending: { text: "Menunggu", bg: "#f1f5f9", color: "#475569" },
-  running: { text: "Sedang Berjalan", bg: "#dbeafe", color: "#1d4ed8" },
-  running_inspection: { text: "1. Inspeksi Data", bg: "#dbeafe", color: "#1d4ed8" },
-  running_normalization: { text: "2. Normalisasi VCF", bg: "#dbeafe", color: "#1d4ed8" },
-  running_qc: { text: "3. Quality Control", bg: "#dbeafe", color: "#1d4ed8" },
-  running_imputation: { text: "4. Imputasi", bg: "#dbeafe", color: "#1d4ed8" },
-  running_structure: { text: "5. Struktur & LD", bg: "#dbeafe", color: "#1d4ed8" },
-  running_gwas: { text: "6. Analisis GWAS", bg: "#dbeafe", color: "#1d4ed8" },
-  running_multilocus: { text: "7. Multi-Locus", bg: "#dbeafe", color: "#1d4ed8" },
-  running_postgwas: { text: "8. Pasca-GWAS", bg: "#dbeafe", color: "#1d4ed8" },
-  running_parsing: { text: "9. Visualisasi", bg: "#dbeafe", color: "#1d4ed8" },
-  running_annotation: { text: "10. Anotasi Gen", bg: "#dbeafe", color: "#1d4ed8" },
-};
-
-function formatBytes(bytes) {
-  const n = Number(bytes || 0);
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
-}
 
 function formatDate(isoStr) {
   if (!isoStr) return "-";

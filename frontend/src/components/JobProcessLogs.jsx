@@ -1,19 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchJobLogs } from "../api/jobsApi";
+import { DEFAULT_STEPS } from "../constants/pipelineStages";
 import { saveBlob } from "../utils/download";
-
-const DEFAULT_STEPS = [
-  { step: "inspection", label: "Inspeksi Fenotipe & Sampel", tool: "Python / Stats", status: "pending", line_count: 0, log_text: "" },
-  { step: "normalization", label: "Normalisasi VCF", tool: "bcftools", status: "pending", line_count: 0, log_text: "" },
-  { step: "qc", label: "Quality Control", tool: "PLINK 2 / 1.9", status: "pending", line_count: 0, log_text: "" },
-  { step: "imputation", label: "Imputasi Genotipe", tool: "Beagle 5.4", status: "pending", line_count: 0, log_text: "" },
-  { step: "structure", label: "Struktur Populasi & LD", tool: "PCA / Centered Kinship", status: "pending", line_count: 0, log_text: "" },
-  { step: "gwas", label: "Analisis Asosiasi GWAS", tool: "GEMMA / GLM", status: "pending", line_count: 0, log_text: "" },
-  { step: "multilocus", label: "Multi-Locus GWAS", tool: "FarmCPU / BLINK / MLMM", status: "pending", line_count: 0, log_text: "" },
-  { step: "postgwas", label: "Pasca-GWAS & Clumping", tool: "Dynamic Thresholds", status: "pending", line_count: 0, log_text: "" },
-  { step: "visualization", label: "Visualisasi & Cache Plot", tool: "Parquet Engine", status: "pending", line_count: 0, log_text: "" },
-  { step: "annotation", label: "Anotasi Gen Kandidat", tool: "GFF3 Parser", status: "pending", line_count: 0, log_text: "" },
-];
 
 const STATUS_BADGE = {
   done: { text: "Selesai", bg: "#dcfce7", color: "#166534", dot: "#22c55e" },

@@ -1,40 +1,9 @@
 import { useEffect, useState } from "react";
 import { formatApiError } from "../api/formatApiError";
 import { cancelJob, retryJob } from "../api/jobsApi";
+import { STATUS_LABELS, STEPS } from "../constants/pipelineStages";
 import { useJobPolling } from "../hooks/useJobPolling";
 import { JobProcessLogs } from "./JobProcessLogs";
-
-const STEPS = [
-  { key: "INSPECTION", logKey: "inspection", label: "Inspeksi Data", detail: "Rekonsiliasi sampel & fenotipe" },
-  { key: "NORMALIZATION", logKey: "normalization", label: "Normalisasi VCF", detail: "Fase 0 (QC Overflow) & bcftools" },
-  { key: "QC", logKey: "qc", label: "Quality Control", detail: "Filter varian & sampel PLINK" },
-  { key: "IMPUTATION", logKey: "imputation", label: "Imputasi Genotipe", detail: "Beagle 5.4 (Opsional)" },
-  { key: "STRUCTURE", logKey: "structure", label: "Struktur & LD", detail: "PCA, Kinship & LD Decay" },
-  { key: "GWAS", logKey: "gwas", label: "Analisis GWAS", detail: "Uji asosiasi GLM / LMM" },
-  { key: "MULTILOCUS", logKey: "multilocus", label: "Multi-Locus GWAS", detail: "FarmCPU / BLINK / MLMM (Opsional)" },
-  { key: "POSTGWAS", logKey: "postgwas", label: "Pasca-GWAS", detail: "Ambang batas & Clumping" },
-  { key: "VISUALIZATION", logKey: "visualization", label: "Visualisasi Plot", detail: "Cache Manhattan & QQ Plot" },
-  { key: "ANNOTATION", logKey: "annotation", label: "Anotasi Gen GFF3", detail: "Pemetaan gen & daftar GO" },
-];
-
-const STATUS_LABELS = {
-  PENDING: "Menyiapkan analisis",
-  RUNNING_INSPECTION: "Tahap 1/10: Inspeksi Fenotipe & Sampel sedang berjalan",
-  RUNNING_NORMALIZATION: "Tahap 2/10: Normalisasi VCF sedang berjalan",
-  RUNNING_QC: "Quality Control sedang berjalan",
-  RUNNING_IMPUTATION: "Tahap 4/10: Imputasi sedang berjalan",
-  RUNNING_STRUCTURE: "Tahap 5/10: Analisis Struktur Populasi & LD sedang berjalan",
-  RUNNING_GWAS: "Tahap 6/10: Analisis GWAS sedang berjalan",
-  RUNNING_MULTILOCUS: "Tahap 7/10: Multi-Locus GWAS sedang berjalan",
-  RUNNING_POSTGWAS: "Tahap 8/10: Pasca-GWAS & Clumping sedang berjalan",
-  RUNNING_PARSING: "Tahap 9/10: Menyiapkan visualisasi hasil",
-  RUNNING_ANNOTATION: "Tahap 10/10: Anotasi Gen Kandidat GFF3 sedang berjalan",
-  RUNNING: "Analisis sedang berjalan",
-  COMPLETED: "Analisis selesai (10/10 tahap)",
-  SUCCESS: "Analisis selesai (10/10 tahap)",
-  FAILED: "Analisis berhenti karena masalah",
-  CANCELLED: "Analisis dibatalkan",
-};
 
 function normalize(value) {
   return String(value || "").toUpperCase();

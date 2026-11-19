@@ -1,45 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatApiError } from "../api/formatApiError";
 import { downloadJobFile, fetchJobFiles, previewJobFile } from "../api/jobsApi";
+import { STAGE_BADGES, STAGE_TABS, formatBytes } from "../constants/pipelineStages";
 import { extractDownloadErrorMessage } from "../utils/download";
 
 const TERMINAL_STATUSES = new Set(["COMPLETED", "SUCCESS", "FAILED", "CANCELLED"]);
-
-const STAGE_BADGES = {
-  input: { bg: "#e0e7ff", color: "#3730a3", label: "Input Dataset" },
-  inspection: { bg: "#f0fdf4", color: "#15803d", label: "1. Inspeksi Data" },
-  normalization: { bg: "#dcfce7", color: "#166534", label: "2. Normalisasi VCF" },
-  qc: { bg: "#dbeafe", color: "#1e40af", label: "3. Quality Control" },
-  imputation: { bg: "#fef3c7", color: "#92400e", label: "4. Imputasi" },
-  structure: { bg: "#ede9fe", color: "#5b21b6", label: "5. Struktur & LD" },
-  gwas: { bg: "#fae8ff", color: "#86198f", label: "6. Analisis GWAS" },
-  multilocus: { bg: "#fce7f3", color: "#9d174d", label: "7. Multi-Locus" },
-  postgwas: { bg: "#ffedd5", color: "#9a3412", label: "8. Pasca-GWAS" },
-  visualization: { bg: "#cffafe", color: "#155e75", label: "9. Visualisasi" },
-  annotation: { bg: "#ecfccb", color: "#3f6212", label: "10. Anotasi Gen" },
-};
-
-const STAGE_TABS = [
-  { key: "all", label: "Semua File" },
-  { key: "input", label: "Input Dataset" },
-  { key: "inspection", label: "1. Inspeksi Data" },
-  { key: "normalization", label: "2. Normalisasi VCF" },
-  { key: "qc", label: "3. QC (PLINK)" },
-  { key: "imputation", label: "4. Imputasi" },
-  { key: "structure", label: "5. Struktur & LD" },
-  { key: "gwas", label: "6. GWAS (GEMMA)" },
-  { key: "multilocus", label: "7. Multi-Locus" },
-  { key: "postgwas", label: "8. Pasca-GWAS" },
-  { key: "visualization", label: "9. Visualisasi" },
-  { key: "annotation", label: "10. Anotasi GFF3" },
-];
-
-function formatBytes(bytes) {
-  const n = Number(bytes || 0);
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
-}
 
 export function JobFilesPanel({ jobId, isRunning = false }) {
   const [files, setFiles] = useState([]);
