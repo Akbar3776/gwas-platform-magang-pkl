@@ -41,7 +41,45 @@ def detect_association_format(header: list[str]) -> str:
     return "unknown"
 
 
-def iter_normalized_rows(source_file: Path | str) -> Generator[dict[str, Any], None, None]:
+def _count_fam_samples(path: Path) -> int | None:
+    if not path.is_file():
+        return None
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        count = sum(1 for line in fh if line.strip())
+    return count if count > 0 else None
+
+
+def _resolve_gemma_sample_count(
+    source_path: Path,
+    *,
+    fam_path: Path | str | None = None,
+    n_samples: int | None = None,
+) -> int | None:
+    if n_samples is not None:
+        return int(n_samples) if int(n_samples) > 0 else None
+    if fam_path is not None:
+        return _count_fam_samples(Path(fam_path))
+
+    stem_prefix = source_path.name.split(".", 1)[0]
+    candidates = [
+        source_path.with_suffix(".fam"),
+        source_path.parent / f"{stem_prefix}.fam",
+        source_path.parent / "genotypes.fam",
+        source_path.parent.parent / "genotypes.fam",
+    ]
+    for cand in candidates:
+        count = _count_fam_samples(cand)
+        if count is not None:
+            return count
+    return None
+
+
+def iter_normalized_rows(
+    source_file: Path | str,
+    *,
+    fam_path: Path | str | None = None,
+    n_samples: int | None = None,
+) -> Generator[dict[str, Any], None, None]:
     """
     Generator streaming yang membaca file asosiasi mentah dan mengembalikan
     kamus baris kanonik yang telah divalidasi.
@@ -66,6 +104,11 @@ def iter_normalized_rows(source_file: Path | str) -> Generator[dict[str, Any], N
         header = first_line.strip().split(delimiter) if delimiter else first_line.strip().split()
         header = [h.strip().strip('"') for h in header]
         fmt = detect_association_format(header)
+        gemma_total_samples = (
+            _resolve_gemma_sample_count(path, fam_path=fam_path, n_samples=n_samples)
+            if fmt == "gemma"
+            else None
+        )
 
         # Buat mapping indeks kolom
         lower_map: dict[str, int] = {col.lower(): i for i, col in enumerate(header)}
@@ -103,11 +146,17 @@ def iter_normalized_rows(source_file: Path | str) -> Generator[dict[str, Any], N
                     )
                     p_val_raw = parts[p_col]
 
-                    p_n = parts[lower_map.get("n_miss", 3)] if "n_miss" in lower_map else "NA"
+                    p_n_miss = parts[lower_map.get("n_miss", 3)] if "n_miss" in lower_map else "0"
 
                     p_val = float(p_val_raw)
                     if p_val <= 0 or p_val > 1.0 or not (p_val == p_val):
                         continue
+
+                    if gemma_total_samples is not None:
+                        n_miss_val = int(float(p_n_miss)) if p_n_miss not in {"NA", "."} else 0
+                        n_val: int | str = max(0, gemma_total_samples - n_miss_val)
+                    else:
+                        n_val = "NA"
 
                     row_out = {
                         "chr": chr_label(p_chr),
@@ -119,7 +168,7 @@ def iter_normalized_rows(source_file: Path | str) -> Generator[dict[str, Any], N
                         "beta": round(float(p_beta), 6) if p_beta not in {"NA", "."} else 0.0,
                         "se": round(float(p_se), 6) if p_se not in {"NA", "."} else 0.0,
                         "p": p_val,
-                        "n": int(float(p_n)) if p_n not in {"NA", "."} else "NA",
+                        "n": n_val,
                     }
 
                 elif fmt == "plink2":
@@ -221,7 +270,13 @@ def iter_normalized_rows(source_file: Path | str) -> Generator[dict[str, Any], N
                 continue
 
 
-def normalize_association_results(source_file: Path | str, target_tsv: Path | str) -> int:
+def normalize_association_results(
+    source_file: Path | str,
+    target_tsv: Path | str,
+    *,
+    fam_path: Path | str | None = None,
+    n_samples: int | None = None,
+) -> int:
     """
     Menulis hasil asosiasi ternormalisasi kanonik ke target_tsv.
     Mengembalikan jumlah baris varian yang berhasil ditulis.
@@ -234,7 +289,7 @@ def normalize_association_results(source_file: Path | str, target_tsv: Path | st
         writer = csv.writer(out_f, delimiter="\t")
         writer.writerow(CANONICAL_COLUMNS)
 
-        for row in iter_normalized_rows(source_file):
+        for row in iter_normalized_rows(source_file, fam_path=fam_path, n_samples=n_samples):
             writer.writerow([
                 row["chr"],
                 row["pos"],

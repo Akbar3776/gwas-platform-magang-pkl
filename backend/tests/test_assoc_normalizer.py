@@ -166,3 +166,52 @@ def test_normalize_assoc_preserves_non_chr_prefixes_across_formats(tmp_path):
     assert normalize_association_results(canon_assoc, canon_out) == 2
     canon_chrs = [line.split("\t")[0] for line in canon_out.read_text(encoding="utf-8").splitlines()[1:]]
     assert canon_chrs == ["Ca1", "H1"]
+
+
+def test_normalize_gemma_n_column_uses_fam_sample_count_or_na(tmp_path):
+    import csv
+
+    # 1. Without .fam next to assoc output or explicit fam_path -> n must be NA (not n_miss=0/2)
+    no_fam_assoc = tmp_path / "standalone.assoc.txt"
+    no_fam_assoc.write_text(
+        "chr\trs\tps\tn_miss\tallele1\tallele0\taf\tbeta\tse\tp_wald\n"
+        "1\trs1\t1000\t0\tA\tG\t0.25\t0.15\t0.03\t1.2e-6\n"
+        "1\trs2\t2000\t2\tT\tC\t0.10\t-0.20\t0.05\t5.0e-5\n",
+        encoding="utf-8",
+    )
+    out_na = tmp_path / "standalone_norm.tsv"
+    assert normalize_association_results(no_fam_assoc, out_na) == 2
+    with out_na.open("r", encoding="utf-8") as fh:
+        rows_na = list(csv.DictReader(fh, delimiter="\t"))
+    assert [r["n"] for r in rows_na] == ["NA", "NA"]
+
+    # 2. With GEMMA workspace layout (work_dir/genotypes.fam and work_dir/output/association.assoc.txt)
+    work_dir = tmp_path / "gemma_work"
+    output_dir = work_dir / "output"
+    output_dir.mkdir(parents=True)
+    fam_file = work_dir / "genotypes.fam"
+    fam_file.write_text(
+        "\n".join(f"F{i} I{i} 0 0 0 {1.0 + i}" for i in range(5)) + "\n",
+        encoding="utf-8",
+    )
+    assoc_file = output_dir / "association.assoc.txt"
+    assoc_file.write_text(
+        "chr\trs\tps\tn_miss\tallele1\tallele0\taf\tbeta\tse\tp_wald\n"
+        "1\trs10\t1000\t0\tA\tG\t0.25\t0.15\t0.03\t1.2e-6\n"
+        "1\trs11\t2000\t2\tT\tC\t0.10\t-0.20\t0.05\t5.0e-5\n",
+        encoding="utf-8",
+    )
+    out_fam = tmp_path / "gemma_norm.tsv"
+    assert normalize_association_results(assoc_file, out_fam) == 2
+    with out_fam.open("r", encoding="utf-8") as fh:
+        rows_fam = list(csv.DictReader(fh, delimiter="\t"))
+    assert [r["n"] for r in rows_fam] == ["5", "3"]
+
+    # 3. Explicit fam_path overrides missing auto-detection
+    custom_fam = tmp_path / "custom_cohort.fam"
+    custom_fam.write_text("\n".join(f"F{i} I{i} 0 0 0 1" for i in range(8)) + "\n", encoding="utf-8")
+    out_explicit = tmp_path / "explicit_norm.tsv"
+    assert normalize_association_results(no_fam_assoc, out_explicit, fam_path=custom_fam) == 2
+    with out_explicit.open("r", encoding="utf-8") as fh:
+        rows_exp = list(csv.DictReader(fh, delimiter="\t"))
+    assert [r["n"] for r in rows_exp] == ["8", "6"]
