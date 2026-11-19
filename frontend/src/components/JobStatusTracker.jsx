@@ -154,13 +154,15 @@ export function JobStatusTracker({ jobId, onComplete, onCancelled, onRetried, on
 
   return (
     <section
-      aria-live="polite"
       style={{ border: "1px solid #e2e8f0", borderRadius: 12, padding: 20, background: "#fff" }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
         <div>
           <p style={{ margin: 0, color: "#64748b", fontSize: 12 }}>STATUS ANALISIS</p>
-          <h3 style={{ margin: "4px 0 0", color: isStopped ? "#991b1b" : "#0f172a" }}>
+          <h3
+            aria-live="polite"
+            style={{ margin: "4px 0 0", color: isStopped ? "#991b1b" : "#0f172a" }}
+          >
             {headline}
           </h3>
         </div>

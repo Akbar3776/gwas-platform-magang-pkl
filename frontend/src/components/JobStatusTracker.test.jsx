@@ -62,3 +62,22 @@ test("renders a friendly failed state and server error", () => {
   expect(screen.getByText("Analisis berhenti karena masalah")).toBeInTheDocument();
   expect(screen.getByText("Format VCF tidak valid atau rusak.")).toBeInTheDocument();
 });
+
+test("places aria-live='polite' only on the status headline and not the log wrapper (A36)", () => {
+  useJobPolling.mockReturnValue({
+    jobStatus: {
+      current_step: "gwas",
+      overall_status: "running_gwas",
+      step_logs: [{ step: "gwas", label: "Analisis GWAS", log_text: "Running GEMMA..." }],
+    },
+    status: "RUNNING_GWAS",
+    isPolling: true,
+    pollError: null,
+  });
+
+  const { container } = render(<JobStatusTracker jobId="job-3" />);
+  const liveNodes = container.querySelectorAll("[aria-live]");
+  expect(liveNodes).toHaveLength(1);
+  expect(liveNodes[0].tagName).toBe("H3");
+  expect(liveNodes[0]).toHaveAttribute("aria-live", "polite");
+});

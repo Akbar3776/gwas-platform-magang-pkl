@@ -298,39 +298,50 @@ export function LeadSnpTable({
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, textAlign: "left" }}>
             <thead>
               <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
-                <th
-                  onClick={() => handleSort("snp")}
-                  style={{ padding: "8px 12px", cursor: "pointer", userSelect: "none" }}
-                >
-                  Lead SNP {sortField === "snp" ? (sortAsc ? "▲" : "▼") : ""}
-                </th>
-                <th
-                  onClick={() => handleSort("chr")}
-                  style={{ padding: "8px 12px", cursor: "pointer", userSelect: "none" }}
-                >
-                  Chr {sortField === "chr" ? (sortAsc ? "▲" : "▼") : ""}
-                </th>
-                <th
-                  onClick={() => handleSort("pos")}
-                  style={{ padding: "8px 12px", cursor: "pointer", userSelect: "none" }}
-                >
-                  Posisi (bp) {sortField === "pos" ? (sortAsc ? "▲" : "▼") : ""}
-                </th>
-                <th style={{ padding: "8px 12px" }}>Alel</th>
-                <th
-                  onClick={() => handleSort("p")}
-                  style={{ padding: "8px 12px", cursor: "pointer", userSelect: "none" }}
-                >
-                  P-value {sortField === "p" ? (sortAsc ? "▲" : "▼") : ""}
-                </th>
-                <th
-                  onClick={() => handleSort("beta")}
-                  style={{ padding: "8px 12px", cursor: "pointer", userSelect: "none" }}
-                >
-                  Beta (SE) {sortField === "beta" ? (sortAsc ? "▲" : "▼") : ""}
-                </th>
-                <th style={{ padding: "8px 12px" }}>Status Ambang</th>
-                <th style={{ padding: "8px 12px" }}>Varian Ter-clump</th>
+                {[
+                  { key: "snp", label: "Lead SNP", sortable: true },
+                  { key: "chr", label: "Chr", sortable: true },
+                  { key: "pos", label: "Posisi (bp)", sortable: true },
+                  { key: "allele", label: "Alel", sortable: false },
+                  { key: "p", label: "P-value", sortable: true },
+                  { key: "beta", label: "Beta (SE)", sortable: true },
+                  { key: "status", label: "Status Ambang", sortable: false },
+                  { key: "clumped", label: "Varian Ter-clump", sortable: false },
+                ].map((col) =>
+                  col.sortable ? (
+                    <th
+                      key={col.key}
+                      aria-sort={sortField === col.key ? (sortAsc ? "ascending" : "descending") : "none"}
+                      style={{ padding: "8px 12px" }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => handleSort(col.key)}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          padding: 0,
+                          margin: 0,
+                          font: "inherit",
+                          color: "inherit",
+                          fontWeight: "inherit",
+                          cursor: "pointer",
+                          userSelect: "none",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                        }}
+                      >
+                        {col.label}
+                        {sortField === col.key ? (sortAsc ? " ▲" : " ▼") : ""}
+                      </button>
+                    </th>
+                  ) : (
+                    <th key={col.key} style={{ padding: "8px 12px" }}>
+                      {col.label}
+                    </th>
+                  )
+                )}
               </tr>
             </thead>
             <tbody>

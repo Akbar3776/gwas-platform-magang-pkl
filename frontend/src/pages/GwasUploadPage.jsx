@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { cloneElement, isValidElement, useCallback, useEffect, useId, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { formatApiError } from "../api/formatApiError";
 import { fetchCapabilities, fetchReferencePanels, triggerFullPipeline } from "../api/jobsApi";
@@ -52,11 +52,24 @@ const INITIAL_FORM = {
   annotation_enabled: true,
 };
 
-function Field({ label, hint, children }) {
+function Field({ id, label, headerExtra, hint, children }) {
+  const autoId = useId();
+  const childId = isValidElement(children) ? children.props.id : undefined;
+  const controlId = id || childId || autoId;
+  const control =
+    isValidElement(children) && !childId
+      ? cloneElement(children, { id: controlId })
+      : children;
+
   return (
     <div style={{ display: "grid", gap: 6, color: "#334155", fontSize: 13 }}>
-      <span style={{ fontWeight: 700 }}>{label}</span>
-      {children}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <label htmlFor={controlId} style={{ fontWeight: 700 }}>
+          {label}
+        </label>
+        {headerExtra}
+      </div>
+      {control}
       {hint && <span style={{ color: "#64748b", fontSize: 11 }}>{hint}</span>}
     </div>
   );
@@ -548,19 +561,17 @@ export function GwasUploadPage() {
                   />
                 </Field>
                 <Field
-                  label={
-                    <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-                      <span>GENO</span>
-                      <label style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer", fontWeight: 500, fontSize: 12, color: form.enable_geno ? "#1e293b" : "#64748b" }}>
-                        <input
-                          type="checkbox"
-                          name="enable_geno"
-                          checked={form.enable_geno}
-                          onChange={updateField}
-                        />
-                        <span>Aktifkan</span>
-                      </label>
-                    </span>
+                  label="GENO"
+                  headerExtra={
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer", fontWeight: 500, fontSize: 12, color: form.enable_geno ? "#1e293b" : "#64748b" }}>
+                      <input
+                        type="checkbox"
+                        name="enable_geno"
+                        checked={form.enable_geno}
+                        onChange={updateField}
+                      />
+                      <span>Aktifkan</span>
+                    </label>
                   }
                   hint={form.enable_geno ? "Batas missingness varian SNP (default 0.05)" : "Filter missingness varian SNP dinonaktifkan (opsional)"}
                 >

@@ -70,5 +70,8 @@ describe("GwasUploadPage capabilities integration (A24)", () => {
     expect(screen.getByText(/Multi-Locus GWAS tidak tersedia/i)).toBeInTheDocument();
     expect(screen.getByText(/FASTA Referensi Genom \(Opsional\)/i)).toBeInTheDocument();
     expect(screen.getByText(/File Pemetaan GO \(Opsional\)/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("MAF")).toHaveAttribute("name", "maf");
+    expect(screen.getByLabelText("MIND")).toHaveAttribute("name", "mind");
+    expect(screen.getByLabelText("GENO")).toHaveAttribute("name", "geno");
   });
 });

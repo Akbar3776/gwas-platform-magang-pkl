@@ -277,6 +277,7 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
                 <button
                   key={mTab}
                   type="button"
+                  aria-pressed={activeModelFilter === mTab}
                   onClick={() => setActiveModelFilter(mTab)}
                   style={{
                     padding: "4px 10px",
@@ -385,68 +386,72 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
 
       {/* Summary Stat Cards (Fase 4H) */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
-        <div
-          onClick={() => setFilterType("consistent")}
-          style={{
-            padding: 12,
-            background: filterType === "consistent" ? "#dcfce7" : "#f0fdf4",
-            borderRadius: 8,
-            border: `2px solid ${filterType === "consistent" ? "#16a34a" : "#bbf7d0"}`,
-            cursor: "pointer",
-            textAlign: "center",
-            transition: "all 0.15s ease",
-          }}
-        >
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#166534", textTransform: "uppercase" }}>
-            Konsisten (Terkonfirmasi)
-          </div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "#15803d", marginTop: 2 }}>
-            {nConsistent}
-          </div>
-          <div style={{ fontSize: 10, color: "#166534" }}>Ditemukan di kedua model</div>
-        </div>
-
-        <div
-          onClick={() => setFilterType("multi_only")}
-          style={{
-            padding: 12,
-            background: filterType === "multi_only" ? "#dbeafe" : "#eff6ff",
-            borderRadius: 8,
-            border: `2px solid ${filterType === "multi_only" ? "#2563eb" : "#bfdbfe"}`,
-            cursor: "pointer",
-            textAlign: "center",
-            transition: "all 0.15s ease",
-          }}
-        >
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#1e40af", textTransform: "uppercase" }}>
-            Hanya Multi-Locus
-          </div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "#1d4ed8", marginTop: 2 }}>
-            {nMultiOnly}
-          </div>
-          <div style={{ fontSize: 10, color: "#1e40af" }}>Varian efek minor / BLINK</div>
-        </div>
-
-        <div
-          onClick={() => setFilterType("single_only")}
-          style={{
-            padding: 12,
-            background: filterType === "single_only" ? "#fef3c7" : "#fffbeb",
-            borderRadius: 8,
-            border: `2px solid ${filterType === "single_only" ? "#d97706" : "#fef3c7"}`,
-            cursor: "pointer",
-            textAlign: "center",
-            transition: "all 0.15s ease",
-          }}
-        >
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#92400e", textTransform: "uppercase" }}>
-            Hanya Single-Locus
-          </div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "#b45309", marginTop: 2 }}>
-            {nSingleOnly}
-          </div>
-          <div style={{ fontSize: 10, color: "#92400e" }}>Model GEMMA / Univariat</div>
-        </div>
+        {[
+          {
+            key: "consistent",
+            title: "Konsisten (Terkonfirmasi)",
+            count: nConsistent,
+            subtitle: "Ditemukan di kedua model",
+            activeBg: "#dcfce7",
+            bg: "#f0fdf4",
+            activeBorder: "#16a34a",
+            border: "#bbf7d0",
+            labelColor: "#166534",
+            countColor: "#15803d",
+          },
+          {
+            key: "multi_only",
+            title: "Hanya Multi-Locus",
+            count: nMultiOnly,
+            subtitle: "Varian efek minor / BLINK",
+            activeBg: "#dbeafe",
+            bg: "#eff6ff",
+            activeBorder: "#2563eb",
+            border: "#bfdbfe",
+            labelColor: "#1e40af",
+            countColor: "#1d4ed8",
+          },
+          {
+            key: "single_only",
+            title: "Hanya Single-Locus",
+            count: nSingleOnly,
+            subtitle: "Model GEMMA / Univariat",
+            activeBg: "#fef3c7",
+            bg: "#fffbeb",
+            activeBorder: "#d97706",
+            border: "#fef3c7",
+            labelColor: "#92400e",
+            countColor: "#b45309",
+          },
+        ].map((card) => {
+          const isPressed = filterType === card.key;
+          return (
+            <button
+              key={card.key}
+              type="button"
+              aria-pressed={isPressed}
+              onClick={() => setFilterType(card.key)}
+              style={{
+                width: "100%",
+                padding: 12,
+                background: isPressed ? card.activeBg : card.bg,
+                borderRadius: 8,
+                border: `2px solid ${isPressed ? card.activeBorder : card.border}`,
+                cursor: "pointer",
+                textAlign: "center",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, color: card.labelColor, textTransform: "uppercase" }}>
+                {card.title}
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: card.countColor, marginTop: 2 }}>
+                {card.count}
+              </div>
+              <div style={{ fontSize: 10, color: card.labelColor }}>{card.subtitle}</div>
+            </button>
+          );
+        })}
       </div>
 
       {/* Filter and Search Bar */}
