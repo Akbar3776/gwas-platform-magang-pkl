@@ -466,6 +466,21 @@ def _resolve_dataset_go_mapping_path(db: Session, job: AnalysisJob | None) -> Pa
     return None
 
 
+def _resolve_dataset_fasta_path(db: Session, job: AnalysisJob | None) -> Path | None:
+    dataset = _resolve_dataset_for_job(db, job)
+    if dataset is None:
+        return None
+    ref_meta = (dataset.extra_metadata or {}).get("reference_fasta") if dataset.extra_metadata else None
+    if isinstance(ref_meta, dict) and ref_meta.get("path") and Path(ref_meta["path"]).is_file():
+        return Path(ref_meta["path"])
+    ds_dir = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id)
+    for cand_name in ("reference.fa", "reference.fasta", "reference.fna"):
+        ref_f = ds_dir / cand_name
+        if ref_f.is_file():
+            return ref_f
+    return None
+
+
 def _normalize_candidate_genes_payload(
     data: dict[str, Any],
     *,
@@ -755,6 +770,7 @@ def get_primers_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[s
                 lead_snps=source_snps,
                 trait_name=trait_label,
                 max_snps=20,
+                fasta_path=_resolve_dataset_fasta_path(db, job),
                 output_dir=anno_dir,
             )
             anno_dir.mkdir(parents=True, exist_ok=True)

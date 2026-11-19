@@ -334,15 +334,250 @@ def test_flanking_and_primers_require_fasta_unless_synthetic_enabled(tmp_path: P
     monkeypatch.setenv("ALLOW_SYNTHETIC_ANNOTATION", "true")
     synth_payload = generate_flanking_and_primers(
         lead_snps=[
-            {"snp": "chr6:358807461", "chr": "6", "pos": 358807461, "a1": "C", "p": 4.31e-6, "nearest_gene": "Asa6G01390"},
-            {"snp": "chr4:1766400024", "chr": "4", "pos": 1766400024, "a1": "C", "p": 8.12e-6, "nearest_gene": "Asa4G06376"},
+            {"snp": "chr6:101", "chr": "6", "pos": 101, "a1": "C", "p": 4.31e-6, "nearest_gene": "Asa6G01390"},
         ],
         trait_name="clove_weight",
         output_dir=tmp_path / "synth",
     )
     assert synth_payload["synthetic"] is True
-    assert synth_payload["total_markers"] == 2
-    assert synth_payload["markers_with_primers"] == 1
+    assert synth_payload["total_markers"] == 1
     assert all(m.get("synthetic") is True for m in synth_payload["markers"])
-    assert "LEFT PRIMER" in synth_payload["markers"][0]["primer3_output"]
-    assert synth_payload["markers"][1]["primer3_output"] == "no primers found"
+
+
+def test_primer_service_removed_curated_and_sha512():
+    import inspect
+    from app.services import primer_service
+
+    assert not hasattr(primer_service, "CURATED_FLANKING_SEQUENCES")
+    src = inspect.getsource(primer_service)
+    assert "hashlib" not in src
+    assert "sha512" not in src
+
+
+def test_fasta_fai_index_and_direct_seek_1mb(tmp_path: Path, monkeypatch):
+    from app.services import primer_service
+
+    monkeypatch.delenv("ALLOW_SYNTHETIC_ANNOTATION", raising=False)
+    fasta_path = tmp_path / "ref_2chr.fa"
+    # 2 chromosomes >= 1 Mb total, 80 bp wrapped lines
+    chr1_len = 600_000
+    chr2_len = 600_000
+    pattern = "ACGTTGCATGCAATGCATGCATGCCGTAGCATCGATCGATGCTAGCTAGCATCGATCGTAGCTAGCATCGATCGTAGCTA"  # 80 bp
+    assert len(pattern) == 80
+
+    # Place distinct 201 bp probe around 1-based pos=500001 on chr1 (spanning multiple lines cleanly)
+    probe_left = ("CAGTCGAT" * 13)[:100]
+    probe_ref = "A"
+    probe_right = ("TGCATGAC" * 13)[:100]
+    chr1_seq = bytearray((pattern * (chr1_len // 80)).encode("ascii"))
+    chr1_seq[499900:500101] = (probe_left + probe_ref + probe_right).encode("ascii")
+
+    chr2_seq = bytearray((pattern * (chr2_len // 80)).encode("ascii"))
+    chr2_probe = ("GGATCCAT" * 13)[:100] + "G" + ("CCATGGTA" * 13)[:100]
+    chr2_seq[400000:400201] = chr2_probe.encode("ascii")
+
+    with fasta_path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(">chr1\n")
+        for off in range(0, len(chr1_seq), 80):
+            fh.write(chr1_seq[off:off + 80].decode("ascii") + "\n")
+        fh.write(">2\n")
+        for off in range(0, len(chr2_seq), 80):
+            fh.write(chr2_seq[off:off + 80].decode("ascii") + "\n")
+
+    fai_path = primer_service.build_fasta_index(fasta_path)
+    assert fai_path.is_file()
+    fai_lines = fai_path.read_text(encoding="utf-8").splitlines()
+    assert len(fai_lines) == 2
+    assert fai_lines[0].startswith("chr1\t600000\t")
+    assert len(fai_lines[0].split("\t")) == 5
+
+    # Match "chr1" via chr_label("1") == "1"
+    bracketed, raw = primer_service.extract_or_build_flanking_sequence(
+        chr_name="1",
+        pos=500001,
+        allele="A",
+        flank_len=100,
+        fasta_path=fasta_path,
+    )
+    assert raw == probe_left + probe_ref + probe_right
+    assert bracketed == f"{probe_left}[A]{probe_right}"
+
+    region_chr2 = primer_service._read_fasta_region(fasta_path, "chr2", 400001, 400201)
+    assert region_chr2 == chr2_probe
+
+
+def test_fasta_ref_mismatch_and_no_reference_for_chr(tmp_path: Path, monkeypatch):
+    from app.services.primer_service import generate_flanking_and_primers
+
+    monkeypatch.delenv("ALLOW_SYNTHETIC_ANNOTATION", raising=False)
+    fasta_path = tmp_path / "mini.fa"
+    seq = "ACGTACGTAC" * 30  # 300 bp, 1-based pos 151 has seq[150] = 'A'
+    fasta_path.write_text(f">1\n{seq}\n", encoding="utf-8")
+
+    payload = generate_flanking_and_primers(
+        lead_snps=[
+            {"snp": "rs_ok", "chr": "1", "pos": 151, "ref": "A", "a1": "G", "p": 1e-8},
+            {"snp": "rs_mismatch", "chr": "1", "pos": 151, "ref": "T", "a1": "C", "p": 2e-8},
+            {"snp": "rs_missing_chr", "chr": "99", "pos": 151, "ref": "A", "a1": "G", "p": 3e-8},
+        ],
+        trait_name="test_trait",
+        fasta_path=fasta_path,
+    )
+    by_snp = {m["snp"]: m for m in payload["markers"]}
+    assert by_snp["rs_ok"]["ref_mismatch"] is False
+    assert by_snp["rs_mismatch"]["ref_mismatch"] is True
+    assert "ref_mismatch" in by_snp["rs_mismatch"]["warning"]
+    assert by_snp["rs_missing_chr"]["status"] == "no_reference_for_chr"
+    assert by_snp["rs_missing_chr"]["flanking_sequence"] == ""
+
+
+def test_fasta_100mb_indexed_seek_speed(tmp_path: Path):
+    import time
+    from app.services import primer_service
+
+    fasta_path = tmp_path / "huge_100mb.fa"
+    line_bytes = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\n"  # 80 bp + \n
+    n_lines = 1_250_000  # 100,000,000 bases (~101 MB)
+    block = line_bytes * 5000
+    with fasta_path.open("wb") as fh:
+        fh.write(b">chr1\n")
+        for _ in range(n_lines // 5000):
+            fh.write(block)
+
+    primer_service.build_fasta_index(fasta_path)
+    idx = primer_service.load_fasta_index(fasta_path)
+
+    t0 = time.perf_counter()
+    for k in range(100):
+        pos = 1000 + k * 990_000
+        reg = primer_service._read_fasta_region(fasta_path, "1", pos - 100, pos + 100, index=idx)
+        assert reg is not None and len(reg) == 201
+    elapsed = time.perf_counter() - t0
+    print(f"[BENCHMARK A57] 100 indexed seeks on 100 Mb FASTA: {elapsed:.4f}s")
+    assert elapsed < 2.0
+
+
+def test_chunked_reference_fasta_upload_gz_and_checksum(tmp_path: Path, monkeypatch):
+    import gzip
+    import hashlib
+    import io
+    import uuid
+    from starlette.datastructures import UploadFile
+    from app.api.routes import upload as upload_routes
+    from app.core.config import settings
+    from app.db.engine.models import Dataset, UploadStatus, User, UserRole
+    from app.schemas.upload import InitUploadRequest
+    from app.services import upload_service
+    from app.tasks import upload_tasks
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(upload_service, "_STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(upload_service, "_STAGING_ROOT", tmp_path / "staging")
+    monkeypatch.setattr(upload_service, "_DATASETS_ROOT", tmp_path / "datasets")
+
+    owner = User(id=uuid.uuid4(), email="u@example.com", hashed_password="x", role=UserRole.RESEARCHER)
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=owner.id,
+        original_filename="cohort.vcf",
+        storage_path=str(tmp_path / "datasets" / "cohort.vcf"),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+    )
+
+    class _DB:
+        def get(self, model, oid):
+            return ds if model is Dataset and str(oid) == str(ds.id) else None
+
+        def query(self, *args):
+            class _Q:
+                def filter(self, *a):
+                    return self
+
+                def all(self):
+                    return []
+
+            return _Q()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    db = _DB()
+    monkeypatch.setattr(upload_tasks, "SessionLocal", lambda: db)
+    monkeypatch.setattr(upload_tasks.assemble_reference_fasta_task, "retry", lambda *a, **kw: None, raising=False)
+
+    fa_plain = b">1\n" + (b"ACGTACGTACGTACGTACGT" * 15) + b"\n>2\n" + (b"TGCATGCATGCATGCATGCA" * 15) + b"\n"
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+        gz.write(fa_plain)
+    gz_bytes = buf.getvalue()
+    gz_sha = hashlib.sha256(gz_bytes).hexdigest()
+
+    init_out = upload_routes.init_reference_upload(
+        file_id=ds.id,
+        payload=InitUploadRequest(original_filename="genome.fa.gz", total_size_bytes=len(gz_bytes)),
+        db=db,
+        user=owner,
+    )
+    assert init_out["upload_status"] == "uploading"
+
+    half = len(gz_bytes) // 2
+    upload_routes.upload_reference_chunk(
+        file_id=ds.id,
+        chunk_index=0,
+        total_chunks=2,
+        chunk=UploadFile(file=io.BytesIO(gz_bytes[:half]), filename="genome.fa.gz"),
+        db=db,
+        user=owner,
+    )
+    upload_routes.upload_reference_chunk(
+        file_id=ds.id,
+        chunk_index=1,
+        total_chunks=2,
+        chunk=UploadFile(file=io.BytesIO(gz_bytes[half:]), filename="genome.fa.gz"),
+        db=db,
+        user=owner,
+    )
+
+    dispatched = {}
+
+    class _FakeTask:
+        id = "ref-task-1"
+
+    monkeypatch.setattr(
+        upload_routes.assemble_reference_fasta_task,
+        "delay",
+        lambda fid, total, fname, exp: dispatched.update({"fid": fid, "total": total, "fname": fname, "exp": exp}) or _FakeTask(),
+    )
+    fin_out = upload_routes.finalize_reference_upload(
+        file_id=ds.id,
+        total_chunks=2,
+        expected_sha256=gz_sha,
+        db=db,
+        user=owner,
+    )
+    assert fin_out["upload_status"] == "validating"
+    assert dispatched["exp"] == gz_sha
+
+    res = upload_tasks.assemble_reference_fasta_task(
+        dataset_id=dispatched["fid"],
+        total_chunks=dispatched["total"],
+        original_filename=dispatched["fname"],
+        expected_sha256=dispatched["exp"],
+    )
+    assert res["status"] == "success"
+    assert res["n_contigs"] == 2
+    ref_fa = Path(res["fasta_path"])
+    assert ref_fa.is_file()
+    assert not ref_fa.name.endswith(".gz")
+    assert Path(f"{ref_fa}.fai").is_file()
+
+    st = upload_routes.get_reference_status(file_id=ds.id, db=db, user=owner)
+    assert st["upload_status"] == "uploaded"
+    assert st["n_contigs"] == 2

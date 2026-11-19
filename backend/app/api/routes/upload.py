@@ -32,7 +32,7 @@ from app.services.phenotype_service import (
     read_vcf_sample_ids,
 )
 from app.tasks._common import is_under_storage, remove_job_storage
-from app.tasks.upload_tasks import assemble_dataset_task
+from app.tasks.upload_tasks import assemble_dataset_task, assemble_reference_fasta_task
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -71,6 +71,9 @@ def list_uploaded_datasets(
         go_anno_info = meta.get("go_annotation", {})
         go_anno_path = go_anno_info.get("path")
         has_go_anno = bool(go_anno_path and Path(go_anno_path).is_file())
+        ref_info = meta.get("reference_fasta", {})
+        ref_path = ref_info.get("path")
+        has_ref = bool(ref_path and Path(ref_path).is_file())
         pheno_name = pheno_info.get("filename") or (Path(ds.phenotype_file_path).name if has_pheno else None)
         anno_name = anno_info.get("filename") or (Path(ds.annotation_file_path).name if has_anno else None)
         items.append(
@@ -92,6 +95,9 @@ def list_uploaded_datasets(
                 "has_go_annotation": has_go_anno,
                 "go_annotation_filename": go_anno_info.get("filename") if has_go_anno else None,
                 "go_annotation_n_genes": go_anno_info.get("n_genes", 0) if has_go_anno else 0,
+                "has_reference": has_ref,
+                "reference_filename": ref_info.get("filename") if has_ref else None,
+                "reference_n_contigs": ref_info.get("n_contigs", 0) if has_ref else 0,
             }
         )
     return items
@@ -177,6 +183,18 @@ def upload_chunk(
     )
 
 
+def _normalize_optional_sha256(expected_sha256: str | None) -> str | None:
+    if expected_sha256 is None or expected_sha256.strip() == "":
+        return None
+    normalized = expected_sha256.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Format expected_sha256 tidak valid (harus 64 karakter heksadesimal).",
+        )
+    return normalized
+
+
 @router.post("/finalize", response_model=FinalizeUploadResponse, status_code=status.HTTP_202_ACCEPTED)
 def finalize_upload(
     file_id: uuid.UUID = Form(...),
@@ -189,14 +207,7 @@ def finalize_upload(
     if dataset.upload_status != UploadStatus.UPLOADING:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Upload sudah difinalisasi atau gagal")
 
-    normalized_sha256: str | None = None
-    if expected_sha256 is not None and expected_sha256.strip() != "":
-        normalized_sha256 = expected_sha256.strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{64}", normalized_sha256):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Format expected_sha256 tidak valid (harus 64 karakter heksadesimal).",
-            )
+    normalized_sha256 = _normalize_optional_sha256(expected_sha256)
 
     received_indices = upload_service.get_received_chunk_indices(str(file_id))
     if len(received_indices) != total_chunks or received_indices != list(range(total_chunks)):
@@ -321,6 +332,9 @@ def delete_uploaded_dataset(
 
     if staging_dir.is_dir() and _under_storage(staging_dir):
         shutil.rmtree(staging_dir, ignore_errors=True)
+    ref_staging_dir = Path(settings.STORAGE_ROOT) / "staging" / f"{dataset.id}_ref"
+    if ref_staging_dir.is_dir() and _under_storage(ref_staging_dir):
+        shutil.rmtree(ref_staging_dir, ignore_errors=True)
 
     for job_id, work_dir in job_cleanup_targets:
         remove_job_storage(job_id, work_dir)
@@ -634,6 +648,197 @@ def delete_go_annotation_file(
         if _under_storage(go_path):
             go_path.unlink(missing_ok=True)
     meta.pop("go_annotation", None)
+    dataset.extra_metadata = meta
+    db.commit()
+    return {"deleted": True}
+
+
+_ALLOWED_REFERENCE_EXTS = (".fa", ".fasta", ".fna", ".fa.gz", ".fasta.gz", ".fna.gz")
+
+
+@router.post("/{file_id}/reference/init", status_code=status.HTTP_201_CREATED)
+def init_reference_upload(
+    file_id: uuid.UUID,
+    payload: InitUploadRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Memulai sesi upload bertahap untuk file genom referensi FASTA (.fa/.fasta/.fna/.gz)."""
+    dataset = _owned_dataset(file_id, user, db)
+    lower_name = payload.original_filename.lower()
+    if not any(lower_name.endswith(ext) for ext in _ALLOWED_REFERENCE_EXTS):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File FASTA referensi harus berformat .fa, .fasta, .fna, atau versi terkompresi .gz.",
+        )
+    if settings.MAX_UPLOAD_SIZE_BYTES > 0 and payload.total_size_bytes > settings.MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Ukuran berkas FASTA melebihi batas maksimal yang diizinkan.",
+        )
+
+    staging_id = f"{dataset.id}_ref"
+    staging_dir = upload_service.get_staging_dir(staging_id)
+    for stale in staging_dir.glob("chunk_*.part"):
+        stale.unlink(missing_ok=True)
+
+    meta = dict(dataset.extra_metadata or {})
+    meta["reference_fasta"] = {
+        "status": UploadStatus.UPLOADING.value,
+        "filename": payload.original_filename,
+        "total_size_bytes": payload.total_size_bytes,
+    }
+    dataset.extra_metadata = meta
+    db.commit()
+    return {"file_id": str(dataset.id), "upload_status": UploadStatus.UPLOADING.value}
+
+
+@router.post("/{file_id}/reference/chunk", response_model=ChunkUploadResponse)
+def upload_reference_chunk(
+    file_id: uuid.UUID,
+    chunk_index: int = Form(..., ge=0),
+    total_chunks: int = Form(..., gt=0),
+    chunk: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ChunkUploadResponse:
+    """Menerima satu potongan (chunk) file genom referensi FASTA."""
+    dataset = _owned_dataset(file_id, user, db)
+    ref_meta = (dataset.extra_metadata or {}).get("reference_fasta") or {}
+    if ref_meta.get("status") != UploadStatus.UPLOADING.value:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Upload FASTA tidak sedang menerima chunk")
+    if chunk_index >= total_chunks:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="chunk_index di luar rentang")
+
+    expected_bytes = int(ref_meta.get("total_size_bytes") or 0)
+    max_chunks = math.ceil(expected_bytes / (1024 * 1024)) + 1
+    if total_chunks > max_chunks:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Jumlah chunk melebihi batas yang wajar untuk ukuran berkas.",
+        )
+
+    staging_id = f"{dataset.id}_ref"
+    try:
+        saved_path = upload_service.save_chunk(
+            staging_id,
+            chunk_index,
+            chunk,
+            max_bytes=settings.MAX_CHUNK_SIZE_BYTES,
+        )
+    except upload_service.InvalidFileIdError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="file_id tidak valid") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)) from exc
+
+    staging_dir = upload_service.get_staging_dir(staging_id)
+    total_staged_bytes = sum(p.stat().st_size for p in staging_dir.glob("chunk_*.part"))
+    if total_staged_bytes > expected_bytes + settings.MAX_CHUNK_SIZE_BYTES:
+        saved_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Total ukuran chunk FASTA yang diterima melebihi batas ukuran berkas.",
+        )
+
+    received_indices = upload_service.get_received_chunk_indices(staging_id)
+    return ChunkUploadResponse(
+        file_id=file_id,
+        chunk_index=chunk_index,
+        chunks_received=len(received_indices),
+        total_chunks=total_chunks,
+        is_complete=len(received_indices) == total_chunks,
+    )
+
+
+@router.post("/{file_id}/reference/finalize", status_code=status.HTTP_202_ACCEPTED)
+def finalize_reference_upload(
+    file_id: uuid.UUID,
+    total_chunks: int = Form(..., gt=0),
+    expected_sha256: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Memfinalisasi chunk FASTA referensi dan menjadwalkan dekompresi serta pengindeksan `.fai`."""
+    dataset = _owned_dataset(file_id, user, db)
+    ref_meta = dict((dataset.extra_metadata or {}).get("reference_fasta") or {})
+    if ref_meta.get("status") != UploadStatus.UPLOADING.value:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Upload FASTA sudah difinalisasi atau gagal")
+
+    normalized_sha256 = _normalize_optional_sha256(expected_sha256)
+    staging_id = f"{dataset.id}_ref"
+    received_indices = upload_service.get_received_chunk_indices(staging_id)
+    if len(received_indices) != total_chunks or received_indices != list(range(total_chunks)):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Chunk FASTA belum lengkap; kirim ulang chunk yang hilang sebelum finalize",
+        )
+
+    ref_meta["status"] = UploadStatus.VALIDATING.value
+    meta = dict(dataset.extra_metadata or {})
+    meta["reference_fasta"] = ref_meta
+    dataset.extra_metadata = meta
+    db.commit()
+
+    orig_name = str(ref_meta.get("filename") or "reference.fa")
+    task = assemble_reference_fasta_task.delay(str(dataset.id), total_chunks, orig_name, normalized_sha256)
+    return {
+        "file_id": str(dataset.id),
+        "upload_status": UploadStatus.VALIDATING.value,
+        "assembly_task_id": task.id,
+    }
+
+
+@router.get("/{file_id}/reference/status")
+def get_reference_status(
+    file_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Mengembalikan status unggahan dan pengindeksan `.fai` FASTA referensi dataset."""
+    dataset = _owned_dataset(file_id, user, db)
+    ref_meta = (dataset.extra_metadata or {}).get("reference_fasta") or {}
+    st = ref_meta.get("status") or "not_uploaded"
+    received = []
+    if st == UploadStatus.UPLOADING.value:
+        received = upload_service.get_received_chunk_indices(f"{dataset.id}_ref")
+    return {
+        "file_id": str(dataset.id),
+        "upload_status": st,
+        "received_chunk_indices": received,
+        "filename": ref_meta.get("filename"),
+        "n_contigs": ref_meta.get("n_contigs", 0),
+        "contigs": ref_meta.get("contigs", []),
+        "error_message": ref_meta.get("error_message"),
+    }
+
+
+@router.delete("/{file_id}/reference")
+def delete_reference_file(
+    file_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Menghapus FASTA referensi dan indeks `.fai` dari dataset."""
+    dataset = _owned_dataset(file_id, user, db)
+    jobs = db.query(AnalysisJob).filter(AnalysisJob.dataset_id == dataset.id).all()
+    for j in jobs:
+        if j.deleted_at is None and j.overall_status in ACTIVE_JOB_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="FASTA referensi tidak dapat dihapus karena ada job yang sedang berjalan.",
+            )
+
+    meta = dict(dataset.extra_metadata or {})
+    ref_info = meta.get("reference_fasta") or {}
+    for key in ("path", "fai_path"):
+        if ref_info.get(key):
+            p = Path(ref_info[key])
+            if _under_storage(p):
+                p.unlink(missing_ok=True)
+    ref_staging_dir = Path(settings.STORAGE_ROOT) / "staging" / f"{dataset.id}_ref"
+    if ref_staging_dir.is_dir() and _under_storage(ref_staging_dir):
+        shutil.rmtree(ref_staging_dir, ignore_errors=True)
+    meta.pop("reference_fasta", None)
     dataset.extra_metadata = meta
     db.commit()
     return {"deleted": True}

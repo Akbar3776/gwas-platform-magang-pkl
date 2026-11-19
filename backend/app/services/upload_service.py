@@ -120,7 +120,13 @@ def get_received_chunk_indices(file_id: str) -> list[int]:
     return sorted(indices)
 
 
-def assemble_file(file_id: str, total_chunks: int, original_filename: str) -> tuple[Path, int]:
+def assemble_file(
+    file_id: str,
+    total_chunks: int,
+    original_filename: str,
+    *,
+    dest_id: str | None = None,
+) -> tuple[Path, int]:
     """
     Merakit seluruh chunk (index 0 .. total_chunks-1) menjadi satu file utuh,
     ditulis secara streaming langsung ke lokasi final di `_DATASETS_ROOT`.
@@ -135,9 +141,11 @@ def assemble_file(file_id: str, total_chunks: int, original_filename: str) -> tu
         FileNotFoundError: jika ada chunk yang hilang (upload tidak lengkap).
     """
     _validate_file_id(file_id)
+    target_id = dest_id or file_id
+    _validate_file_id(target_id)
     staging_dir = get_staging_dir(file_id)
 
-    final_dir = _DATASETS_ROOT / file_id
+    final_dir = _DATASETS_ROOT / target_id
     final_dir.mkdir(parents=True, exist_ok=True)
     safe_name = Path(PurePosixPath(original_filename.replace("\\", "/")).name).name
     final_path = final_dir / safe_name

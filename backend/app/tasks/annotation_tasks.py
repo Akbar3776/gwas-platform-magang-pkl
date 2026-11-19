@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ from app.services.primer_service import generate_flanking_and_primers
 from app.tasks._common import (
     JobCancelledError,
     append_log,
+    chr_label,
     ensure_not_cancelled,
     mark_job,
     stage_dir,
@@ -32,6 +34,50 @@ from app.tasks._common import (
 from app.tasks.celery_app import celery_app, get_task_logger
 
 logger = get_task_logger(__name__)
+
+
+def _enrich_vcf_ref_alleles(snps: list[dict[str, Any]], vcf_candidates: list[Path | None]) -> None:
+    targets: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for s in snps:
+        if s.get("ref"):
+            continue
+        pos = int(s.get("pos") or 0)
+        if pos <= 0:
+            continue
+        targets.setdefault((chr_label(s.get("chr") or ""), pos), []).append(s)
+    if not targets:
+        return
+
+    vcf_path = next((p for p in vcf_candidates if p is not None and p.is_file()), None)
+    if vcf_path is None:
+        return
+
+    open_fn = gzip.open if str(vcf_path).lower().endswith(".gz") else open
+    remaining = set(targets.keys())
+    try:
+        with open_fn(vcf_path, "rt", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if not line or line[0] == "#":
+                    continue
+                parts = line.split("\t", 6)
+                if len(parts) < 5:
+                    continue
+                try:
+                    key = (chr_label(parts[0]), int(parts[1]))
+                except ValueError:
+                    continue
+                if key in remaining:
+                    ref_val = parts[3].strip().upper()
+                    alt_val = parts[4].split(",")[0].strip().upper()
+                    for item in targets[key]:
+                        item.setdefault("ref", ref_val)
+                        if not item.get("alt") and alt_val != ".":
+                            item["alt"] = alt_val
+                    remaining.remove(key)
+                    if not remaining:
+                        break
+    except Exception:
+        pass
 
 
 @celery_app.task(
@@ -153,7 +199,29 @@ def run_annotation(
             or "trait"
         )
 
-        # Selalu jalankan Fase 5.4 / Fase 6–8 (Flanking 201 bp & Primer3 Design) jika ada Lead SNPs
+        # Selalu jalankan Fase 5.4 / Fase 6–8 (Flanking 201 bp & Primer Design) jika ada Lead SNPs
+        fasta_candidate: Path | None = None
+        ref_meta = (dataset.extra_metadata or {}).get("reference_fasta") if dataset.extra_metadata else None
+        if isinstance(ref_meta, dict) and ref_meta.get("path") and Path(ref_meta["path"]).is_file():
+            fasta_candidate = Path(ref_meta["path"])
+        else:
+            ds_dir = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id)
+            for cand_name in ("reference.fa", "reference.fasta", "reference.fna"):
+                ref_f = ds_dir / cand_name
+                if ref_f.is_file():
+                    fasta_candidate = ref_f
+                    break
+
+        if fasta_candidate is not None and lead_snps:
+            _enrich_vcf_ref_alleles(
+                lead_snps[:20],
+                [
+                    workspace.parent / "qc" / "plink_qc.vcf.gz",
+                    workspace.parent / "normalization" / "normalized.vcf.gz",
+                    Path(dataset.storage_path) if dataset.storage_path else None,
+                ],
+            )
+
         primers_data: dict[str, Any] | None = None
         if len(lead_snps) > 0:
             try:
@@ -161,6 +229,7 @@ def run_annotation(
                     lead_snps=lead_snps,
                     trait_name=trait_name,
                     max_snps=20,
+                    fasta_path=fasta_candidate,
                     output_dir=workspace,
                 )
                 write_json(workspace / "primers.json", primers_data)
@@ -261,6 +330,7 @@ def run_annotation(
                 lead_snps=mapped_rows,
                 trait_name=trait_name,
                 max_snps=20,
+                fasta_path=fasta_candidate,
                 output_dir=workspace,
             )
             write_json(workspace / "primers.json", primers_data)

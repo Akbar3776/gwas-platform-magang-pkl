@@ -1,19 +1,19 @@
 """
 Service untuk Fase 5.4 / Fase 6–8:
-1. Fase 6: Ekstraksi sekuens flanking 201 bp (100 bp upstream + [Alel] + 100 bp downstream).
-2. Fase 7: Desain pasangan primer PCR otomatis (Primer3 format: LEFT PRIMER, RIGHT PRIMER,
+1. Fase 6: Ekstraksi sekuens flanking 201 bp (100 bp upstream + [Alel] + 100 bp downstream)
+   menggunakan file FASTA referensi terindeks `.fai` (samtools faidx).
+2. Fase 7: Desain pasangan primer PCR otomatis (LEFT PRIMER, RIGHT PRIMER,
    start, len, tm, gc%, any_th, 3'_th, hairpin, seq, PRODUCT SIZE, PAIR ANY_TH COMPL, PAIR 3'_TH COMPL).
-3. Fase 8: Evaluasi spesifisitas termodinamika & struktur sekunder (self-dimer, 3' dimer, hairpin).
+3. Fase 8: Evaluasi struktur sekunder (self-dimer, 3' dimer, hairpin).
 """
 
 from __future__ import annotations
 
 import csv
-import hashlib
 import math
 import os
-import re
 from pathlib import Path
+import re
 from typing import Any
 
 from app.tasks._common import chr_label
@@ -45,30 +45,6 @@ NN_PARAMS: dict[str, tuple[float, float]] = {
 
 COMPLEMENT_MAP = str.maketrans("ACGTacgtNn", "TGCAtgcaNn")
 
-# Database sekuens flanking kurasi dari HASIL OUTPUT.md (Allium sativum PRJCA006629)
-CURATED_FLANKING_SEQUENCES: dict[tuple[str, int], str] = {
-    ("6", 358807461): "TACCGCTGTTTCTTAAAGAAAAACACACAACGGAACAAACATAAGTACCAAAGTATGATGTAGAAGAAAGATATAAATGTAACAGTTTTAGCATAAGGTC[C]TACTCTAAGATGTAATAAATATATGGATTTTATCTAGCTAATGGAATGATGTAAATGTAACAGTTTTAGCAAGAACAGCCTCCTGATTGTTGTTGATCCT",
-    ("2", 1710864336): "GGAAAGGCAACTCATTATCAAGAGCTGGTCGTCTTGTGCTTGTCAATTCTGCTCTGTCGTCAATTCCGTTGTACTGGATGTCCTTCTACCAATTTCCTGGG[T]GGGTGTTGGAGAAGATTGACGCAATTCGTCGTAATTTTTTCTGGACTGGTACTAAAGAGACGAAGAAGCTTAGCTGTTTGATTTCTTGGGATCAAGTTT",
-    ("2", 450465163): "ATCTTCTTCGACTTGTTCTGTCTTTCATATCAGAGCCCAAGGATTGTAAATGGTCCTTCTTGTCAAAAGCAGTTCAACAAAGAAGAGTGGTTGATAGTGA[G]AGTCTAGAGTATTTTGAGAATGAATTGGAATGCTTGTACAGACGTCTTATGCAAAATAGAGTCTGTCTTCTAAACGTCATCAGCCTCTAGATCCTGGCTT",
-    ("5", 1406700929): "CTCAGATTGGACTTGTGACATTCGTCTGACACTTCTCTTTTGAGCTCAGGGATGTCGAGAACACAAATTCTTCCTTTCAATCTCAGAACTCCCGTGCTAT[A]CATTTGAAAACTGGAGACTTCTCCCTTTTGAATTCTTTTGATCATCTCTTTAACAAAATTATCGTCTTTCTAAAGAACGGATATTTTATCTATCAATGAA",
-    ("4", 1476803901): "TGAATCTCTTATGATATTCGGGAATGGTCATATCACCTTGTATCAGATAAGAGAATTCATCACATAACCGCTCAGTTGCTTCGGGAGGAGTAAATCTTTC[C]AGGAAAATCACTTTGAATCTATCCCAGGTGATATCACCTTTTGGATTATCCTCAATAATAGAATCCCACCAGAACAGAGCTTCGTCTTTGAGTGCCCACG",
-    ("1", 413729409): "TGAACAGATGAAGCTGCAACATAATTATACTTTGAACAAAAACAAACCTCAGAAAGATTAACCTTTCTTGAAACATTCGCACTTCGTATTTATGGTAGGT[C]AGTTGCTCTTGAACCGAGACATCACCCACTTTATATGACTCCAGAAACACCAAAGAGGCCGTCTACTTCTTGGAATCTGTGGAAAACTACTAAGTCAAGT",
-    ("6", 1167538950): "GGCGGCGGCTCTTGAGCGATTCCTAGGGTTTCTTTAAATCCCTAAATCGCGAGTGTATGATTCATTCTATGATGCTCGAGTCTGTTTAGCTTCGATCTCT[G]GAGGCTGGCGCTTTTTCTAGGGTTTGTGCTTCTTGTTGAACTCGACTTCGACGGCTCTAGGGTTTCGATTCTATTCAACTTGAGGTCGCCACTTTCTTGT",
-    ("5", 481390200): "TTATAGAGTTTGTGAATTGATTAGAGCCGTCGATGGAGCCAATATTAATATAAGCCGTTCGTTTTAAAGAGAAACCAATCACGAGTTGACACATAAGCCC[T]AGTGACAAGACAAAGCCCAGAAATTCGGCCAAGCACAGACCAGGCCAGCCAGGAGGGGCTGGGTTCGACCTGGCTCAGGGGCCAGGTCGACTACCCAGTC",
-    ("1", 1242445904): "ATTTTATTTCAAACATTCAAGCAATACAACTCTTGTAACTCCTCTATTTGTACACTCCACTGATATATTTCATTTCATACATATACAATTTCATACACAG[C]TTCTCACTACAGTTTCACTCTGTCACTCAGTTTACAGACTCATATACATATACAAACTAATATGTGTACACTACTGCTTCATCTTTTGTCTTCACAGCCT",
-    ("4", 1766400024): "TTTGAAATAGAAATATTTGAAAAAGAAATATTTGAAATGGAAATATTTGAAATAGAATATTTGAAAATAGAAATATATGAAGCCGTGTTGATTAGATTGA[C]GCCATTTTGACGTGAACGATATTTATATCGATTTTATTCATTTTATAATGAATATCGAAAGTGATTTCAAAATCTGATATTTTGAAAAGAATTGAAATTC",
-    ("3", 1223403176): "CTGATGTCTTGATTGGGAGGCATCCCGAAATATAGATAATAAGTGGTGATCGTCCAGACGTGCTTGGAGATCGATGGATATGCGAGGTATGTGGTGCCTC[C]AGTTTCGTTCAGACCCAGAACGAACTTGTAAATGGACTGTTTGTCTGACATTGGATTTTGTTCTGTGCTGATTGATCTCTATTAAATATATATTTGTTTG",
-    ("3", 1355546721): "AAATGGAATTAGGGCTTCCAAAATTCCCCAAATCAAATCGCGAGTTCGTTGATTGATTCTCTGATGAACTTTGAAAGTGTAGTTATCCTCTGATGCTTCG[G]TTTGGGATATCTCTTTGTGGCTCTCGATCGAAAACAGAAGTGAGTGAATTTCTGAATTTTCTTGCTTCGAATTTCTTGCGAGTTGTTTTTGGTTTCGATC",
-    ("1", 82084788): "ATATATTTAAAACCTATTTTGGTTATAAACTAAATTTATAACTTCAATACGGTCAGTTCACTTGACGATAAAAATCCATAATCGTATAATGATTGATTTA[C]CGACAACGTGATGCCAAATTATTCAACCAATATTTCTACTGGTTATAACAAATCAAATGTTGAATTTCAATTCAACGGTTATTGATCAAATCAATTGTCC",
-    ("3", 1333915200): "ACCACCCTCTTCTTTTTCTCATCCGTCAAGCCTAAGTCTCTAACGATCCTTTTTCAATGTAGCAAAACCGAAATAGAAAGTTCTTTTGTTTTAAGCAATG[G]TCTTCCTCCCAAGCTAATATAATCCCTACTAAATTTCACATATATTTGTTCCTAACTTATGCTATGGCATTTACTCCTTTGGGACAAGCAGCAACTCCAG",
-    ("6", 484348828): "CAACTTCTAAGGCCTCAGGTTTCGATACGGAGCCGACGTAGCTTCGAGTTTTCCACTTAGCCTCAGGTTAGCTGGAGAAGGAGAGGCTTGGTCTAAAGGC[A]GTTGCGATGAAGTAGTGGAGTGGAGAACCCGATTCGACGATGGTGGAGCAGCGACCATTAATGGGTATTTGGAGAGGAAATCAATTTGGGGGAAAATGTG",
-    ("8", 1246213766): "CATCGTCTTTAATGAGCTATAACCTGTCACCTAGTCTGCCCATCCAAAACTGGATGAACAACCCAAGGTAATAAGAGGGAAACATAAAACCTTGAGTAAG[A]CAACATTCTTAGTGAGTGATAAAACAACTAACTAACTTCATCAATAAAGTATATGAGAATGGGTAAATAAACTAACTAATTTATCCACAACATCAGAGAA",
-    ("SCAFFOLD30172", 102841): "ATGTACCTGCAGAATCTTCCTTAGCTGCATTTTCAGTAGGGGAATCTCCAGTTATAGTCTCAATATTTGGATTAGTTTCTAATGCGATTACGTCTTCCCC[A]TCGTATTCAGTCCCGCGCTCGAATTCAGAAGGATTCACTTCCCTATTATCTCCCTTAACCTGTTCGGAATCTGATTCTGGCTCAGAATGCGGGGAAGTGT",
-    ("7", 313980654): "TCAATTCGAAAGAAATGAAGTTTGGGAATTAGTCCCTCGACCAACAGAACAATCTGTAGTTGGAACAAAATGGGTCTATAAAAATAAGTCTAATGAAAAT[G]GAAATATAATCCGTAATAAAGCTTGATTAGTTGCACAAGGATACAACCAAGAAGAAGAAATTGATTATGAAGAAACTTTTGCTCCAGTAGCACGTCTTGA",
-    ("3", 1366852314): "TTTTCCAAAGTTGTTTTGGACATAATTCCAAATCCACCTGTTAGATTTCAAATTTCTTATATTCTTTGGAAAGCTCTTTTCGATACGAACCCAACGGTTC[C]AGTTTTAGGAGAATCCGACGGTCAGATCTCCCGTAACGTCAATTCGAAGTCAATAGTCGAAATTTGCGAACTACCGCGGCGCGGCTCGTTCTATTCAGGC",
-    ("8", 196951686): "GTTCGGATTTTTGTTTTCTGGTGTGGTTGCTCTGAATTTGACTTTGGAACCCTATAACACAAACGCGTATATATACTTGCGGATGACCAGATAAAGTTGA[T]GTCAAAATCGATCTGTATTTTCATAGCTTTAGGGCTTAGTTGCTAGTTCTTAGGTGCTGTTTAGTTGTATTATCAAACCGTGGTACTTGCGATGGATGTT",
-}
-
 
 def reverse_complement(seq: str) -> str:
     """Menghasilkan sekuens komplemen terbalik (5' -> 3')."""
@@ -84,10 +60,15 @@ def calculate_gc_percent(seq: str) -> float:
     return round((gc_count / len(s)) * 100.0, 2)
 
 
-def calculate_tm_santalucia(seq: str, mv_conc_mm: float = 50.0, dv_conc_mm: float = 1.5, dntp_mm: float = 0.2, oligo_nm: float = 250.0) -> float:
+def calculate_tm_santalucia(
+    seq: str,
+    mv_conc_mm: float = 50.0,
+    dv_conc_mm: float = 1.5,
+    dntp_mm: float = 0.2,
+    oligo_nm: float = 250.0,
+) -> float:
     """
-    Menghitung suhu leleh (Tm dalam °C) menggunakan rumus termodinamika Nearest-Neighbor
-    SantaLucia (1998) dengan koreksi kation monovalen/divalen (Primer3 standard).
+    Menghitung suhu leleh (Tm dalam °C) menggunakan rumus Nearest-Neighbor SantaLucia (1998).
     """
     s = seq.upper()
     n = len(s)
@@ -96,7 +77,6 @@ def calculate_tm_santalucia(seq: str, mv_conc_mm: float = 50.0, dv_conc_mm: floa
 
     dh = 0.0
     ds = 0.0
-    # Inisiasi terminal
     if s[0] in ("G", "C"):
         dh += 100.0
         ds += -2.8
@@ -116,7 +96,6 @@ def calculate_tm_santalucia(seq: str, mv_conc_mm: float = 50.0, dv_conc_mm: floa
         dh += step_dh
         ds += step_ds
 
-    # Koreksi garam Primer3 (Owczarzy / SantaLucia)
     free_divalent = max(0.0, dv_conc_mm - dntp_mm)
     monovalent_eq = (mv_conc_mm + 120.0 * math.sqrt(free_divalent)) / 1000.0
     monovalent_eq = max(monovalent_eq, 1e-5)
@@ -129,9 +108,7 @@ def calculate_tm_santalucia(seq: str, mv_conc_mm: float = 50.0, dv_conc_mm: floa
 
 
 def _score_secondary_structure(seq1: str, seq2: str | None = None, three_prime_only: bool = False) -> float:
-    """
-    Mengevaluasi potensi dimer/hairpin secara termodinamika (skor TH dalam °C, 0.00 jika tidak signifikan).
-    """
+    """Mengevaluasi potensi dimer/hairpin sederhana (skor TH dalam °C, 0.00 jika tidak signifikan)."""
     s1 = seq1.upper()
     s2_rc = reverse_complement(seq2.upper() if seq2 is not None else s1)
     if three_prime_only:
@@ -142,7 +119,6 @@ def _score_secondary_structure(seq1: str, seq2: str | None = None, three_prime_o
             return round(6.10 + 1.45 * (s1[-5:].count("G") + s1[-5:].count("C")), 2)
         return 0.0
 
-    # Cek kecocokan berturut-turut >= 5 bp
     for k in (6, 5):
         for i in range(len(s1) - k + 1):
             sub = s1[i:i + k]
@@ -151,6 +127,275 @@ def _score_secondary_structure(seq1: str, seq2: str | None = None, three_prime_o
                 if k >= 6 or gc >= 3:
                     return round(4.5 * k + 2.2 * gc - 16.0, 2)
     return 0.0
+
+
+def build_fasta_index(fasta_path: str | Path) -> Path:
+    """
+    Membangun indeks `.fai` berformat samtools faidx (`NAME\tLENGTH\tOFFSET\tLINEBASES\tLINEWIDTH`)
+    untuk pembacaan byte-offset acak cepat tanpa memuat file FASTA ke RAM.
+    """
+    path = Path(fasta_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"File FASTA tidak ditemukan: {path}")
+
+    entries: list[tuple[str, int, int, int, int]] = []
+    cur_name: str | None = None
+    cur_len = 0
+    cur_offset = 0
+    line_bases = 0
+    line_width = 0
+    saw_short_line = False
+
+    def _flush() -> None:
+        if cur_name is not None:
+            entries.append((cur_name, cur_len, cur_offset, max(line_bases, 1), max(line_width, 1)))
+
+    with path.open("rb") as fh:
+        while True:
+            line_start = fh.tell()
+            raw_line = fh.readline()
+            if not raw_line:
+                break
+            if raw_line.startswith(b">"):
+                _flush()
+                header_token = raw_line[1:].strip().split()[0].decode("utf-8", errors="replace")
+                cur_name = header_token
+                cur_len = 0
+                cur_offset = fh.tell()
+                line_bases = 0
+                line_width = 0
+                saw_short_line = False
+                continue
+
+            if cur_name is None:
+                continue
+
+            raw_len = len(raw_line)
+            seq_bytes = raw_line.rstrip(b"\r\n")
+            seq_len = len(seq_bytes)
+            if seq_len == 0:
+                if cur_len > 0:
+                    saw_short_line = True
+                continue
+
+            if saw_short_line:
+                raise ValueError(
+                    f"Panjang baris FASTA tidak konsisten sebelum akhir contig '{cur_name}'; gagal membangun .fai."
+                )
+
+            if line_bases == 0:
+                cur_offset = line_start
+                line_bases = seq_len
+                line_width = raw_len
+            elif seq_len != line_bases or raw_len != line_width:
+                if seq_len < line_bases:
+                    saw_short_line = True
+                else:
+                    raise ValueError(
+                        f"Panjang baris melebihi LINEBASES pada contig '{cur_name}'; gagal membangun .fai."
+                    )
+
+            cur_len += seq_len
+
+    _flush()
+
+    fai_path = Path(f"{path}.fai")
+    tmp_fai = Path(f"{path}.fai.tmp")
+    lines = [f"{name}\t{length}\t{offset}\t{lb}\t{lw}" for name, length, offset, lb, lw in entries]
+    tmp_fai.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    tmp_fai.replace(fai_path)
+    return fai_path
+
+
+def load_fasta_index(fasta_path: str | Path) -> dict[str, Any]:
+    """Memuat indeks `.fai` (atau membangunnya sekali bila belum tersedia) beserta peta normalisasi `chr_label`."""
+    path = Path(fasta_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"File FASTA tidak ditemukan: {path}")
+
+    fai_path = Path(f"{path}.fai")
+    if not fai_path.is_file() or fai_path.stat().st_mtime < path.stat().st_mtime:
+        build_fasta_index(path)
+
+    by_exact: dict[str, dict[str, Any]] = {}
+    by_norm: dict[str, dict[str, Any]] = {}
+    contigs: list[dict[str, Any]] = []
+
+    with fai_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            parts = line.rstrip("\r\n").split("\t")
+            if len(parts) < 5:
+                continue
+            name = parts[0]
+            rec = {
+                "name": name,
+                "length": int(parts[1]),
+                "offset": int(parts[2]),
+                "line_bases": int(parts[3]),
+                "line_width": int(parts[4]),
+            }
+            by_exact[name] = rec
+            by_norm.setdefault(chr_label(name), rec)
+            contigs.append({"name": name, "norm_chr": chr_label(name), "length": rec["length"]})
+
+    return {"by_exact": by_exact, "by_norm": by_norm, "contigs": contigs}
+
+
+def _lookup_contig(index: dict[str, Any], target_chr: str) -> dict[str, Any] | None:
+    raw = str(target_chr or "").strip()
+    by_exact = index.get("by_exact") or {}
+    if raw in by_exact:
+        return by_exact[raw]
+    norm = chr_label(raw)
+    return (index.get("by_norm") or {}).get(norm)
+
+
+def _read_fasta_region(
+    fasta_path: Path,
+    target_chr: str,
+    start_1based: int,
+    end_1based: int,
+    *,
+    index: dict[str, Any] | None = None,
+) -> str | None:
+    """Membaca rentang basa `[start_1based, end_1based]` via seek byte-offset `.fai` secara O(1)."""
+    idx = index if index is not None else load_fasta_index(fasta_path)
+    rec = _lookup_contig(idx, target_chr)
+    if rec is None:
+        return None
+
+    contig_len = rec["length"]
+    s0 = max(0, int(start_1based) - 1)
+    e0 = min(contig_len, int(end_1based))
+    if s0 >= e0 or contig_len <= 0:
+        return ""
+
+    lb = rec["line_bases"]
+    lw = rec["line_width"]
+    offset = rec["offset"]
+
+    byte_start = offset + (s0 // lb) * lw + (s0 % lb)
+    last_0 = e0 - 1
+    byte_end = offset + (last_0 // lb) * lw + (last_0 % lb) + 1
+
+    with Path(fasta_path).open("rb") as fh:
+        fh.seek(byte_start)
+        raw_bytes = fh.read(max(0, byte_end - byte_start))
+
+    return raw_bytes.replace(b"\r", b"").replace(b"\n", b"").decode("ascii", errors="replace").upper()
+
+
+def _extract_flanking_detail(
+    *,
+    chr_name: str,
+    pos: int,
+    allele: str = "C",
+    ref_allele: str = "",
+    alt_allele: str = "",
+    flank_len: int = 100,
+    fasta_path: str | Path | None = None,
+    fasta_index: dict[str, Any] | None = None,
+    allow_synthetic: bool | None = None,
+) -> dict[str, Any]:
+    if allow_synthetic is None:
+        allow_synthetic = _allow_synthetic_annotation()
+
+    norm_chr = chr_label(chr_name)
+    if fasta_path and Path(fasta_path).is_file():
+        idx = fasta_index if fasta_index is not None else load_fasta_index(fasta_path)
+        rec = _lookup_contig(idx, chr_name)
+        if rec is None:
+            return {
+                "status": "no_reference_for_chr",
+                "bracketed": "",
+                "raw": "",
+                "fasta_ref_base": "",
+                "vcf_ref_base": str(ref_allele or "").strip().upper(),
+                "ref_mismatch": False,
+                "warning": f"no_reference_for_chr: kromosom '{chr_name}' tidak ditemukan pada FASTA referensi.",
+                "synthetic": False,
+            }
+
+        contig_len = rec["length"]
+        start_1 = max(1, int(pos) - flank_len)
+        end_1 = min(contig_len, int(pos) + flank_len)
+        seq_slice = _read_fasta_region(Path(fasta_path), chr_name, start_1, end_1, index=idx) or ""
+        center_idx = int(pos) - start_1
+        if 0 <= center_idx < len(seq_slice):
+            left = seq_slice[:center_idx]
+            fasta_ref_base = seq_slice[center_idx]
+            right = seq_slice[center_idx + 1:]
+        else:
+            return {
+                "status": "no_reference_for_chr",
+                "bracketed": "",
+                "raw": "",
+                "fasta_ref_base": "",
+                "vcf_ref_base": str(ref_allele or "").strip().upper(),
+                "ref_mismatch": False,
+                "warning": f"Posisi {chr_name}:{pos} di luar panjang contig ({contig_len} bp).",
+                "synthetic": False,
+            }
+
+        vcf_ref_clean = str(ref_allele or "").strip().upper()
+        vcf_alt_clean = str(alt_allele or "").strip().upper()
+        mid = (allele or fasta_ref_base or "N").strip().upper()[0]
+
+        ref_mismatch = False
+        warning: str | None = None
+        if len(vcf_ref_clean) == 1 and vcf_ref_clean in "ACGT" and fasta_ref_base in "ACGT":
+            if vcf_ref_clean != fasta_ref_base:
+                ref_mismatch = True
+                warning = (
+                    f"ref_mismatch: basa referensi FASTA '{fasta_ref_base}' pada {norm_chr}:{pos} "
+                    f"tidak cocok dengan REF VCF '{vcf_ref_clean}' (indikasi perbedaan genome build)."
+                )
+        elif vcf_alt_clean in {"A", "C", "G", "T"} and fasta_ref_base in "ACGT":
+            # Ketika hanya allele minor/major tersedia tanpa kolom REF eksplisit
+            if vcf_alt_clean != fasta_ref_base and not vcf_ref_clean:
+                pass
+
+        return {
+            "status": "ok",
+            "bracketed": f"{left}[{mid}]{right}",
+            "raw": f"{left}{mid}{right}",
+            "snp_index_0based": len(left),
+            "fasta_ref_base": fasta_ref_base,
+            "vcf_ref_base": vcf_ref_clean,
+            "ref_mismatch": ref_mismatch,
+            "warning": warning,
+            "synthetic": False,
+        }
+
+    if not allow_synthetic:
+        return {
+            "status": "no_reference",
+            "bracketed": "",
+            "raw": "",
+            "fasta_ref_base": "",
+            "vcf_ref_base": str(ref_allele or "").strip().upper(),
+            "ref_mismatch": False,
+            "warning": None,
+            "synthetic": False,
+        }
+
+    # Mode simulasi eksplisit (hanya bila ALLOW_SYNTHETIC_ANNOTATION=true dan FASTA tidak tersedia)
+    clean_allele = (allele or "C").strip().upper()
+    mid = clean_allele[0] if clean_allele and clean_allele[0] in "ACGT" else "C"
+    motif = "ACGTCGTAGCATGCTAGCTA"
+    left_seq = (motif * ((flank_len // len(motif)) + 1))[:flank_len]
+    right_seq = (motif * ((flank_len // len(motif)) + 1))[:flank_len]
+    return {
+        "status": "ok",
+        "bracketed": f"{left_seq}[{mid}]{right_seq}",
+        "raw": f"{left_seq}{mid}{right_seq}",
+        "snp_index_0based": len(left_seq),
+        "fasta_ref_base": "",
+        "vcf_ref_base": str(ref_allele or "").strip().upper(),
+        "ref_mismatch": False,
+        "warning": None,
+        "synthetic": True,
+    }
 
 
 def extract_or_build_flanking_sequence(
@@ -163,100 +408,18 @@ def extract_or_build_flanking_sequence(
 ) -> tuple[str, str]:
     """
     Mengekstrak sekuens flanking `flank_len` bp di kiri dan kanan SNP (`201 bp` total).
-    Mengembalikan `(bracketed_sequence, raw_201bp_sequence)` atau `("", "")` jika FASTA
-    referensi tidak tersedia dan `ALLOW_SYNTHETIC_ANNOTATION` nonaktif.
+    Mengembalikan `(bracketed_sequence, raw_201bp_sequence)` atau `("", "")` jika referensi
+    FASTA tidak tersedia / kromosom absen dan `ALLOW_SYNTHETIC_ANNOTATION` nonaktif.
     """
-    if allow_synthetic is None:
-        allow_synthetic = _allow_synthetic_annotation()
-
-    norm_chr = re.sub(r"^(chromosome|chrom|chr)[\s_]*", "", str(chr_name).strip(), flags=re.IGNORECASE).upper()
-    if norm_chr.isdigit():
-        norm_chr = str(int(norm_chr))
-
-    # 1. Jika file FASTA referensi diberikan dan ada di disk, baca langsung
-    if fasta_path and Path(fasta_path).is_file():
-        try:
-            seq_chr = _read_fasta_region(Path(fasta_path), norm_chr, pos - flank_len, pos + flank_len)
-            if seq_chr and len(seq_chr) == 2 * flank_len + 1:
-                left = seq_chr[:flank_len]
-                mid = (allele or seq_chr[flank_len])[0].upper()
-                right = seq_chr[flank_len + 1:]
-                return f"{left}[{mid}]{right}", f"{left}{mid}{right}"
-        except Exception:
-            pass
-
-    if not allow_synthetic:
-        return "", ""
-
-    # 2. Mode simulasi eksplisit: cek database kurasi lalu generator deterministik
-    if (norm_chr, int(pos)) in CURATED_FLANKING_SEQUENCES:
-        bracketed = CURATED_FLANKING_SEQUENCES[(norm_chr, int(pos))]
-        raw_seq = re.sub(r"\[([ACGTN])\]", r"\1", bracketed, flags=re.IGNORECASE)
-        return bracketed, raw_seq
-
-    # 3. Generator sekuens konteks genomik deterministik berbasis (chr, pos, allele) (hanya bila ALLOW_SYNTHETIC_ANNOTATION=true)
-    # Menghasilkan komposisi GC ~42% yang bebas homopolimer panjang agar desain primer stabil
-    clean_allele = (allele or "C").strip().upper()
-    if not clean_allele or clean_allele[0] not in "ACGT":
-        clean_allele = "C"
-    else:
-        clean_allele = clean_allele[0]
-
-    bases_at = ("A", "T")
-    bases_gc = ("G", "C")
-    left_chars: list[str] = []
-    right_chars: list[str] = []
-
-    for side_idx, target_list in enumerate((left_chars, right_chars)):
-        seed_prefix = f"{norm_chr}:{pos}:{side_idx}"
-        digest_bytes = hashlib.sha512(seed_prefix.encode("utf-8")).digest()
-        ext_bytes = (
-            digest_bytes
-            + hashlib.sha512((seed_prefix + ":b").encode("utf-8")).digest()
-        )
-        for i in range(flank_len):
-            b_val = ext_bytes[i % len(ext_bytes)]
-            # Target ~42% GC (sekitar 2 dari setiap 5 basa adalah G/C)
-            if (i % 5) in (1, 3):
-                cand = bases_gc[b_val & 1]
-            else:
-                cand = bases_at[(b_val >> 1) & 1]
-            # Cegah homopolimer >= 4 basa berturut-turut
-            if len(target_list) >= 3 and target_list[-1] == target_list[-2] == target_list[-3] == cand:
-                cand = "G" if cand in ("A", "T") else "A"
-            target_list.append(cand)
-
-    left_seq = "".join(left_chars)
-    right_seq = "".join(right_chars)
-    bracketed = f"{left_seq}[{clean_allele}]{right_seq}"
-    raw_seq = f"{left_seq}{clean_allele}{right_seq}"
-    return bracketed, raw_seq
-
-
-def _read_fasta_region(fasta_path: Path, target_chr: str, start_1based: int, end_1based: int) -> str | None:
-    """Membaca potong sekuens dari file FASTA polos untuk kromosom kecil/menengah."""
-    current_chr = None
-    chunks: list[str] = []
-    with fasta_path.open("r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            if line.startswith(">"):
-                if current_chr == target_chr and chunks:
-                    break
-                header = line[1:].strip().split()[0]
-                norm_h = re.sub(r"^(chromosome|chrom|chr)[\s_]*", "", header, flags=re.IGNORECASE).upper()
-                if norm_h.isdigit():
-                    norm_h = str(int(norm_h))
-                current_chr = norm_h
-                chunks = []
-            elif current_chr == target_chr:
-                chunks.append(line.strip().upper())
-
-    if not chunks:
-        return None
-    full_seq = "".join(chunks)
-    s0 = max(0, start_1based - 1)
-    e0 = min(len(full_seq), end_1based)
-    return full_seq[s0:e0]
+    detail = _extract_flanking_detail(
+        chr_name=chr_name,
+        pos=pos,
+        allele=allele,
+        flank_len=flank_len,
+        fasta_path=fasta_path,
+        allow_synthetic=allow_synthetic,
+    )
+    return detail["bracketed"], detail["raw"]
 
 
 def design_primers_for_flanking(
@@ -272,24 +435,17 @@ def design_primers_for_flanking(
     product_min: int = 100,
     product_max: int = 190,
 ) -> list[dict[str, Any]]:
-    """
-    Mendesain hingga `max_pairs` pasangan primer (LEFT PRIMER & RIGHT PRIMER) yang mengapit SNP
-    di `snp_index_0based` menggunakan kriteria Primer3 (sesuai HASIL OUTPUT.md).
-    Jika tidak ada pasangan yang memenuhi syarat (mis. sekuens sangat AT-rich/repetitif),
-    mengembalikan list kosong (`no primers found`).
-    """
+    """Mendesain pasangan primer (digantikan engine Primer3 penuh pada A59)."""
     seq = raw_seq.upper()
     n_len = len(seq)
     if n_len < 120:
         return []
 
-    # Cek apakah sekuens keseluruhan terlalu ekstrem AT-rich (< 26% GC) sehingga tidak mungkin membuat primer
     overall_gc = calculate_gc_percent(seq)
     if overall_gc < 26.0:
         return []
 
     left_candidates: list[dict[str, Any]] = []
-    # Left primer berada di upstream SNP (1-based start 2 .. snp_index_0based - 18)
     max_left_start = min(snp_index_0based - 18, n_len - 40)
     for start_0 in range(1, max(2, max_left_start), 2):
         for length in (20, 21, 19, 22, 18):
@@ -309,7 +465,7 @@ def design_primers_for_flanking(
             hairpin = 0.0
             penalty = abs(tm - tm_opt) * 1.5 + abs(gc - gc_opt) * 0.25 + any_th * 0.05 + three_th * 0.1
             left_candidates.append({
-                "start": start_0 + 1,  # 1-based start seperti Primer3
+                "start": start_0 + 1,
                 "len": length,
                 "tm": tm,
                 "gc": gc,
@@ -322,7 +478,6 @@ def design_primers_for_flanking(
             break
 
     right_candidates: list[dict[str, Any]] = []
-    # Right primer 5' berada di downstream SNP (1-based start snp_index_0based + 22 .. n_len)
     min_right_5prime = max(snp_index_0based + 22, 118)
     for end_1based in range(min_right_5prime, n_len + 1, 2):
         for length in (20, 21, 19, 22, 18):
@@ -344,7 +499,7 @@ def design_primers_for_flanking(
             hairpin = 0.0
             penalty = abs(tm - tm_opt) * 1.5 + abs(gc - gc_opt) * 0.25 + any_th * 0.05 + three_th * 0.1
             right_candidates.append({
-                "start": end_1based,  # Primer3 1-based 5' coordinate pada sekuens template
+                "start": end_1based,
                 "len": length,
                 "tm": tm,
                 "gc": gc,
@@ -399,13 +554,7 @@ def design_primers_for_flanking(
 
 
 def format_primer3_block(pairs: list[dict[str, Any]]) -> str:
-    """
-    Memformat daftar pasangan primer persis seperti blok output Primer3 di HASIL OUTPUT.md:
-    OLIGO            start  len      tm     gc%  any_th  3'_th hairpin seq
-    LEFT PRIMER         24   20   54.47   40.00    0.00   0.00    0.00 CACACAACGGAACAAACATA
-    RIGHT PRIMER       183   20   54.90   45.00    0.00   0.00    0.00 GAGGCTGTTCTTGCTAAAAC
-    PRODUCT SIZE: 160, PAIR ANY_TH COMPL: 0.00, PAIR 3'_TH COMPL: 0.00
-    """
+    """Memformat daftar pasangan primer dalam format blok output standar."""
     if not pairs:
         return "no primers found"
 
@@ -439,40 +588,49 @@ def generate_flanking_and_primers(
     output_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """
-    Membangkitkan sekuens flanking 201 bp dan desain primer Primer3 untuk Top Candidate / Lead SNPs.
-    Menulis `primers.json`, `Desain_Primer_Kandidat.csv`, dan `Flanking_dan_Primer3.txt` bila `output_dir` diberikan.
+    Membangkitkan sekuens flanking 201 bp dari FASTA terindeks `.fai` dan desain primer untuk Lead SNPs.
     """
     clean_trait = re.sub(r"\s+", "_", str(trait_name or "trait").strip().lower())
     selected_snps = list(lead_snps)[:max_snps]
     allow_synthetic = _allow_synthetic_annotation()
 
+    fasta_obj = Path(fasta_path) if fasta_path and Path(fasta_path).is_file() else None
+    fasta_index = load_fasta_index(fasta_obj) if fasta_obj is not None else None
+
     items: list[dict[str, Any]] = []
     for idx, s in enumerate(selected_snps, start=1):
         raw_chr = chr_label(s.get("chr") or "1")
         pos = int(s.get("pos", 0))
-        allele = str(s.get("a1") or s.get("alt") or "C")
+        ref_val = str(s.get("ref") or s.get("vcf_ref") or "").strip().upper()
+        alt_val = str(s.get("alt") or s.get("a1") or "").strip().upper()
+        allele = alt_val or ref_val or "C"
         marker_label = f"{clean_trait}_{raw_chr}_{pos}"
 
-        bracketed_seq, raw_201_seq = extract_or_build_flanking_sequence(
+        detail = _extract_flanking_detail(
             chr_name=raw_chr,
             pos=pos,
             allele=allele,
+            ref_allele=ref_val,
+            alt_allele=alt_val,
             flank_len=100,
-            fasta_path=fasta_path,
+            fasta_path=fasta_obj,
+            fasta_index=fasta_index,
             allow_synthetic=False,
         )
-        is_synthetic_item = False
-        if not raw_201_seq and allow_synthetic:
-            bracketed_seq, raw_201_seq = extract_or_build_flanking_sequence(
+        if detail["status"] == "no_reference" and allow_synthetic:
+            detail = _extract_flanking_detail(
                 chr_name=raw_chr,
                 pos=pos,
                 allele=allele,
+                ref_allele=ref_val,
+                alt_allele=alt_val,
                 flank_len=100,
                 fasta_path=None,
                 allow_synthetic=True,
             )
-            is_synthetic_item = bool(raw_201_seq)
 
+        bracketed_seq = detail["bracketed"]
+        raw_201_seq = detail["raw"]
         if not raw_201_seq:
             items.append({
                 "rank": idx,
@@ -490,12 +648,17 @@ def generate_flanking_and_primers(
                 "primer_pairs_count": 0,
                 "primer_pairs": [],
                 "primer3_output": "",
-                "status": "no_reference",
+                "status": detail["status"],
+                "ref_mismatch": False,
+                "fasta_ref_base": detail.get("fasta_ref_base", ""),
+                "vcf_ref_base": detail.get("vcf_ref_base", ""),
+                "warning": detail.get("warning"),
                 "synthetic": False,
             })
             continue
 
-        pairs = design_primers_for_flanking(raw_201_seq, snp_index_0based=100, max_pairs=5)
+        snp_idx = int(detail.get("snp_index_0based", len(raw_201_seq) // 2))
+        pairs = design_primers_for_flanking(raw_201_seq, snp_index_0based=snp_idx, max_pairs=5)
         block_text = format_primer3_block(pairs)
 
         items.append({
@@ -515,13 +678,17 @@ def generate_flanking_and_primers(
             "primer_pairs": pairs,
             "primer3_output": block_text,
             "status": "primers_found" if pairs else "no_primers_found",
-            "synthetic": is_synthetic_item,
+            "ref_mismatch": bool(detail.get("ref_mismatch")),
+            "fasta_ref_base": detail.get("fasta_ref_base", ""),
+            "vcf_ref_base": detail.get("vcf_ref_base", ""),
+            "warning": detail.get("warning"),
+            "synthetic": bool(detail.get("synthetic")),
         })
 
     has_synthetic = any(bool(it.get("synthetic")) for it in items)
     all_no_reference = (
-        (not items and not (fasta_path and Path(fasta_path).is_file()) and not allow_synthetic)
-        or (bool(items) and all(it["status"] == "no_reference" for it in items))
+        (not items and fasta_obj is None and not allow_synthetic)
+        or (bool(items) and all(it["status"] in {"no_reference", "no_reference_for_chr"} for it in items))
     )
     payload = {
         "status": "no_reference" if all_no_reference else "completed",
@@ -529,6 +696,7 @@ def generate_flanking_and_primers(
         "trait": trait_name,
         "total_markers": len(items),
         "markers_with_primers": sum(1 for it in items if it["primer_pairs_count"] > 0),
+        "ref_mismatch_count": sum(1 for it in items if it.get("ref_mismatch")),
         "markers": items,
     }
 
@@ -536,21 +704,21 @@ def generate_flanking_and_primers(
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
-        # 1. Tulis Flanking_dan_Primer3.txt (format laporan HASIL OUTPUT.md)
         txt_file = out_path / "Flanking_dan_Primer3.txt"
         txt_blocks: list[str] = []
         for it in items:
             txt_blocks.append(f"### {it['rank']}. {it['marker_id']} ({it['snp']})")
-            if it["status"] == "no_reference":
-                txt_blocks.append("> [no reference FASTA]")
-                txt_blocks.append("no reference FASTA")
+            if it["status"] in {"no_reference", "no_reference_for_chr"}:
+                txt_blocks.append(f"> [{it['status']}]")
+                txt_blocks.append(it["status"])
             else:
                 txt_blocks.append(f"> {it['flanking_sequence']}\n")
+                if it.get("warning"):
+                    txt_blocks.append(f"[WARNING] {it['warning']}")
                 txt_blocks.append(it["primer3_output"])
             txt_blocks.append("")
         txt_file.write_text("\n".join(txt_blocks), encoding="utf-8")
 
-        # 2. Tulis Desain_Primer_Kandidat.csv
         csv_file = out_path / "Desain_Primer_Kandidat.csv"
         with csv_file.open("w", encoding="utf-8", newline="") as cf:
             writer = csv.writer(cf)
@@ -574,7 +742,7 @@ def generate_flanking_and_primers(
                 "Flanking_201bp",
             ])
             for it in items:
-                if it["status"] == "no_reference":
+                if it["status"] in {"no_reference", "no_reference_for_chr"}:
                     writer.writerow([
                         it["marker_id"],
                         it["snp"],
@@ -585,12 +753,12 @@ def generate_flanking_and_primers(
                         "-",
                         "-",
                         "-",
-                        "no reference FASTA",
+                        it["status"],
                         "-",
                         "-",
                         "-",
                         "-",
-                        "no reference FASTA",
+                        it["status"],
                         "-",
                         "",
                     ])
