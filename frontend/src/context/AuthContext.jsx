@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { apiFetch, setAccessToken, setAuthFailureHandler } from "../api/apiClient";
+import { formatApiError } from "../api/formatApiError";
 
 const API_BASE = "/api/v1";
 
@@ -78,8 +79,8 @@ export function AuthProvider({ children }) {
     });
 
     if (!res.ok) {
-      const detail = await res.json().catch(() => null);
-      throw new Error(detail?.detail || "Login gagal. Periksa kembali email dan password Anda.");
+      const body = await res.json().catch(() => null);
+      throw new Error(formatApiError(body, "Login gagal. Periksa kembali email dan password Anda."));
     }
 
     const data = await res.json();
@@ -97,8 +98,8 @@ export function AuthProvider({ children }) {
     });
 
     if (!res.ok) {
-      const detail = await res.json().catch(() => null);
-      throw new Error(detail?.detail || "Pendaftaran gagal. Coba lagi.");
+      const body = await res.json().catch(() => null);
+      throw new Error(formatApiError(body, "Pendaftaran gagal. Coba lagi."));
     }
     // Registrasi berhasil tidak otomatis login — arahkan user ke halaman login.
     return res.json();

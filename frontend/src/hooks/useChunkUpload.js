@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { formatApiError } from "../api/formatApiError";
 import { httpClient } from "../api/httpClient";
 import { createIncrementalSha256, readBlobAsUint8Array } from "../utils/sha256";
 
@@ -233,7 +234,7 @@ export function useChunkUpload(options = {}) {
         if (isAborted(token, mountedRef) || activeTokenRef.current !== token) {
           return null;
         }
-        setErrorMessage(error.response?.data?.detail || error.message || "Upload gagal.");
+        setErrorMessage(formatApiError(error, "Upload gagal."));
         setStage(UPLOAD_STAGE.ERROR);
         throw error;
       } finally {

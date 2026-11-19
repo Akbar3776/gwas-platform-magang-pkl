@@ -3,14 +3,18 @@ export function formatApiError(input, fallback = "Terjadi kesalahan yang tidak d
   if (typeof input === "string") return input.trim() || fallback;
 
   const rawDetail =
-    input?.response?.data?.detail !== undefined
+    input?.response?.data?.detail !== undefined && input?.response?.data?.detail !== null
       ? input.response.data.detail
-      : input?.detail !== undefined
+      : input?.detail !== undefined && input?.detail !== null
       ? input.detail
       : input;
 
   if (typeof rawDetail === "string") {
     return rawDetail.trim() || fallback;
+  }
+
+  if (rawDetail instanceof Error) {
+    return rawDetail.message?.trim() || fallback;
   }
 
   if (Array.isArray(rawDetail)) {
@@ -30,7 +34,7 @@ export function formatApiError(input, fallback = "Terjadi kesalahan yang tidak d
     return messages.length > 0 ? messages.join("; ") : fallback;
   }
 
-  if (typeof rawDetail === "object") {
+  if (rawDetail && typeof rawDetail === "object") {
     if (typeof rawDetail.message === "string" && rawDetail.message.trim()) {
       return rawDetail.message.trim();
     }

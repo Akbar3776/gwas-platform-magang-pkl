@@ -32,13 +32,19 @@ describe("useChunkUpload cancellation, concurrency guard, and unmount safety (A1
     const { result } = renderHook(() => useChunkUpload());
     const file = new File(["##fileformat=VCFv4.2\n"], "sample.vcf", { type: "text/plain" });
 
-    act(() => {
+    await act(async () => {
       void result.current.startUpload(file);
+      await new Promise((resolve) => setTimeout(resolve, 15));
     });
 
     await waitFor(() => {
-      expect(httpClient.post).toHaveBeenCalledWith("/upload/chunk", expect.any(FormData), expect.anything());
+      expect(httpClient.post).toHaveBeenCalledWith(
+        "/upload/chunk",
+        expect.any(FormData),
+        expect.anything()
+      );
     });
+
     expect(result.current.stage).toBe(UPLOAD_STAGE.UPLOADING);
 
     act(() => {
@@ -70,9 +76,11 @@ describe("useChunkUpload cancellation, concurrency guard, and unmount safety (A1
 
     let p1;
     let p2;
-    act(() => {
+    await act(async () => {
       p1 = result.current.startUpload(file1);
       p2 = result.current.startUpload(file2);
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
     expect(await p2).toBeNull();
@@ -173,5 +181,28 @@ describe("useChunkUpload cancellation, concurrency guard, and unmount safety (A1
     });
     expect(result.current.stage).toBe(UPLOAD_STAGE.ERROR);
     expect(result.current.errorMessage).toContain("Checksum tidak cocok");
+  });
+
+  test("formats HTTP 422 validation array detail without raw object leakage in VcfUploader (A35a)", async () => {
+    httpClient.post.mockRejectedValueOnce({
+      response: {
+        status: 422,
+        data: {
+          detail: [{ loc: ["body", "file"], msg: "Format file VCF tidak valid" }],
+        },
+      },
+    });
+
+    const { container } = render(<VcfUploader onDatasetReady={jest.fn()} />);
+    const input = container.querySelector("input[type='file']");
+    const file = new File(["bad"], "bad.vcf", { type: "text/plain" });
+
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [file] } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container).toHaveTextContent(/file: Format file VCF tidak valid/i);
   });
 });

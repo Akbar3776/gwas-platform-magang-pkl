@@ -3,6 +3,7 @@
  */
 
 import { apiFetch } from "./apiClient";
+import { formatApiError } from "./formatApiError";
 
 export class ApiError extends Error {
   constructor(message, status) {
@@ -17,7 +18,7 @@ async function handleJsonResponse(response, defaultErrorMsg) {
     let detail = `${defaultErrorMsg} (HTTP ${response.status})`;
     try {
       const body = await response.json();
-      if (body && body.detail) detail = body.detail;
+      detail = formatApiError(body, detail);
     } catch {
       // response bukan JSON valid
     }
