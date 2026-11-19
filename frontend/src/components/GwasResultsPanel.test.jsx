@@ -123,4 +123,47 @@ describe("GwasResultsPanel multi-locus Manhattan & QQ plots (A23)", () => {
       expect(gwasApi.fetchManhattanData).toHaveBeenCalledWith("job-ml-1", expect.anything(), "BLINK");
     });
   });
+
+  test("LeadSnpTable separates significant SNPs from suggestive peaks in postgwas tab (A45)", async () => {
+    gwasApi.fetchThresholdsData.mockResolvedValue({
+      bonferroni: 5e-8,
+      suggestive: 1e-4,
+      selected_method: "bonferroni",
+      selected_p: 5e-8,
+    });
+    gwasApi.fetchLeadSnpsData.mockResolvedValue({
+      count: 0,
+      snps: [],
+      suggestive_count: 1,
+      suggestive: [
+        {
+          snp: "rs_sug_1",
+          chr: "2",
+          pos: 12000,
+          a1: "A",
+          a0: "G",
+          p: 2.5e-5,
+          beta: 0.35,
+          se: 0.08,
+          n_clumped: 1,
+          is_candidate: true,
+          is_suggestive: true,
+        },
+      ],
+    });
+
+    render(<GwasResultsPanel jobId="job-a45-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: /Ambang Batas & Lead SNPs/i })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("tab", { name: /Ambang Batas & Lead SNPs/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/0 Lokus Teridentifikasi/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Tidak ada Lead SNPs terdeteksi/i)).toBeInTheDocument();
+    expect(screen.getByText(/Peak Sugestif/i)).toBeInTheDocument();
+    expect(screen.getByText("rs_sug_1")).toBeInTheDocument();
+  });
 });

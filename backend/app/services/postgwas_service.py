@@ -114,93 +114,57 @@ def determine_thresholds(
     }
 
 
-def run_greedy_clumping(
-    assoc_file: Path | str,
-    selected_p: float,
-    clump_p2: float = 1e-4,
-    clump_kb: int = 100,
-    clump_r2: float = 0.2,
-    genotype_bfile: str | None = None,
-    max_lead_snps: int = 50,
+def _load_clump_variants(
+    assoc_path: Path,
+    *,
+    max_p: float,
+    min_p_exclusive: float = -1.0,
+    exclude_snps: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """
-    Greedy clumping untuk mengidentifikasi lead SNPs independen:
-    - Membaca baris dari file asosiasi kanonik.
-    - Mengurutkan varian berdasarkan p-value naik.
-    - Mengelompokkan varian dalam jendela fisik +/- clump_kb pada kromosom yang sama.
-    - Jika ada varian dengan p <= selected_p, prioritaskan varian signifikan tersebut.
-    - Jika tidak ada varian yang mencapai selected_p, petakan hingga 20 kandidat puncak teratas
-      (p < 0.05) untuk analisis eksploratif daripada mengembalikan daftar kosong.
-    """
-    from bisect import bisect_left, bisect_right
-
-    assoc_path = Path(assoc_file)
-    if not assoc_path.is_file():
-        return []
-
-    # Ambang filter awal: tampung varian dengan p <= max(selected_p, clump_p2, 0.005)
-    max_keep_p = max(float(selected_p), float(clump_p2), 0.005)
-
+    excluded = exclude_snps or set()
     variants: list[dict[str, Any]] = []
-    min_observed_p = 1.0
-
     with assoc_path.open("r", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter="\t")
         for row in reader:
             try:
                 p_val = float(row["p"])
-                if 0 < p_val < min_observed_p:
-                    min_observed_p = p_val
-                if p_val > max_keep_p:
+                if p_val <= min_p_exclusive or p_val > max_p:
                     continue
-                pos = int(row["pos"])
-                chrom = chr_label(row["chr"])
                 rs = str(row["rs"])
-                beta = float(row.get("beta") or 0.0)
-                se = float(row.get("se") or 0.0)
+                if rs in excluded:
+                    continue
                 variants.append({
-                    "chr": chrom,
-                    "pos": pos,
+                    "chr": chr_label(row["chr"]),
+                    "pos": int(row["pos"]),
                     "rs": rs,
                     "p": p_val,
-                    "beta": beta,
-                    "se": se,
+                    "beta": float(row.get("beta") or 0.0),
+                    "se": float(row.get("se") or 0.0),
                     "a1": row.get("a1", "A"),
                     "a0": row.get("a0", "G"),
                 })
             except (ValueError, KeyError):
                 continue
+    return variants
 
-    # Bila tidak ada varian yang lolos max_keep_p namun ada varian teramati dengan p < 0.05
-    if not variants and min_observed_p < 0.05:
-        retry_keep_p = min(0.05, min_observed_p * 10.0)
-        with assoc_path.open("r", encoding="utf-8") as f:
-            reader = csv.DictReader(f, delimiter="\t")
-            for row in reader:
-                try:
-                    p_val = float(row["p"])
-                    if p_val > retry_keep_p:
-                        continue
-                    variants.append({
-                        "chr": chr_label(row["chr"]),
-                        "pos": int(row["pos"]),
-                        "rs": str(row["rs"]),
-                        "p": p_val,
-                        "beta": float(row.get("beta") or 0.0),
-                        "se": float(row.get("se") or 0.0),
-                        "a1": row.get("a1", "A"),
-                        "a0": row.get("a0", "G"),
-                    })
-                except (ValueError, KeyError):
-                    continue
+
+def _clump_variant_rows(
+    variants: list[dict[str, Any]],
+    *,
+    max_lead_p: float,
+    clump_p2: float,
+    clump_kb: int,
+    max_count: int,
+    is_candidate: bool = False,
+    is_suggestive: bool = False,
+) -> list[dict[str, Any]]:
+    from bisect import bisect_left, bisect_right
 
     if not variants:
         return []
 
-    # Urutkan berdasarkan p-value terkecil untuk urutan prioritas Lead SNP
     variants.sort(key=lambda x: x["p"])
 
-    # Indeks per kromosom terurut berdasarkan posisi fisik (pos) untuk pencarian window O(log N)
     chr_by_pos: dict[str, list[dict[str, Any]]] = {}
     chr_positions: dict[str, list[int]] = {}
     for v in variants:
@@ -209,20 +173,16 @@ def run_greedy_clumping(
         c_list.sort(key=lambda x: x["pos"])
         chr_positions[c_key] = [x["pos"] for x in c_list]
 
-    lead_snps: list[dict[str, Any]] = []
+    peaks: list[dict[str, Any]] = []
     clumped_ids: set[str] = set()
     window_bp = int(clump_kb) * 1000
 
-    has_significant = any(v["p"] <= selected_p for v in variants)
-    effective_candidate_p = float(selected_p) if has_significant else max(float(selected_p), 0.05)
-    max_count = max_lead_snps if has_significant else min(max_lead_snps, 20)
-
     for candidate in variants:
-        if candidate["p"] > effective_candidate_p:
+        if candidate["p"] > max_lead_p:
             break
         if candidate["rs"] in clumped_ids:
             continue
-        if len(lead_snps) >= max_count:
+        if len(peaks) >= max_count:
             break
 
         lead_id = candidate["rs"]
@@ -245,7 +205,7 @@ def run_greedy_clumping(
                 clumped_ids.add(oid)
                 absorbed_snps.append(oid)
 
-        lead_snps.append({
+        entry: dict[str, Any] = {
             "snp": lead_id,
             "chr": c_chr,
             "pos": c_pos,
@@ -256,7 +216,80 @@ def run_greedy_clumping(
             "se": candidate["se"],
             "n_clumped": len(absorbed_snps),
             "clumped_snps": absorbed_snps[:30],
-            "is_candidate": candidate["p"] > selected_p,
-        })
+            "is_candidate": is_candidate,
+        }
+        if is_suggestive:
+            entry["is_suggestive"] = True
+        peaks.append(entry)
 
-    return lead_snps
+    return peaks
+
+
+def run_greedy_clumping(
+    assoc_file: Path | str,
+    selected_p: float,
+    clump_p2: float = 1e-4,
+    clump_kb: int = 100,
+    clump_r2: float = 0.2,
+    genotype_bfile: str | None = None,
+    max_lead_snps: int = 50,
+) -> list[dict[str, Any]]:
+    """
+    Greedy clumping untuk mengidentifikasi lead SNPs independen yang memenuhi
+    ambang signifikansi 4E (`p <= selected_p`). Tidak mengembalikan kandidat non-signifikan.
+    """
+    assoc_path = Path(assoc_file)
+    if not assoc_path.is_file():
+        return []
+
+    max_keep_p = max(float(selected_p), float(clump_p2))
+    variants = _load_clump_variants(assoc_path, max_p=max_keep_p)
+    return _clump_variant_rows(
+        variants,
+        max_lead_p=float(selected_p),
+        clump_p2=float(clump_p2),
+        clump_kb=int(clump_kb),
+        max_count=int(max_lead_snps),
+        is_candidate=False,
+    )
+
+
+def extract_suggestive_peaks(
+    assoc_file: Path | str,
+    *,
+    selected_p: float,
+    suggestive_p: float = 1e-5,
+    clump_p2: float = 1e-4,
+    clump_kb: int = 100,
+    exclude_snps: set[str] | None = None,
+    max_suggestive_snps: int = 20,
+) -> list[dict[str, Any]]:
+    """
+    Mengumpulkan puncak sugestif / kandidat eksploratif terpisah (`p > selected_p`)
+    tanpa mencampurkannya ke daftar Lead SNP signifikan utama.
+    """
+    assoc_path = Path(assoc_file)
+    if not assoc_path.is_file():
+        return []
+
+    exploratory_ceiling = max(float(suggestive_p), float(clump_p2), 0.05)
+    variants = _load_clump_variants(
+        assoc_path,
+        max_p=exploratory_ceiling,
+        min_p_exclusive=float(selected_p),
+        exclude_snps=exclude_snps,
+    )
+    if not variants:
+        return []
+
+    has_suggestive = any(v["p"] <= float(suggestive_p) for v in variants)
+    cutoff = float(suggestive_p) if has_suggestive else 0.05
+    return _clump_variant_rows(
+        variants,
+        max_lead_p=cutoff,
+        clump_p2=float(clump_p2),
+        clump_kb=int(clump_kb),
+        max_count=int(max_suggestive_snps),
+        is_candidate=True,
+        is_suggestive=True,
+    )

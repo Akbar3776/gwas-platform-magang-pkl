@@ -296,11 +296,22 @@ def _cached_greedy_clumping(
     mtime_ns: int,
     size_bytes: int,
     sel_p: float,
-) -> tuple[dict[str, Any], ...]:
-    from app.services.postgwas_service import run_greedy_clumping
+    sug_p: float = 1e-5,
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    from app.services.postgwas_service import extract_suggestive_peaks, run_greedy_clumping
 
-    snps = run_greedy_clumping(assoc_file=Path(norm_assoc_str), selected_p=sel_p)
-    return tuple(dict(item) for item in (snps or []))
+    assoc_file = Path(norm_assoc_str)
+    snps = run_greedy_clumping(assoc_file=assoc_file, selected_p=sel_p) or []
+    suggestive = extract_suggestive_peaks(
+        assoc_file=assoc_file,
+        selected_p=sel_p,
+        suggestive_p=sug_p,
+        exclude_snps={s["snp"] for s in snps if s.get("snp")},
+    )
+    return (
+        tuple(dict(item) for item in snps),
+        tuple(dict(item) for item in suggestive),
+    )
 
 
 @router.get("/{job_id}/lead-snps", summary="Daftar Lead SNPs independen hasil clumping (Fase 4F)")
@@ -309,7 +320,12 @@ def get_lead_snps_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict
         job_id, db, ResultType.LEAD_SNPS, "postgwas", "lead_snps.json"
     )
     raw_snps = data if isinstance(data, list) else (data.get("snps", []) if isinstance(data, dict) else [])
-    if not raw_snps:
+    has_suggestive_field = isinstance(data, dict) and ("suggestive" in data or "sugestif" in data)
+    needs_fallback = (
+        (isinstance(data, dict) and data.get("status") == "not_available")
+        or (not raw_snps and not has_suggestive_field)
+    )
+    if needs_fallback:
         job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
         candidates = [
             job_root / "gwas" / "gwas_results.normalized.tsv",
@@ -321,18 +337,34 @@ def get_lead_snps_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict
         if norm_assoc is not None:
             thresh_data = _load_job_json_result(job_id, db, ResultType.THRESHOLDS, "postgwas", "thresholds.json")
             sel_p = float(thresh_data.get("selected_p") or 5e-8) if isinstance(thresh_data, dict) else 5e-8
+            sug_p = float(thresh_data.get("suggestive") or 1e-5) if isinstance(thresh_data, dict) else 1e-5
             st = norm_assoc.stat()
-            regenerated = [
-                dict(item)
-                for item in _cached_greedy_clumping(str(norm_assoc), st.st_mtime_ns, st.st_size, sel_p)
-            ]
-            if regenerated:
-                return {"count": len(regenerated), "snps": regenerated}
+            cached_snps, cached_sug = _cached_greedy_clumping(
+                str(norm_assoc), st.st_mtime_ns, st.st_size, sel_p, sug_p
+            )
+            regenerated = [dict(item) for item in cached_snps]
+            suggestive_list = [dict(item) for item in cached_sug]
+            if regenerated or suggestive_list:
+                return {
+                    "count": len(regenerated),
+                    "snps": regenerated,
+                    "suggestive_count": len(suggestive_list),
+                    "suggestive": suggestive_list,
+                }
 
     if isinstance(data, list):
-        return {"count": len(data), "snps": data}
-    if isinstance(data, dict) and "snps" not in data:
-        return {**data, "count": len(raw_snps), "snps": raw_snps}
+        return {"count": len(data), "snps": data, "suggestive_count": 0, "suggestive": []}
+    if isinstance(data, dict):
+        sug_list = data.get("suggestive")
+        if not isinstance(sug_list, list):
+            sug_list = data.get("sugestif") if isinstance(data.get("sugestif"), list) else []
+        return {
+            **data,
+            "count": len(raw_snps),
+            "snps": raw_snps,
+            "suggestive_count": len(sug_list),
+            "suggestive": sug_list,
+        }
     return data
 
 

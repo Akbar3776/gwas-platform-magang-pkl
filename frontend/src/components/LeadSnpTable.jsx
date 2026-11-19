@@ -28,6 +28,7 @@ function formatPos(pos) {
 
 export function LeadSnpTable({
   leadSnps = [],
+  suggestiveSnps = [],
   activeThreshold = null,
   activeThresholdMethod = "Bonferroni",
   jobId = null,
@@ -57,6 +58,17 @@ export function LeadSnpTable({
     if (!Array.isArray(rawList)) return [];
     return rawList.filter((s) => s && typeof s === "object");
   }, [leadSnps]);
+
+  const safeSuggestiveSnps = useMemo(() => {
+    if (Array.isArray(suggestiveSnps) && suggestiveSnps.length > 0) {
+      return suggestiveSnps.filter((s) => s && typeof s === "object");
+    }
+    if (leadSnps && typeof leadSnps === "object" && !Array.isArray(leadSnps)) {
+      const alt = Array.isArray(leadSnps.suggestive) ? leadSnps.suggestive : leadSnps.sugestif;
+      if (Array.isArray(alt)) return alt.filter((s) => s && typeof s === "object");
+    }
+    return [];
+  }, [suggestiveSnps, leadSnps]);
 
   const numPassThreshold = useMemo(() => {
     if (!activeThreshold || typeof activeThreshold !== "number") return safeLeadSnps.length;
@@ -428,6 +440,60 @@ export function LeadSnpTable({
             pageSizeOptions={[10, 25, 50, 100]}
             itemLabel="Lead SNPs"
           />
+        </div>
+      )}
+
+      {safeSuggestiveSnps.length > 0 && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: 14,
+            borderRadius: 8,
+            border: "1px solid #fde68a",
+            background: "#fffbeb",
+            display: "grid",
+            gap: 10,
+          }}
+        >
+          <div>
+            <h5 style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: "#92400e" }}>
+              Peak Sugestif / Kandidat Eksploratif ({safeSuggestiveSnps.length})
+            </h5>
+            <p style={{ margin: "3px 0 0", fontSize: 12, color: "#78350f" }}>
+              Puncak eksploratif di bawah ambang signifikan utama; tidak digolongkan sebagai Lead SNP signifikan.
+            </p>
+          </div>
+          <div style={{ overflowX: "auto", border: "1px solid #fcd34d", borderRadius: 6, background: "#fff" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, textAlign: "left" }}>
+              <thead>
+                <tr style={{ background: "#fef3c7", borderBottom: "1px solid #fde68a", color: "#78350f" }}>
+                  <th style={{ padding: "8px 12px" }}>SNP</th>
+                  <th style={{ padding: "8px 12px" }}>Chr</th>
+                  <th style={{ padding: "8px 12px" }}>Posisi (bp)</th>
+                  <th style={{ padding: "8px 12px" }}>Alel</th>
+                  <th style={{ padding: "8px 12px" }}>P-value</th>
+                  <th style={{ padding: "8px 12px" }}>Beta (SE)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {safeSuggestiveSnps.map((s, idx) => {
+                  const a1 = s.a1 || s.alt || "-";
+                  const a0 = s.a0 || s.ref || "-";
+                  const alleleStr = a1 === "-" && a0 === "-" ? "-" : `${a1}/${a0}`;
+                  return (
+                    <tr key={s.snp || idx} style={{ borderBottom: "1px solid #fef3c7" }}>
+                      <td style={{ padding: "8px 12px", fontWeight: 700, color: "#92400e" }}>{s.snp || "-"}</td>
+                      <td style={{ padding: "8px 12px" }}>{s.chr ?? "-"}</td>
+                      <td style={{ padding: "8px 12px" }}>{formatPos(s.pos)}</td>
+                      <td style={{ padding: "8px 12px" }}>{alleleStr}</td>
+                      <td style={{ padding: "8px 12px", fontWeight: 600 }}>{formatP(s.p)}</td>
+                      <td style={{ padding: "8px 12px" }}>{formatBeta(s.beta)}{formatSe(s.se)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

@@ -161,16 +161,10 @@ def run_postgwas_analysis(
         append_log(log_file, "Menjalankan Clumping untuk memetakan Lead SNPs independen...")
         selected_p = float(thresholds["selected_p"])
         suggestive_p = float(thresholds.get("suggestive", 1e-5))
-        min_p = float(thresholds.get("min_p") or (min(p_values) if p_values else 1.0))
-        clump_p2_val = float(clump_cfg.p2)
-
-        # Gunakan ambang clumping terluas dari selected, suggestive, dan clump_p2
-        # agar varian yang lolos Suggestive/LOD/FDR tetap teridentifikasi sebagai lead SNP
-        effective_clump_p1 = max(selected_p, suggestive_p, clump_p2_val, 1e-4)
-        if min_p > effective_clump_p1 and min_p < 0.05:
-            effective_clump_p1 = min(0.01, min_p * 2.0)
 
         # Gunakan PLINK 2 --clump jika plink2 tersedia, atau greedy fallback
+        from app.services.postgwas_service import extract_suggestive_peaks
+
         bfile_prefix = ctx.get("genotype_bfile_prefix") or ctx.get("qc_bfile_prefix")
         ran_plink_clump = False
         lead_snps: list[dict[str, Any]] = []
@@ -184,7 +178,7 @@ def run_postgwas_analysis(
                 "--clump", norm_assoc_path,
                 "--clump-id-field", "rs",
                 "--clump-p-field", "p",
-                "--clump-p1", str(effective_clump_p1),
+                "--clump-p1", str(selected_p),
                 "--clump-p2", str(clump_cfg.p2),
                 "--clump-r2", str(clump_cfg.r2),
                 "--clump-kb", str(clump_kb),
@@ -213,16 +207,19 @@ def run_postgwas_analysis(
                                 s_p = crow.get("P")
                                 if not s_id or s_chr is None or s_pos is None or s_p is None:
                                     continue
+                                p_float = float(s_p)
+                                if p_float > selected_p:
+                                    continue
                                 lead_snps.append({
                                     "snp": str(s_id),
                                     "chr": chr_label(s_chr),
                                     "pos": int(s_pos),
-                                    "p": float(s_p),
+                                    "p": p_float,
                                     "beta": 0.0,
                                     "se": 0.0,
                                     "n_clumped": int(crow.get("TOTAL", 0)),
                                     "clumped_snps": [x.strip() for x in str(crow.get("SP2", "")).split(",") if x.strip()],
-                                    "is_candidate": float(s_p) > selected_p,
+                                    "is_candidate": False,
                                 })
                             except (ValueError, KeyError):
                                 continue
@@ -261,7 +258,21 @@ def run_postgwas_analysis(
                 clump_r2=clump_cfg.r2,
             )
 
-        lead_snps_payload = {"count": len(lead_snps), "snps": lead_snps}
+        suggestive_snps = extract_suggestive_peaks(
+            assoc_file=norm_assoc_path,
+            selected_p=selected_p,
+            suggestive_p=suggestive_p,
+            clump_p2=clump_cfg.p2,
+            clump_kb=clump_kb,
+            exclude_snps={s["snp"] for s in lead_snps if s.get("snp")},
+        )
+
+        lead_snps_payload = {
+            "count": len(lead_snps),
+            "snps": lead_snps,
+            "suggestive_count": len(suggestive_snps),
+            "suggestive": suggestive_snps,
+        }
         lead_snps_file = workspace / "lead_snps.json"
         write_json(lead_snps_file, lead_snps_payload)
 
@@ -286,7 +297,8 @@ def run_postgwas_analysis(
         n_sig_lead = sum(1 for s in lead_snps if float(s.get("p", 1.0)) <= selected_p)
         append_log(
             log_file,
-            f"Clumping selesai: {len(lead_snps)} Lead SNP teridentifikasi ({n_sig_lead} signifikan pada ambang terpilih).\n"
+            f"Clumping selesai: {len(lead_snps)} Lead SNP teridentifikasi "
+            f"({n_sig_lead} signifikan pada ambang terpilih; {len(suggestive_snps)} peak sugestif).\n"
         )
         if len(lead_snps) == 0:
             append_log(

@@ -131,6 +131,13 @@ export default function GwasResultsPanel({ jobId }) {
     return [];
   }, [leadSnpsData]);
 
+  const suggestiveSnpsList = useMemo(() => {
+    if (!leadSnpsData || Array.isArray(leadSnpsData)) return [];
+    if (Array.isArray(leadSnpsData.suggestive)) return leadSnpsData.suggestive;
+    if (Array.isArray(leadSnpsData.sugestif)) return leadSnpsData.sugestif;
+    return [];
+  }, [leadSnpsData]);
+
   const hasMultilocusData = useMemo(
     () =>
       Boolean(
@@ -352,6 +359,7 @@ export default function GwasResultsPanel({ jobId }) {
           <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0" }}>
             <LeadSnpTable
               leadSnps={leadSnpsList}
+              suggestiveSnps={suggestiveSnpsList}
               activeThreshold={computedThreshold}
               activeThresholdMethod={activeThresholdLabel}
               jobId={jobId}

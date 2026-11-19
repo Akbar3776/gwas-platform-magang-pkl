@@ -84,9 +84,11 @@ def test_run_greedy_clumping(tmp_path):
 
 
 def test_run_greedy_clumping_candidate_peaks(tmp_path):
+    from app.services.postgwas_service import extract_suggestive_peaks
+
     assoc_file = tmp_path / "gwas_results.normalized.tsv"
-    # When no variants meet conservative bonferroni (e.g. 5e-8),
-    # greedy clumping should return exploratory candidate peaks
+    # Q3/A45: when no variants meet selected_p (5e-8), run_greedy_clumping returns []
+    # and sub-threshold peaks are separated into suggestive peaks.
     rows = [
         "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn",
         "1\t1000\trs_cand1\tA\tG\t0.3\t0.5\t0.08\t0.00015\t100",
@@ -102,13 +104,22 @@ def test_run_greedy_clumping_candidate_peaks(tmp_path):
         clump_p2=1e-3,
         clump_kb=100,
     )
+    assert lead_snps == []
 
-    assert len(lead_snps) == 3
-    assert lead_snps[0]["snp"] == "rs_cand1"
-    assert lead_snps[0]["is_candidate"] is True
-    assert lead_snps[0]["n_clumped"] == 1
-    assert lead_snps[1]["snp"] == "rs_cand2"
-    assert lead_snps[2]["snp"] == "rs_cand3"
+    suggestive = extract_suggestive_peaks(
+        assoc_file=assoc_file,
+        selected_p=5e-8,
+        suggestive_p=1e-5,
+        clump_p2=1e-3,
+        clump_kb=100,
+    )
+    assert len(suggestive) == 3
+    assert suggestive[0]["snp"] == "rs_cand1"
+    assert suggestive[0]["is_candidate"] is True
+    assert suggestive[0]["is_suggestive"] is True
+    assert suggestive[0]["n_clumped"] == 1
+    assert suggestive[1]["snp"] == "rs_cand2"
+    assert suggestive[2]["snp"] == "rs_cand3"
 
 
 def test_lead_snps_http_endpoint_wraps_json_array(tmp_path, monkeypatch):
@@ -291,3 +302,94 @@ def test_get_lead_snps_is_strictly_read_only_on_disk(tmp_path, monkeypatch):
     assert out_b["count"] == 1
     assert out_b["snps"][0]["snp"] == "rs_regen"
     assert lead_b.read_text(encoding="utf-8") == orig_empty_raw
+
+
+def test_postgwas_task_uses_4e_p1_for_plink_and_splits_suggestive_in_json(tmp_path, monkeypatch):
+    import json
+    import uuid
+    from unittest.mock import MagicMock
+    from app.api.routes.results import get_lead_snps_data
+    from app.core.config import settings
+    from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep
+    from app.tasks import postgwas_tasks
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = str(uuid.uuid4())
+    gwas_dir = tmp_path / "jobs" / job_id / "gwas"
+    gwas_dir.mkdir(parents=True)
+    norm_assoc = gwas_dir / "gwas_results.normalized.tsv"
+    norm_assoc.write_text(
+        "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn\n"
+        "1\t1000\trs_sig\tA\tG\t0.3\t0.5\t0.08\t1e-8\t100\n"
+        "2\t2000\trs_sug\tC\tT\t0.25\t0.3\t0.09\t5e-5\t100\n",
+        encoding="utf-8",
+    )
+    bfile = gwas_dir / "genotypes"
+    bfile.with_suffix(".bed").touch()
+
+    mock_job = AnalysisJob(
+        id=uuid.UUID(job_id),
+        dataset_id=uuid.uuid4(),
+        pipeline_type="full_pipeline",
+        current_step=PipelineStep.POSTGWAS,
+        overall_status=JobStatus.RUNNING_POSTGWAS,
+        parameters={},
+    )
+    mock_db = MagicMock()
+    mock_db.get.return_value = mock_job
+    mock_db.query.return_value.filter.return_value.first.return_value = None
+
+    monkeypatch.setattr(postgwas_tasks, "SessionLocal", lambda: mock_db)
+    monkeypatch.setattr(postgwas_tasks, "ensure_not_cancelled", lambda *a, **kw: None)
+    monkeypatch.setattr(postgwas_tasks, "guard_status_change", lambda *a, **kw: None)
+    monkeypatch.setattr(postgwas_tasks, "mark_job", lambda *a, **kw: None)
+    monkeypatch.setattr(postgwas_tasks, "upsert_result", lambda *a, **kw: None)
+    monkeypatch.setattr(postgwas_tasks, "which_tool", lambda name: "/usr/local/bin/plink2" if name == "plink2" else None)
+
+    captured_cmds = []
+
+    def fake_run_cli(cmd, **kwargs):
+        captured_cmds.append(cmd)
+        # Simulate plink2 honoring --clump-p1 (writes rs_sig when p1=0.025 and empty if only subthreshold)
+        p1_idx = cmd.index("--clump-p1") + 1
+        p1_val = float(cmd[p1_idx])
+        clump_out = tmp_path / "jobs" / job_id / "postgwas" / "clumped.clumps"
+        rows = ["#CHROM\tPOS\tID\tP\tTOTAL\tSP2\n"]
+        if 1e-8 <= p1_val:
+            rows.append("1\t1000\trs_sig\t1e-8\t0\tNONE\n")
+        if 5e-5 <= p1_val:
+            rows.append("2\t2000\trs_sug\t5e-5\t0\tNONE\n")
+        clump_out.write_text("".join(rows), encoding="utf-8")
+
+    monkeypatch.setattr(postgwas_tasks, "run_cli_command", fake_run_cli)
+
+    res = postgwas_tasks.run_postgwas_analysis(
+        {"normalized_assoc_path": str(norm_assoc), "genotype_bfile_prefix": str(bfile)},
+        job_id=job_id,
+        dataset_id=str(mock_job.dataset_id),
+        threshold_params={"method": "bonferroni", "alpha": 0.05, "suggestive_p": 1e-4},
+    )
+    assert res["status"] == "completed"
+    assert len(captured_cmds) == 1
+    cmd = captured_cmds[0]
+    p1_used = float(cmd[cmd.index("--clump-p1") + 1])
+    assert p1_used == pytest.approx(0.025)
+
+    # Re-run with tight bonferroni/lod threshold (lod_score=6 -> selected_p=1e-6 < rs_sug 5e-5)
+    captured_cmds.clear()
+    postgwas_tasks.run_postgwas_analysis(
+        {"normalized_assoc_path": str(norm_assoc), "genotype_bfile_prefix": str(bfile)},
+        job_id=job_id,
+        dataset_id=str(mock_job.dataset_id),
+        threshold_params={"method": "lod", "lod_score": 6.0, "suggestive_p": 1e-4},
+    )
+    p1_lod = float(captured_cmds[0][captured_cmds[0].index("--clump-p1") + 1])
+    assert p1_lod == pytest.approx(1e-6)
+
+    lead_payload = json.loads((tmp_path / "jobs" / job_id / "postgwas" / "lead_snps.json").read_text(encoding="utf-8"))
+    assert [s["snp"] for s in lead_payload["snps"]] == ["rs_sig"]
+    assert [s["snp"] for s in lead_payload.get("suggestive", [])] == ["rs_sug"]
+
+    api_out = get_lead_snps_data(job_id=uuid.UUID(job_id), db=mock_db)
+    assert [s["snp"] for s in api_out["snps"]] == ["rs_sig"]
+    assert [s["snp"] for s in api_out.get("suggestive", [])] == ["rs_sug"]
