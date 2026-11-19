@@ -116,20 +116,33 @@ def build_fasta_index(fasta_path: str | Path) -> Path:
 
             if saw_short_line:
                 raise ValueError(
-                    f"Panjang baris FASTA tidak konsisten sebelum akhir contig '{cur_name}'; gagal membangun .fai."
+                    f"Panjang baris FASTA tidak konsisten sebelum akhir contig '{cur_name}' "
+                    f"(baris {line_no}); gagal membangun .fai."
                 )
 
             if line_bases == 0:
                 cur_offset = line_start
                 line_bases = seq_len
-                line_width = raw_len
-            elif seq_len != line_bases or raw_len != line_width:
+                line_width = raw_len if ended_nl else (seq_len + 1)
+                if not ended_nl:
+                    saw_short_line = True
+            elif seq_len > line_bases:
+                raise ValueError(
+                    f"Panjang baris melebihi LINEBASES pada contig '{cur_name}' "
+                    f"(baris {line_no}); gagal membangun .fai."
+                )
+            elif not ended_nl:
+                saw_short_line = True
+            else:
+                expected_eol = line_width - line_bases
+                actual_eol = raw_len - seq_len
+                if actual_eol != expected_eol:
+                    raise ValueError(
+                        f"Lebar baris/newline FASTA tidak konsisten pada contig '{cur_name}' "
+                        f"(baris {line_no}); gagal membangun .fai."
+                    )
                 if seq_len < line_bases:
                     saw_short_line = True
-                else:
-                    raise ValueError(
-                        f"Panjang baris melebihi LINEBASES pada contig '{cur_name}'; gagal membangun .fai."
-                    )
 
             cur_len += seq_len
 

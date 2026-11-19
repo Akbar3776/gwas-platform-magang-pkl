@@ -676,6 +676,46 @@ def test_build_fasta_index_empty_header_raises_value_error(tmp_path: Path):
     assert "baris 3" in str(exc_info.value).lower() or "kosong" in str(exc_info.value).lower()
 
 
+def test_build_fasta_index_last_line_without_trailing_newline(tmp_path: Path):
+    from app.services import primer_service
+
+    # Kasus 1: baris terakhir memiliki panjang tepat == LINEBASES (80) tanpa trailing newline di EOF
+    line1 = "ACGT" * 20  # 80 bp
+    line2 = "TGCA" * 20  # 80 bp (baris terakhir tanpa '\n')
+    fa_exact = tmp_path / "eof_exact.fa"
+    fa_exact.write_bytes(f">chr1\n{line1}\n{line2}".encode("ascii"))
+
+    fai_exact = primer_service.build_fasta_index(fa_exact)
+    fields = fai_exact.read_text(encoding="utf-8").strip().split("\t")
+    assert fields[0] == "chr1"
+    assert int(fields[1]) == 160
+    assert int(fields[3]) == 80
+    assert int(fields[4]) == 81
+
+    idx_exact = primer_service.load_fasta_index(fa_exact)
+    assert primer_service._read_fasta_region(fa_exact, "chr1", 1, 160, index=idx_exact) == line1 + line2
+
+    # Kasus 2: baris terakhir lebih pendek (< 80 bp) tanpa trailing newline di EOF
+    short_tail = "GGGGCCCCAAAATTTT" * 3 + "AA"  # 50 bp
+    fa_short = tmp_path / "eof_short.fa"
+    fa_short.write_bytes(f">chr1\n{line1}\n{short_tail}".encode("ascii"))
+
+    fai_short = primer_service.build_fasta_index(fa_short)
+    fields_short = fai_short.read_text(encoding="utf-8").strip().split("\t")
+    assert int(fields_short[1]) == 130
+    assert int(fields_short[3]) == 80
+    assert int(fields_short[4]) == 81
+    idx_short = primer_service.load_fasta_index(fa_short)
+    assert primer_service._read_fasta_region(fa_short, "chr1", 81, 130, index=idx_short) == short_tail
+
+    # Kasus 3: baris di tengah contig lebih panjang dari LINEBASES tetap ditolak
+    fa_bad = tmp_path / "mid_too_long.fa"
+    fa_bad.write_bytes(f">chr1\n{line1}\n{'A' * 85}\n{line1}\n".encode("ascii"))
+    with pytest.raises(ValueError) as exc_info:
+        primer_service.build_fasta_index(fa_bad)
+    assert "baris 3" in str(exc_info.value).lower() or "linebases" in str(exc_info.value).lower()
+
+
 def test_assemble_reference_fasta_never_sticks_validating_on_errors(tmp_path: Path, monkeypatch):
     import hashlib
     import io
