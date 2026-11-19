@@ -166,4 +166,35 @@ describe("GwasResultsPanel multi-locus Manhattan & QQ plots (A23)", () => {
     expect(screen.getByText(/Peak Sugestif/i)).toBeInTheDocument();
     expect(screen.getByText("rs_sug_1")).toBeInTheDocument();
   });
+
+  test("keeps tabs accessible on 409 Manhattan error so QC tab renders and shows per-tab error state (A32)", async () => {
+    gwasApi.fetchManhattanData.mockRejectedValue(new Error("Hasil Manhattan belum tersedia (HTTP 409)"));
+    gwasApi.fetchQcComparisonData.mockResolvedValue({
+      before: { n_snps: 500, n_samples: 50, maf_hist: { edges: [0, 0.5], counts: [500] } },
+      after: { n_snps: 420, n_samples: 48, maf_hist: { edges: [0, 0.5], counts: [420] } },
+    });
+    gwasApi.fetchPcaData.mockRejectedValue(new Error("PCA belum tersedia untuk job FAILED (HTTP 409)"));
+
+    render(<GwasResultsPanel jobId="job-failed-409" />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/Hasil Manhattan belum tersedia/i);
+    });
+
+    // All 7 tabs stay reachable despite Manhattan 409
+    const qcTab = screen.getByRole("tab", { name: /Inspeksi & QC/i });
+    fireEvent.click(qcTab);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Evaluasi Quality Control Genotipe/i)).toBeInTheDocument();
+      expect(screen.getByText(/500/)).toBeInTheDocument();
+    });
+
+    const structureTab = screen.getByRole("tab", { name: /Struktur Populasi & LD/i });
+    fireEvent.click(structureTab);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/PCA belum tersedia/i);
+    });
+  });
 });

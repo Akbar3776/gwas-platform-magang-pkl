@@ -45,7 +45,8 @@ export function useGwasResults(jobId) {
       .catch((err) => {
         if (abortControllerRef.current !== controller) return;
         if (err && err.name === "AbortError") return; // dibatalkan, bukan error nyata
-        setError(err instanceof ApiError ? err.message : "Terjadi kesalahan tak terduga saat mengambil data.");
+        const msg = err instanceof ApiError ? err.message : err?.message;
+        setError(msg || "Terjadi kesalahan tak terduga saat mengambil data.");
       })
       .finally(() => {
         if (abortControllerRef.current !== controller) return;

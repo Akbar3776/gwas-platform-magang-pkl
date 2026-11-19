@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { useGwasResults } from "../hooks/useGwasResults";
+import { useResource } from "../hooks/useResource";
 import ManhattanPlot from "./ManhattanPlot";
 import QQPlot from "./QQPlot";
 import { ThresholdSelector } from "./ThresholdSelector";
@@ -47,6 +48,65 @@ const MULTILOCUS_MODEL_LABELS = {
   MLMM: "MLMM",
 };
 
+function TabResourceNotice({ resources = [], label = "data" }) {
+  const failed = resources.filter((r) => Boolean(r?.error));
+  const loadingOnly =
+    resources.length > 0 && resources.some((r) => r?.isLoading) && resources.every((r) => r?.data == null && !r?.error);
+
+  if (!failed.length && !loadingOnly) {
+    return null;
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      {loadingOnly && (
+        <div role="status" style={{ padding: 14, borderRadius: 8, background: "#f8fafc", color: "#475569", fontSize: 13 }}>
+          Memuat {label}...
+        </div>
+      )}
+      {failed.map((res, idx) => (
+        <div
+          key={idx}
+          role="alert"
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 10,
+            flexWrap: "wrap",
+            padding: "10px 14px",
+            borderRadius: 8,
+            background: "#fef2f2",
+            border: "1px solid #fecaca",
+            color: "#b91c1c",
+            fontSize: 13,
+          }}
+        >
+          <span>{res.error}</span>
+          {res.refetch && (
+            <button
+              type="button"
+              onClick={res.refetch}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 6,
+                border: "1px solid #fca5a5",
+                background: "#fff",
+                color: "#991b1b",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              Coba Lagi
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function GwasResultsPanel({ jobId }) {
   const { data: manhattanData, isLoading: isManhattanLoading, error: manhattanError, refetch } =
     useGwasResults(jobId);
@@ -57,45 +117,35 @@ export default function GwasResultsPanel({ jobId }) {
   const [multiPlotData, setMultiPlotData] = useState(null);
   const [multiPlotLoading, setMultiPlotLoading] = useState(false);
   const [multiPlotError, setMultiPlotError] = useState(null);
-
-  // Stage states
-  const [thresholdsData, setThresholdsData] = useState(null);
   const [activeThresholdMethod, setActiveThresholdMethod] = useState("bonferroni");
-  const [leadSnpsData, setLeadSnpsData] = useState(null);
-  const [inspectionData, setInspectionData] = useState(null);
-  const [qcData, setQcData] = useState(null);
-  const [pcaData, setPcaData] = useState(null);
-  const [kinshipData, setKinshipData] = useState(null);
-  const [ldDecayData, setLdDecayData] = useState(null);
-  const [modelRecData, setModelRecData] = useState(null);
-  const [peakData, setPeakData] = useState(null);
-  const [multilocusSummary, setMultilocusSummary] = useState(null);
-  const [annotationData, setAnnotationData] = useState(null);
-  const [goEnrichmentData, setGoEnrichmentData] = useState(null);
-  const [primersData, setPrimersData] = useState(null);
 
-  // Fetch all supplementary pipeline stage data
-  useEffect(() => {
-    if (!jobId) return;
-    const controller = new AbortController();
-    const sig = controller.signal;
+  const thresholdsRes = useResource(fetchThresholdsData, jobId, { fallbackMessage: "Gagal memuat ambang batas." });
+  const leadSnpsRes = useResource(fetchLeadSnpsData, jobId, { fallbackMessage: "Gagal memuat Lead SNPs." });
+  const inspectionRes = useResource(fetchInspectionData, jobId, { fallbackMessage: "Gagal memuat data inspeksi." });
+  const qcRes = useResource(fetchQcComparisonData, jobId, { fallbackMessage: "Gagal memuat data perbandingan QC." });
+  const pcaRes = useResource(fetchPcaData, jobId, { fallbackMessage: "Gagal memuat data PCA." });
+  const kinshipRes = useResource(fetchKinshipData, jobId, { fallbackMessage: "Gagal memuat matriks kinship." });
+  const ldDecayRes = useResource(fetchLdDecayData, jobId, { fallbackMessage: "Gagal memuat kurva LD decay." });
+  const modelRecRes = useResource(fetchModelRecommendationData, jobId, { fallbackMessage: "Gagal memuat rekomendasi model." });
+  const peakRes = useResource(fetchPeakComparisonData, jobId, { fallbackMessage: "Gagal memuat perbandingan puncak." });
+  const multilocusRes = useResource(fetchMultilocusResultsData, jobId, { fallbackMessage: "Gagal memuat hasil multi-locus." });
+  const annotationRes = useResource(fetchCandidateGenesData, jobId, { fallbackMessage: "Gagal memuat anotasi kandidat." });
+  const goRes = useResource(fetchGoEnrichmentData, jobId, { fallbackMessage: "Gagal memuat data GO enrichment." });
+  const primersRes = useResource(fetchPrimersData, jobId, { fallbackMessage: "Gagal memuat data Primer3." });
 
-    fetchThresholdsData(jobId, sig).then(setThresholdsData).catch(() => {});
-    fetchLeadSnpsData(jobId, sig).then(setLeadSnpsData).catch(() => {});
-    fetchInspectionData(jobId, sig).then(setInspectionData).catch(() => {});
-    fetchQcComparisonData(jobId, sig).then(setQcData).catch(() => {});
-    fetchPcaData(jobId, sig).then(setPcaData).catch(() => {});
-    fetchKinshipData(jobId, sig).then(setKinshipData).catch(() => {});
-    fetchLdDecayData(jobId, sig).then(setLdDecayData).catch(() => {});
-    fetchModelRecommendationData(jobId, sig).then(setModelRecData).catch(() => {});
-    fetchPeakComparisonData(jobId, sig).then(setPeakData).catch(() => {});
-    fetchMultilocusResultsData(jobId, sig).then(setMultilocusSummary).catch(() => {});
-    fetchCandidateGenesData(jobId, sig).then(setAnnotationData).catch(() => {});
-    fetchGoEnrichmentData(jobId, sig).then(setGoEnrichmentData).catch(() => {});
-    fetchPrimersData(jobId, sig).then(setPrimersData).catch(() => {});
-
-    return () => controller.abort();
-  }, [jobId]);
+  const thresholdsData = thresholdsRes.data;
+  const leadSnpsData = leadSnpsRes.data;
+  const inspectionData = inspectionRes.data;
+  const qcData = qcRes.data;
+  const pcaData = pcaRes.data;
+  const kinshipData = kinshipRes.data;
+  const ldDecayData = ldDecayRes.data;
+  const modelRecData = modelRecRes.data;
+  const peakData = peakRes.data;
+  const multilocusSummary = multilocusRes.data;
+  const annotationData = annotationRes.data;
+  const goEnrichmentData = goRes.data;
+  const primersData = primersRes.data;
 
   // Sinkronkan metode ambang aktif dengan rekomendasi/output pipeline
   useEffect(() => {
@@ -207,26 +257,6 @@ export default function GwasResultsPanel({ jobId }) {
     };
   }, [activeTab, hasMultilocusData, jobId, selectedMultiModel]);
 
-  if (isManhattanLoading) {
-    return (
-      <div className="gwas-results-state" role="status" aria-live="polite">
-        <div className="gwas-spinner" />
-        <p>Memuat hasil analisis GWAS...</p>
-      </div>
-    );
-  }
-
-  if (manhattanError) {
-    return (
-      <div className="gwas-results-state gwas-results-error" role="alert">
-        <p>Gagal memuat hasil: {manhattanError}</p>
-        <button type="button" onClick={refetch}>
-          Coba Lagi
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div className="gwas-results-panel">
       {/* Main Tab Navigation */}
@@ -269,6 +299,19 @@ export default function GwasResultsPanel({ jobId }) {
 
       {/* TAB 1: VISUALISASI MANHATTAN & QQ PLOT */}
       {activeTab === "vis" && (
+        isManhattanLoading ? (
+          <div className="gwas-results-state" role="status" aria-live="polite">
+            <div className="gwas-spinner" />
+            <p>Memuat hasil analisis GWAS...</p>
+          </div>
+        ) : manhattanError ? (
+          <div className="gwas-results-state gwas-results-error" role="alert">
+            <p>Gagal memuat hasil: {manhattanError}</p>
+            <button type="button" onClick={refetch}>
+              Coba Lagi
+            </button>
+          </div>
+        ) : (
         <div style={{ display: "grid", gap: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
             <div style={{ display: "flex", gap: 8 }}>
@@ -340,11 +383,13 @@ export default function GwasResultsPanel({ jobId }) {
             )}
           </div>
         </div>
+        )
       )}
 
       {/* TAB 2: POST-GWAS & LEAD SNPS */}
       {activeTab === "postgwas" && (
         <div style={{ display: "grid", gap: 18 }}>
+          <TabResourceNotice resources={[thresholdsRes, leadSnpsRes]} label="data ambang batas & Lead SNPs" />
           <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0" }}>
             <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 700, color: "#0f172a" }}>
               Penetapan Ambang Batas Signifikansi Dinamis (Fase 4E)
@@ -371,6 +416,7 @@ export default function GwasResultsPanel({ jobId }) {
       {/* TAB 3: STRUKTUR POPULASI & LD DECAY */}
       {activeTab === "structure" && (
         <div style={{ display: "grid", gap: 20 }}>
+          <TabResourceNotice resources={[modelRecRes, pcaRes, kinshipRes, ldDecayRes]} label="data struktur populasi & LD" />
           {modelRecData && <ModelRecommendationCard recommendation={modelRecData} />}
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 16 }}>
@@ -409,6 +455,7 @@ export default function GwasResultsPanel({ jobId }) {
       {/* TAB 4: INSPEKSI FENOTIPE & QC */}
       {activeTab === "inspection_qc" && (
         <div style={{ display: "grid", gap: 20 }}>
+          <TabResourceNotice resources={[inspectionRes, qcRes]} label="data inspeksi & QC" />
           {inspectionData ? (
             <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0" }}>
               <h3 style={{ margin: "0 0 14px", fontSize: 15, fontWeight: 700, color: "#0f172a" }}>
@@ -439,7 +486,8 @@ export default function GwasResultsPanel({ jobId }) {
 
       {/* TAB 5: MULTI-LOCUS GWAS */}
       {activeTab === "multilocus" && (
-        <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0" }}>
+        <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0", display: "grid", gap: 14 }}>
+          <TabResourceNotice resources={[peakRes, multilocusRes]} label="data Multi-Locus GWAS" />
           {hasMultilocusData ? (
             <div style={{ display: "grid", gap: 18 }}>
               <div
@@ -536,7 +584,8 @@ export default function GwasResultsPanel({ jobId }) {
 
       {/* TAB 6: ANOTASI GEN KANDIDAT & GO ENRICHMENT */}
       {activeTab === "annotation" && (
-        <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0" }}>
+        <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0", display: "grid", gap: 14 }}>
+          <TabResourceNotice resources={[annotationRes, goRes]} label="data anotasi gen & GO enrichment" />
           <CandidateGenesTable
             annotationData={annotationData}
             goEnrichmentData={goEnrichmentData}
@@ -547,7 +596,8 @@ export default function GwasResultsPanel({ jobId }) {
 
       {/* TAB 7: FLANKING SEQUENCE (201 BP) & PRIMER3 DESIGN */}
       {activeTab === "primers" && (
-        <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0" }}>
+        <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0", display: "grid", gap: 14 }}>
+          <TabResourceNotice resources={[primersRes]} label="data desain primer Primer3" />
           <PrimerDesignPanel primersData={primersData} jobId={jobId} />
         </div>
       )}
