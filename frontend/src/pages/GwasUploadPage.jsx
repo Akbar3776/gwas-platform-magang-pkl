@@ -8,6 +8,8 @@ import { VcfUploader } from "../components/VcfUploader";
 import { WorkspaceExplorer } from "../components/WorkspaceExplorer";
 import { PhenotypeUploader } from "../components/PhenotypeUploader";
 import { AnnotationUploader } from "../components/AnnotationUploader";
+import { GoMappingUploader } from "../components/GoMappingUploader";
+import { ReferenceUploader } from "../components/ReferenceUploader";
 import { DataInspectionPanel } from "../components/DataInspectionPanel";
 
 const EMPTY_ARRAY = [];
@@ -200,6 +202,35 @@ export function GwasUploadPage() {
 
   const handleAnnotationChanged = useCallback((meta) => {
     setHasAnnotation(Boolean(meta));
+    setRefreshCount((c) => c + 1);
+  }, []);
+
+  const handleReferenceChanged = useCallback((meta) => {
+    setDatasetMeta((prev) =>
+      prev
+        ? {
+            ...prev,
+            has_reference: Boolean(meta),
+            reference_filename: meta?.filename || null,
+            reference_n_contigs: meta?.n_contigs ?? null,
+          }
+        : prev
+    );
+    setRefreshCount((c) => c + 1);
+  }, []);
+
+  const handleGoAnnotationChanged = useCallback((meta) => {
+    setDatasetMeta((prev) =>
+      prev
+        ? {
+            ...prev,
+            has_go_annotation: Boolean(meta),
+            go_annotation_filename: meta?.filename || null,
+            go_annotation_n_genes: meta?.n_genes ?? null,
+          }
+        : prev
+    );
+    setRefreshCount((c) => c + 1);
   }, []);
 
   const updateField = (event) => {
@@ -425,7 +456,7 @@ export function GwasUploadPage() {
             <div style={{ display: "grid", gap: 18, padding: 18, border: "1px solid #e2e8f0", borderRadius: 12, background: "#fff" }}>
               <h2 style={{ margin: 0, fontSize: 17 }}>2. Fenotipe & Anotasi Genom</h2>
               <p style={{ margin: 0, color: "#64748b", fontSize: 13 }}>
-                Unggah file fenotipe (.txt/.tsv/.csv) untuk analisis asosiasi dan file anotasi referensi (.gff3 opsional) untuk pemetaan gen kandidat.
+                Unggah file fenotipe (.txt/.tsv/.csv) untuk analisis asosiasi, serta file opsional GFF3 (anotasi gen), pemetaan GO (.tsv/.gaf), dan FASTA referensi genom (flanking &amp; Primer3).
               </p>
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
@@ -441,6 +472,18 @@ export function GwasUploadPage() {
                   datasetId={datasetId}
                   initialAnnotationFilename={datasetMeta?.annotation_filename}
                   onAnnotationChanged={handleAnnotationChanged}
+                />
+                <ReferenceUploader
+                  datasetId={datasetId}
+                  initialReferenceFilename={datasetMeta?.reference_filename}
+                  initialReferenceContigs={datasetMeta?.reference_n_contigs}
+                  onReferenceChanged={handleReferenceChanged}
+                />
+                <GoMappingUploader
+                  datasetId={datasetId}
+                  initialGoAnnotationFilename={datasetMeta?.go_annotation_filename}
+                  initialGoAnnotationGenes={datasetMeta?.go_annotation_n_genes}
+                  onGoAnnotationChanged={handleGoAnnotationChanged}
                 />
               </div>
 

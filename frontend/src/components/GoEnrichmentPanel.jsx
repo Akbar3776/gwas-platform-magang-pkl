@@ -240,8 +240,9 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
       goTable.some((r) => Boolean(r?.synthetic)) ||
       allTerms.some((t) => Boolean(t?.synthetic))
   );
+  const isUnavailable = goData?.status === "unavailable";
 
-  if (!goData || (!goTable.length && !allTerms.length && !isSynthetic)) {
+  if (!goData || (!goTable.length && !allTerms.length && !isSynthetic && !isUnavailable)) {
     return null;
   }
 

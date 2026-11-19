@@ -14,6 +14,9 @@ jest.mock("../api/jobsApi", () => ({
   fetchInspection: jest.fn(),
   uploadAnnotation: jest.fn(),
   deleteAnnotation: jest.fn(),
+  uploadGoAnnotation: jest.fn(),
+  deleteGoAnnotation: jest.fn(),
+  deleteReference: jest.fn(),
   fetchUploadedDatasets: jest.fn().mockResolvedValue([]),
   fetchUserJobs: jest.fn().mockResolvedValue([]),
 }));
@@ -65,5 +68,7 @@ describe("GwasUploadPage capabilities integration (A24)", () => {
     expect(container.querySelector('select[name="model"] option[value="farmcpu"]')).toBeDisabled();
     expect(screen.getByText(/Imputasi Beagle tidak tersedia/i)).toBeInTheDocument();
     expect(screen.getByText(/Multi-Locus GWAS tidak tersedia/i)).toBeInTheDocument();
+    expect(screen.getByText(/FASTA Referensi Genom \(Opsional\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/File Pemetaan GO \(Opsional\)/i)).toBeInTheDocument();
   });
 });

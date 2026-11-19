@@ -45,12 +45,12 @@ function formatEta(seconds) {
   return `${Math.ceil(seconds / 60)} menit`;
 }
 
-async function postChunkWithRetry(formData, token, mountedRef) {
+async function postChunkWithRetry(formData, token, mountedRef, chunkUrl = "/upload/chunk") {
   let lastError;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
     if (isAborted(token, mountedRef)) return null;
     try {
-      return await httpClient.post("/upload/chunk", formData, {
+      return await httpClient.post(chunkUrl, formData, {
         signal: token.controller.signal,
       });
     } catch (error) {
@@ -64,12 +64,20 @@ async function postChunkWithRetry(formData, token, mountedRef) {
   throw lastError;
 }
 
-export function useChunkUpload() {
+export function useChunkUpload(options = {}) {
+  const {
+    initUrl = "/upload/init",
+    chunkUrl = "/upload/chunk",
+    finalizeUrl = "/upload/finalize",
+    statusUrl = null,
+  } = options?.endpoints || {};
+
   const [stage, setStage] = useState(UPLOAD_STAGE.IDLE);
   const [progress, setProgress] = useState(0);
   const [uploadedBytes, setUploadedBytes] = useState(0);
   const [etaSeconds, setEtaSeconds] = useState(null);
   const [fileId, setFileId] = useState(null);
+  const [uploadResult, setUploadResult] = useState(null);
   const [errorMessage, setErrorMessage] = useState(null);
   const activeTokenRef = useRef(null);
   const mountedRef = useRef(true);
@@ -95,6 +103,7 @@ export function useChunkUpload() {
     setUploadedBytes(0);
     setEtaSeconds(null);
     setFileId(null);
+    setUploadResult(null);
     setErrorMessage(null);
   }, []);
 
@@ -112,21 +121,29 @@ export function useChunkUpload() {
     cancelUpload();
   }, [cancelUpload]);
 
-  const waitUntilReady = useCallback(async (id, token) => {
-    while (!isAborted(token, mountedRef)) {
-      const { data } = await httpClient.get(`/upload/${id}/status`, {
-        signal: token.controller.signal,
-      });
-      if (isAborted(token, mountedRef)) return null;
-      const status = String(data.upload_status).toUpperCase();
-      if (status === "UPLOADED" || status === "READY") return data;
-      if (status === "FAILED") {
-        throw new Error(data.error_message || "Server gagal merakit file upload.");
+  const waitUntilReady = useCallback(
+    async (id, token) => {
+      const resolvedStatusUrl = statusUrl
+        ? typeof statusUrl === "function"
+          ? statusUrl(id)
+          : statusUrl
+        : `/upload/${id}/status`;
+      while (!isAborted(token, mountedRef)) {
+        const { data } = await httpClient.get(resolvedStatusUrl, {
+          signal: token.controller.signal,
+        });
+        if (isAborted(token, mountedRef)) return null;
+        const status = String(data.upload_status).toUpperCase();
+        if (status === "UPLOADED" || status === "READY") return data;
+        if (status === "FAILED") {
+          throw new Error(data.error_message || "Server gagal merakit file upload.");
+        }
+        await wait(STATUS_POLL_MS, token.controller.signal);
       }
-      await wait(STATUS_POLL_MS, token.controller.signal);
-    }
-    return null;
-  }, []);
+      return null;
+    },
+    [statusUrl]
+  );
 
   const startUpload = useCallback(
     async (file) => {
@@ -145,7 +162,7 @@ export function useChunkUpload() {
 
       try {
         const { data: init } = await httpClient.post(
-          "/upload/init",
+          initUrl,
           {
             original_filename: file.name,
             total_size_bytes: file.size,
@@ -178,7 +195,7 @@ export function useChunkUpload() {
           formData.append("chunk_index", String(chunkIndex));
           formData.append("total_chunks", String(totalChunks));
           formData.append("chunk", chunkBlob, file.name);
-          const res = await postChunkWithRetry(formData, token, mountedRef);
+          const res = await postChunkWithRetry(formData, token, mountedRef, chunkUrl);
           if (res === null || isAborted(token, mountedRef) || activeTokenRef.current !== token) {
             return null;
           }
@@ -197,16 +214,17 @@ export function useChunkUpload() {
         finalizeData.append("total_chunks", String(totalChunks));
         finalizeData.append("expected_sha256", expectedSha256);
         setStage(UPLOAD_STAGE.PROCESSING);
-        await httpClient.post("/upload/finalize", finalizeData, {
+        await httpClient.post(finalizeUrl, finalizeData, {
           signal: token.controller.signal,
         });
         if (isAborted(token, mountedRef) || activeTokenRef.current !== token) {
           return null;
         }
-        await waitUntilReady(id, token);
+        const readyData = await waitUntilReady(id, token);
         if (isAborted(token, mountedRef) || activeTokenRef.current !== token) {
           return null;
         }
+        setUploadResult(readyData);
         setProgress(100);
         setEtaSeconds(null);
         setStage(UPLOAD_STAGE.READY);
@@ -224,7 +242,7 @@ export function useChunkUpload() {
         }
       }
     },
-    [clearUiState, waitUntilReady]
+    [chunkUrl, clearUiState, finalizeUrl, initUrl, waitUntilReady]
   );
 
   return {
@@ -234,6 +252,7 @@ export function useChunkUpload() {
     etaSeconds,
     etaLabel: formatEta(etaSeconds),
     fileId,
+    uploadResult,
     errorMessage,
     startUpload,
     cancelUpload,

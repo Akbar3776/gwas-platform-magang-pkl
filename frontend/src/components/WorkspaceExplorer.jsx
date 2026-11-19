@@ -389,26 +389,37 @@ export function WorkspaceExplorer({
                         )}
                       </td>
                       <td style={{ padding: "8px 10px" }}>
-                        {ds.has_annotation ? (
-                          <span
-                            title={ds.annotation_filename}
-                            style={{
-                              padding: "2px 8px",
-                              borderRadius: 6,
-                              fontSize: 11,
-                              fontWeight: 600,
-                              background: "#f5f3ff",
-                              color: "#6d28d9",
-                              border: "1px solid #ddd6fe",
-                              display: "inline-block",
-                              maxWidth: 110,
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            ✓ GFF3
-                          </span>
+                        {ds.has_annotation || ds.has_reference || ds.has_go_annotation ? (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            {[
+                              { enabled: ds.has_annotation, label: "✓ GFF3", title: ds.annotation_filename, bg: "#f5f3ff", color: "#6d28d9", border: "#ddd6fe" },
+                              { enabled: ds.has_reference, label: "✓ FASTA", title: ds.reference_filename, bg: "#ecfeff", color: "#0e7490", border: "#a5f3fc" },
+                              { enabled: ds.has_go_annotation, label: "✓ GO", title: ds.go_annotation_filename, bg: "#fef3c7", color: "#92400e", border: "#fde68a" },
+                            ]
+                              .filter((pill) => pill.enabled)
+                              .map((pill) => (
+                                <span
+                                  key={pill.label}
+                                  title={pill.title}
+                                  style={{
+                                    padding: "2px 8px",
+                                    borderRadius: 6,
+                                    fontSize: 11,
+                                    fontWeight: 600,
+                                    background: pill.bg,
+                                    color: pill.color,
+                                    border: `1px solid ${pill.border}`,
+                                    display: "inline-block",
+                                    maxWidth: 110,
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  {pill.label}
+                                </span>
+                              ))}
+                          </div>
                         ) : (
                           <span style={{ color: "#94a3b8", fontSize: 11 }}>–</span>
                         )}

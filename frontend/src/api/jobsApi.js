@@ -191,12 +191,12 @@ export async function deletePhenotype(fileId) {
 }
 
 /**
- * Unggah file anotasi GFF3 (.gff3/.gff/.gff3.gz) untuk dataset.
+ * Helper bersama untuk mengunggah file dataset tunggal via FormData.
  */
-export async function uploadAnnotation(fileId, file, onProgress) {
+async function postDatasetFile(url, file, onProgress) {
   const formData = new FormData();
   formData.append("file", file);
-  const { data } = await httpClient.post(`/upload/${fileId}/annotation`, formData, {
+  const { data } = await httpClient.post(url, formData, {
     headers: { "Content-Type": "multipart/form-data" },
     onUploadProgress: (e) => {
       if (onProgress && e.total) {
@@ -208,10 +208,40 @@ export async function uploadAnnotation(fileId, file, onProgress) {
 }
 
 /**
+ * Unggah file anotasi GFF3 (.gff3/.gff/.gff3.gz) untuk dataset.
+ */
+export async function uploadAnnotation(fileId, file, onProgress) {
+  return postDatasetFile(`/upload/${fileId}/annotation`, file, onProgress);
+}
+
+/**
  * Hapus file anotasi GFF3 dari dataset.
  */
 export async function deleteAnnotation(fileId) {
   const { data } = await httpClient.delete(`/upload/${fileId}/annotation`);
+  return data;
+}
+
+/**
+ * Unggah file pemetaan Gene Ontology (.tsv/.txt/.gaf/.gaf.gz) untuk dataset.
+ */
+export async function uploadGoAnnotation(fileId, file, onProgress) {
+  return postDatasetFile(`/upload/${fileId}/go-annotation`, file, onProgress);
+}
+
+/**
+ * Hapus file pemetaan Gene Ontology dari dataset.
+ */
+export async function deleteGoAnnotation(fileId) {
+  const { data } = await httpClient.delete(`/upload/${fileId}/go-annotation`);
+  return data;
+}
+
+/**
+ * Hapus FASTA referensi genom dan indeks .fai dari dataset.
+ */
+export async function deleteReference(fileId) {
+  const { data } = await httpClient.delete(`/upload/${fileId}/reference`);
   return data;
 }
 

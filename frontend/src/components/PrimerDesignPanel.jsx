@@ -159,9 +159,11 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
   const isSynthetic = Boolean(
     primersData?.synthetic || markers.some((m) => Boolean(m?.synthetic))
   );
-  const isNoReference = primersData?.status === "no_reference" || (
-    markers.length > 0 && markers.every((m) => m.status === "no_reference")
-  );
+  const isNoReference =
+    primersData?.status === "no_reference" ||
+    primersData?.status === "no_reference_for_chr" ||
+    (markers.length > 0 &&
+      markers.every((m) => m.status === "no_reference" || m.status === "no_reference_for_chr"));
 
   if ((!primersData || !markers.length || isNoReference) && !isSynthetic) {
     return (

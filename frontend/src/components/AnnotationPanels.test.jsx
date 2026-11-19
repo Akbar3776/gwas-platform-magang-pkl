@@ -117,6 +117,16 @@ describe("Annotation Synthetic Banner & Heuristic Labels", () => {
     expect(container.textContent).not.toMatch(/heuristik/i);
   });
 
+  test("GoEnrichmentPanel shows upload GO mapping guidance when unavailable even with empty table (A58)", () => {
+    render(
+      <GoEnrichmentPanel
+        goData={{ status: "unavailable", synthetic: false, go_table: [], enrichment_terms: [] }}
+        jobId="job-1"
+      />
+    );
+    expect(screen.getByText(/file pemetaan GO/i)).toBeInTheDocument();
+  });
+
   test("GoEnrichmentPanel and PrimerDesignPanel export sanitized CSV via toCsv (A17)", () => {
     const capturedBlobs = [];
     const origBlob = globalThis.Blob;

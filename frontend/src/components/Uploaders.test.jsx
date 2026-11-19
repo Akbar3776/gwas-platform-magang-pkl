@@ -2,9 +2,20 @@ import "@testing-library/jest-dom";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React, { useState } from "react";
 import { AnnotationUploader } from "./AnnotationUploader";
+import { GoMappingUploader } from "./GoMappingUploader";
 import { PhenotypeUploader } from "./PhenotypeUploader";
+import { ReferenceUploader } from "./ReferenceUploader";
 import { VcfUploader } from "./VcfUploader";
-import { fetchInspection, uploadAnnotation, uploadPhenotype } from "../api/jobsApi";
+import { httpClient } from "../api/httpClient";
+import { fetchInspection, uploadAnnotation, uploadGoAnnotation, uploadPhenotype } from "../api/jobsApi";
+
+jest.mock("../api/httpClient", () => ({
+  httpClient: {
+    post: jest.fn(),
+    get: jest.fn(),
+    delete: jest.fn(),
+  },
+}));
 
 jest.mock("../api/jobsApi", () => ({
   uploadPhenotype: jest.fn(),
@@ -12,6 +23,9 @@ jest.mock("../api/jobsApi", () => ({
   fetchInspection: jest.fn(),
   uploadAnnotation: jest.fn(),
   deleteAnnotation: jest.fn(),
+  uploadGoAnnotation: jest.fn(),
+  deleteGoAnnotation: jest.fn(),
+  deleteReference: jest.fn(),
 }));
 
 describe("Uploaders persist uploaded state across parent re-renders (A11)", () => {
@@ -130,5 +144,66 @@ describe("Uploaders persist uploaded state across parent re-renders (A11)", () =
     fireEvent.keyDown(vcfTrigger, { key: " " });
     expect(clickSpy).toHaveBeenCalledTimes(2);
     clickSpy.mockRestore();
+  });
+
+  test("ReferenceUploader uploads FASTA via useChunkUpload, stays accessible (A13), and shows contig count (A58)", async () => {
+    httpClient.post.mockImplementation((url) => {
+      if (url === "/upload/ds-1/reference/init") {
+        return Promise.resolve({ data: { file_id: "ds-1", upload_status: "uploading" } });
+      }
+      if (url === "/upload/ds-1/reference/chunk") {
+        return Promise.resolve({ data: { is_complete: true } });
+      }
+      if (url === "/upload/ds-1/reference/finalize") {
+        return Promise.resolve({ data: { upload_status: "validating" } });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    httpClient.get.mockResolvedValue({
+      data: {
+        file_id: "ds-1",
+        upload_status: "uploaded",
+        filename: "genome.fa",
+        n_contigs: 8,
+        contigs: [{ name: "chr1", length: 1000 }],
+      },
+    });
+
+    render(<ReferenceUploader datasetId="ds-1" />);
+    const refInput = screen.getByLabelText(/FASTA Referensi/i);
+    expect(refInput).toHaveClass("sr-only");
+    refInput.focus();
+    expect(document.activeElement).toBe(refInput);
+
+    const file = new File([">chr1\nACGTACGT\n"], "genome.fa", { type: "text/plain" });
+    fireEvent.change(refInput, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(screen.getByText("genome.fa")).toBeInTheDocument();
+      expect(screen.getByText(/8 kromosom \/ contig terindeks/i)).toBeInTheDocument();
+    });
+  });
+
+  test("GoMappingUploader uploads TSV/GAF, stays accessible (A13), and shows gene count (A58)", async () => {
+    uploadGoAnnotation.mockResolvedValue({
+      filename: "go_map.tsv",
+      format: "tsv",
+      n_genes: 42,
+      n_mappings: 90,
+    });
+
+    render(<GoMappingUploader datasetId="ds-1" />);
+    const goInput = screen.getByLabelText(/File Pemetaan GO/i);
+    expect(goInput).toHaveClass("sr-only");
+    goInput.focus();
+    expect(document.activeElement).toBe(goInput);
+
+    const file = new File(["G1\tGO:0006357\n"], "go_map.tsv", { type: "text/plain" });
+    fireEvent.change(goInput, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(screen.getByText("go_map.tsv")).toBeInTheDocument();
+      expect(screen.getByText(/42 gen/i)).toBeInTheDocument();
+    });
   });
 });
