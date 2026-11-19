@@ -22,6 +22,10 @@ class ManhattanDataResponse(BaseModel):
         default=None,
         description="Peta indeks kromosom -> label asli untuk kromosom/scaffold non-numerik",
     )
+    model: Optional[str] = Field(
+        default=None,
+        description="Nama model asosiasi untuk plot ini (mis. FARMCPU, BLINK, MLMM)",
+    )
 
     model_config = {
         "json_schema_extra": {

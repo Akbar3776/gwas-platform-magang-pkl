@@ -12,7 +12,7 @@ from typing import Any
 import uuid
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -86,12 +86,56 @@ def _load_job_json_result(
     return {"status": "not_available", "job_id": str(job_id), "stage": subfolders[0]}
 
 
+_MULTILOCUS_MODEL_FILES = {
+    "FARMCPU": "farmcpu_results.tsv",
+    "BLINK": "blink_results.tsv",
+    "MLMM": "mlmm_results.tsv",
+}
+
+
+def _resolve_multilocus_manhattan_cache(job_id: uuid.UUID, model_key: str) -> str:
+    job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
+    ml_dir = job_root / "multilocus"
+    tsv_path = ml_dir / _MULTILOCUS_MODEL_FILES[model_key]
+
+    summary_file = ml_dir / "multilocus_summary.json"
+    if not tsv_path.is_file() and summary_file.is_file():
+        try:
+            summary_data = json.loads(summary_file.read_text(encoding="utf-8"))
+            entry = (summary_data.get("results") or {}).get(model_key) or {}
+            cand = entry.get("tsv_file")
+            if cand and Path(cand).is_file():
+                tsv_path = Path(cand)
+        except Exception:
+            pass
+
+    if not tsv_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File hasil model multi-locus {model_key} tidak ditemukan",
+        )
+
+    model_cache = job_root / "visualization" / "multilocus" / model_key.lower() / "manhattan_cache.parquet"
+    labels_path = model_cache.with_name("manhattan_chr_labels.json")
+    if not model_cache.is_file() or not labels_path.is_file():
+        summary = generate_manhattan_cache(
+            assoc_file_path=str(tsv_path),
+            output_cache_path=str(model_cache),
+        )
+        return str(summary["output_path"])
+    return str(model_cache)
+
+
 @router.get(
     "/{job_id}/manhattan-data",
     response_model=ManhattanDataResponse,
     summary="Ambil data hasil GWAS untuk Manhattan Plot (format kolom, ringan)",
 )
-def get_manhattan_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> ManhattanDataResponse:
+def get_manhattan_data(
+    job_id: uuid.UUID,
+    model: str | None = Query(default=None, description="Model opsional: GEMMA, FARMCPU, BLINK, atau MLMM"),
+    db: Session = Depends(get_db),
+) -> ManhattanDataResponse:
     job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
 
     if job is None:
@@ -107,43 +151,52 @@ def get_manhattan_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> Manh
             ),
         )
 
-    params = job.parameters or {}
-    cache_path = params.get("manhattan_cache_path")
-
-    # Cek file cache yang sudah ada di direktori visualization sebelum regenerate
-    if not cache_path or not Path(cache_path).is_file():
-        vis_cache = Path(settings.STORAGE_ROOT) / "jobs" / str(job.id) / "visualization" / "manhattan_cache.parquet"
-        if vis_cache.is_file():
-            cache_path = str(vis_cache)
-            job.parameters = {**params, "manhattan_cache_path": cache_path}
-            db.commit()
-
-    # Auto-generate cache on the fly if job finished before cache generation was wired
-    if (not cache_path or not Path(cache_path).is_file()) and job.assoc_output_path:
-        assoc_path = Path(job.assoc_output_path)
-        if assoc_path.is_file():
-            fallback_cache = assoc_path.parent.parent / "visualization" / "manhattan_cache.parquet"
-            if not fallback_cache.parent.is_dir():
-                fallback_cache = assoc_path.parent.parent / "manhattan_cache.parquet"
-            cache_summary = generate_manhattan_cache(
-                assoc_file_path=str(assoc_path),
-                output_cache_path=str(fallback_cache),
+    clean_model = model.strip().upper() if isinstance(model, str) and model.strip() else None
+    if clean_model is not None and clean_model not in {"GEMMA", "GLM", "LMM"}:
+        if clean_model not in _MULTILOCUS_MODEL_FILES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Model '{clean_model}' tidak didukung. Gunakan FARMCPU, BLINK, atau MLMM.",
             )
-            cache_path = cache_summary["output_path"]
-            job.parameters = {**params, "manhattan_cache_path": cache_path}
-            db.commit()
+        cache_path = _resolve_multilocus_manhattan_cache(job.id, clean_model)
+    else:
+        params = job.parameters or {}
+        cache_path = params.get("manhattan_cache_path")
 
-    if not cache_path:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cache Manhattan Plot tidak ditemukan")
+        # Cek file cache yang sudah ada di direktori visualization sebelum regenerate
+        if not cache_path or not Path(cache_path).is_file():
+            vis_cache = Path(settings.STORAGE_ROOT) / "jobs" / str(job.id) / "visualization" / "manhattan_cache.parquet"
+            if vis_cache.is_file():
+                cache_path = str(vis_cache)
+                job.parameters = {**params, "manhattan_cache_path": cache_path}
+                db.commit()
 
-    labels_path = Path(cache_path).with_name("manhattan_chr_labels.json")
-    if not labels_path.is_file() and job.assoc_output_path:
-        assoc_path = Path(job.assoc_output_path)
-        if assoc_path.is_file():
-            generate_manhattan_cache(
-                assoc_file_path=str(assoc_path),
-                output_cache_path=str(cache_path),
-            )
+        # Auto-generate cache on the fly if job finished before cache generation was wired
+        if (not cache_path or not Path(cache_path).is_file()) and job.assoc_output_path:
+            assoc_path = Path(job.assoc_output_path)
+            if assoc_path.is_file():
+                fallback_cache = assoc_path.parent.parent / "visualization" / "manhattan_cache.parquet"
+                if not fallback_cache.parent.is_dir():
+                    fallback_cache = assoc_path.parent.parent / "manhattan_cache.parquet"
+                cache_summary = generate_manhattan_cache(
+                    assoc_file_path=str(assoc_path),
+                    output_cache_path=str(fallback_cache),
+                )
+                cache_path = cache_summary["output_path"]
+                job.parameters = {**params, "manhattan_cache_path": cache_path}
+                db.commit()
+
+        if not cache_path:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cache Manhattan Plot tidak ditemukan")
+
+        labels_path = Path(cache_path).with_name("manhattan_chr_labels.json")
+        if not labels_path.is_file() and job.assoc_output_path:
+            assoc_path = Path(job.assoc_output_path)
+            if assoc_path.is_file():
+                generate_manhattan_cache(
+                    assoc_file_path=str(assoc_path),
+                    output_cache_path=str(cache_path),
+                )
 
     try:
         df = load_manhattan_cache(cache_path)
@@ -163,6 +216,7 @@ def get_manhattan_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> Manh
         snp=[str(v) for v in df["SNP"].tolist()],
         log10_p=[round(float(v), 4) if pd.notna(v) else 0.0 for v in df["LOG10_P"].tolist()],
         chr_labels=chr_labels,
+        model=clean_model,
     )
 
 

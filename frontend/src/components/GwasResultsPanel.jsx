@@ -15,6 +15,7 @@ import { PeakComparisonTable } from "./PeakComparisonTable";
 import { CandidateGenesTable } from "./CandidateGenesTable";
 import { PrimerDesignPanel } from "./PrimerDesignPanel";
 import {
+  fetchManhattanData,
   fetchInspectionData,
   fetchQcComparisonData,
   fetchPcaData,
@@ -40,12 +41,22 @@ const MAIN_TABS = [
   { key: "primers", label: "🧪 Flanking & Primer Heuristik" },
 ];
 
+const MULTILOCUS_MODEL_LABELS = {
+  FARMCPU: "FarmCPU",
+  BLINK: "BLINK",
+  MLMM: "MLMM",
+};
+
 export default function GwasResultsPanel({ jobId }) {
   const { data: manhattanData, isLoading: isManhattanLoading, error: manhattanError, refetch } =
     useGwasResults(jobId);
 
   const [activeTab, setActiveTab] = useState("vis");
   const [visSubTab, setVisSubTab] = useState("manhattan");
+  const [selectedMultiModel, setSelectedMultiModel] = useState("");
+  const [multiPlotData, setMultiPlotData] = useState(null);
+  const [multiPlotLoading, setMultiPlotLoading] = useState(false);
+  const [multiPlotError, setMultiPlotError] = useState(null);
 
   // Stage states
   const [thresholdsData, setThresholdsData] = useState(null);
@@ -119,6 +130,75 @@ export default function GwasResultsPanel({ jobId }) {
     if (Array.isArray(leadSnpsData.snps)) return leadSnpsData.snps;
     return [];
   }, [leadSnpsData]);
+
+  const hasMultilocusData = useMemo(
+    () =>
+      Boolean(
+        (peakData && peakData.status !== "skipped" && peakData.status !== "not_available") ||
+          (multilocusSummary && multilocusSummary.status !== "skipped" && multilocusSummary.status !== "not_available")
+      ),
+    [peakData, multilocusSummary]
+  );
+
+  const availableMultilocusModels = useMemo(() => {
+    const resKeys = Object.keys(multilocusSummary?.results || {})
+      .map((k) => k.toUpperCase())
+      .filter((k) => k in MULTILOCUS_MODEL_LABELS);
+    if (resKeys.length > 0) return resKeys;
+    if (Array.isArray(multilocusSummary?.methods) && multilocusSummary.methods.length > 0) {
+      const parsed = multilocusSummary.methods
+        .map((m) => String(m).toUpperCase())
+        .filter((k) => k in MULTILOCUS_MODEL_LABELS);
+      if (parsed.length > 0) return parsed;
+    }
+    return ["FARMCPU", "BLINK", "MLMM"];
+  }, [multilocusSummary]);
+
+  useEffect(() => {
+    if (availableMultilocusModels.length === 0) return;
+    if (!selectedMultiModel || !availableMultilocusModels.includes(selectedMultiModel)) {
+      setSelectedMultiModel(availableMultilocusModels[0]);
+    }
+  }, [availableMultilocusModels, selectedMultiModel]);
+
+  useEffect(() => {
+    setMultiPlotData(null);
+    setMultiPlotError(null);
+  }, [jobId]);
+
+  useEffect(() => {
+    if (activeTab !== "multilocus" || !hasMultilocusData || !jobId || !selectedMultiModel) {
+      return undefined;
+    }
+    const controller = new AbortController();
+    let cancelled = false;
+    setMultiPlotLoading(true);
+    setMultiPlotError(null);
+
+    fetchManhattanData(jobId, controller.signal, selectedMultiModel)
+      .then((res) => {
+        if (!cancelled) {
+          setMultiPlotData(res);
+        }
+      })
+      .catch((err) => {
+        if (err && err.name === "AbortError") return;
+        if (!cancelled) {
+          setMultiPlotData(null);
+          setMultiPlotError(err?.message || `Gagal memuat plot model ${selectedMultiModel}`);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setMultiPlotLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [activeTab, hasMultilocusData, jobId, selectedMultiModel]);
 
   if (isManhattanLoading) {
     return (
@@ -352,9 +432,76 @@ export default function GwasResultsPanel({ jobId }) {
       {/* TAB 5: MULTI-LOCUS GWAS */}
       {activeTab === "multilocus" && (
         <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0" }}>
-          {((peakData && peakData.status !== "skipped" && peakData.status !== "not_available") ||
-            (multilocusSummary && multilocusSummary.status !== "skipped" && multilocusSummary.status !== "not_available")) ? (
-            <PeakComparisonTable comparison={peakData} multilocusSummary={multilocusSummary} />
+          {hasMultilocusData ? (
+            <div style={{ display: "grid", gap: 18 }}>
+              <div
+                style={{
+                  background: "#f8fafc",
+                  padding: 14,
+                  borderRadius: 8,
+                  border: "1px solid #e2e8f0",
+                  display: "grid",
+                  gap: 12,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                  <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#0f172a" }}>
+                    Manhattan &amp; QQ Plot per Model Multi-Locus
+                  </h3>
+                  <div
+                    role="group"
+                    aria-label="Pilih model plot multi-locus"
+                    style={{ display: "flex", gap: 6, flexWrap: "wrap" }}
+                  >
+                    {availableMultilocusModels.map((mKey) => {
+                      const active = selectedMultiModel === mKey;
+                      return (
+                        <button
+                          key={mKey}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => setSelectedMultiModel(mKey)}
+                          style={{
+                            padding: "6px 12px",
+                            borderRadius: 6,
+                            border: "1px solid",
+                            borderColor: active ? "#1e40af" : "#cbd5e1",
+                            background: active ? "#1e40af" : "#ffffff",
+                            color: active ? "#ffffff" : "#334155",
+                            fontWeight: active ? 700 : 500,
+                            fontSize: 12,
+                            cursor: "pointer",
+                          }}
+                        >
+                          {MULTILOCUS_MODEL_LABELS[mKey] || mKey}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {multiPlotLoading && (
+                  <div role="status" style={{ padding: 16, textAlign: "center", color: "#475569", fontSize: 13 }}>
+                    Memuat plot {MULTILOCUS_MODEL_LABELS[selectedMultiModel] || selectedMultiModel}...
+                  </div>
+                )}
+
+                {multiPlotError && !multiPlotLoading && (
+                  <div role="alert" style={{ padding: 12, borderRadius: 6, background: "#fef2f2", color: "#b91c1c", fontSize: 13 }}>
+                    {multiPlotError}
+                  </div>
+                )}
+
+                {multiPlotData && multiPlotData.total_points > 0 && !multiPlotLoading && (
+                  <div style={{ display: "grid", gap: 16 }}>
+                    <ManhattanPlot data={multiPlotData} significanceThreshold={computedThreshold} />
+                    <QQPlot data={multiPlotData} />
+                  </div>
+                )}
+              </div>
+
+              <PeakComparisonTable comparison={peakData} multilocusSummary={multilocusSummary} />
+            </div>
           ) : (
             <div
               style={{

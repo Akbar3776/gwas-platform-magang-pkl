@@ -29,8 +29,9 @@ async function handleJsonResponse(response, defaultErrorMsg) {
 /**
  * Mengambil data ringan (CHR, BP, SNP, LOG10_P) untuk Manhattan/QQ Plot.
  */
-export async function fetchManhattanData(jobId, signal) {
-  const response = await apiFetch(`/results/${jobId}/manhattan-data`, {
+export async function fetchManhattanData(jobId, signal, model = null) {
+  const query = model ? `?model=${encodeURIComponent(model)}` : "";
+  const response = await apiFetch(`/results/${jobId}/manhattan-data${query}`, {
     signal,
     headers: { Accept: "application/json" },
   });

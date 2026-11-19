@@ -238,3 +238,83 @@ def test_get_manhattan_data_uses_legacy_cache_when_assoc_missing(tmp_path):
     resp = results_routes.get_manhattan_data(job_id=job_id, db=_FakeDB())
     assert resp.chr == [1]
     assert resp.chr_labels is None
+
+
+def test_get_manhattan_data_supports_multilocus_models_and_per_model_cache(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    import pytest
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+
+    job_id = uuid.uuid4()
+    job_root = tmp_path / "jobs" / str(job_id)
+    vis_dir = job_root / "visualization"
+    ml_dir = job_root / "multilocus"
+    vis_dir.mkdir(parents=True)
+    ml_dir.mkdir(parents=True)
+
+    primary_assoc = job_root / "gwas.assoc.txt"
+    primary_assoc.write_text(
+        "chr\trs\tps\tp_wald\n1\tgemma_snp0\t100\t1e-6\n",
+        encoding="utf-8",
+    )
+    primary_cache = vis_dir / "manhattan_cache.parquet"
+    manhattan_parser.generate_manhattan_cache(str(primary_assoc), str(primary_cache))
+
+    (ml_dir / "farmcpu_results.tsv").write_text(
+        "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn\n"
+        "Gm01\t1500\tfarmcpu_snp1\tA\tG\t0.3\t0.5\t0.1\t1e-9\t50\n",
+        encoding="utf-8",
+    )
+    (ml_dir / "blink_results.tsv").write_text(
+        "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn\n"
+        "Gm02\t2500\tblink_snp2\tC\tT\t0.2\t-0.4\t0.1\t1e-7\t50\n",
+        encoding="utf-8",
+    )
+
+    job = AnalysisJob(
+        id=job_id,
+        dataset_id=uuid.uuid4(),
+        triggered_by=uuid.uuid4(),
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.COMPLETED,
+        assoc_output_path=str(primary_assoc),
+        parameters={"manhattan_cache_path": str(primary_cache)},
+    )
+
+    class _FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return job
+
+    class _FakeDB:
+        def query(self, model):
+            return _FakeQuery()
+
+        def commit(self):
+            pass
+
+    db = _FakeDB()
+
+    farmcpu_resp = results_routes.get_manhattan_data(job_id=job_id, model="FARMCPU", db=db)
+    assert farmcpu_resp.snp == ["farmcpu_snp1"]
+    assert farmcpu_resp.model == "FARMCPU"
+    assert farmcpu_resp.chr_labels == {1: "Gm01"}
+    assert (vis_dir / "multilocus" / "farmcpu" / "manhattan_cache.parquet").is_file()
+
+    blink_resp = results_routes.get_manhattan_data(job_id=job_id, model="blink", db=db)
+    assert blink_resp.snp == ["blink_snp2"]
+    assert blink_resp.model == "BLINK"
+    assert blink_resp.chr_labels == {2: "Gm02"}
+
+    # Primary GEMMA cache and chr_labels must remain intact
+    gemma_resp = results_routes.get_manhattan_data(job_id=job_id, db=db)
+    assert gemma_resp.snp == ["gemma_snp0"]
+    assert gemma_resp.chr_labels is None
+
+    with pytest.raises(HTTPException) as missing_exc:
+        results_routes.get_manhattan_data(job_id=job_id, model="MLMM", db=db)
+    assert missing_exc.value.status_code == 404
