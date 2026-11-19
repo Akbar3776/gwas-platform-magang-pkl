@@ -38,7 +38,7 @@ const MAIN_TABS = [
   { key: "inspection_qc", label: "🔍 Inspeksi & QC" },
   { key: "multilocus", label: "🔬 Multi-Locus GWAS" },
   { key: "annotation", label: "🌿 Anotasi Gen GFF3 & GO" },
-  { key: "primers", label: "🧪 Flanking & Primer Heuristik" },
+  { key: "primers", label: "🧪 Flanking & Primer3" },
 ];
 
 const MULTILOCUS_MODEL_LABELS = {

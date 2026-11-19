@@ -581,3 +581,32 @@ def test_chunked_reference_fasta_upload_gz_and_checksum(tmp_path: Path, monkeypa
     st = upload_routes.get_reference_status(file_id=ds.id, db=db, user=owner)
     assert st["upload_status"] == "uploaded"
     assert st["n_contigs"] == 2
+
+
+def test_design_primers_uses_primer3_and_removes_heuristics():
+    from app.services import primer_service
+
+    assert not hasattr(primer_service, "calculate_tm_santalucia")
+    assert not hasattr(primer_service, "_score_secondary_structure")
+    assert not hasattr(primer_service, "NN_PARAMS")
+
+    normal_seq = (
+        "TACCGCTGTTTCTTAAAGAAAAACACACAACGGAACAAACATAAGTACCAAAGTATGATGTAGAAGAAAGATATAAATGTAACAGTTTTAGCATAAGGTC"
+        "C"
+        "TACTCTAAGATGTAATAAATATATGGATTTTATCTAGCTAATGGAATGATGTAAATGTAACAGTTTTAGCAAGAACAGCCTCCTGATTGTTGTTGATCCT"
+    )
+    pairs = primer_service.design_primers_for_flanking(normal_seq, snp_index_0based=100, max_pairs=5)
+    assert len(pairs) >= 1
+    for p in pairs:
+        assert 50.0 <= p["left"]["tm"] <= 58.0
+        assert 50.0 <= p["right"]["tm"] <= 58.0
+        assert 35.0 <= p["left"]["gc"] <= 55.0
+        assert 35.0 <= p["right"]["gc"] <= 55.0
+        assert 100 <= p["product_size"] <= 190
+        assert p["left"]["start"] + p["left"]["len"] - 1 < 101
+        assert p["right"]["start"] > 101
+
+    poly_a = "A" * 201
+    empty_pairs = primer_service.design_primers_for_flanking(poly_a, snp_index_0based=100, max_pairs=5)
+    assert empty_pairs == []
+    assert primer_service.format_primer3_block(empty_pairs) == "no primers found"

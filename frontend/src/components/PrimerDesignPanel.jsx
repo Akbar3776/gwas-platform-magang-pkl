@@ -65,7 +65,7 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Flanking_Primer_Heuristik_${jobId || "gwas"}.txt`;
+    a.download = `Flanking_Primer3_${jobId || "gwas"}.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -177,12 +177,12 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
       >
         <div style={{ fontSize: 24, marginBottom: 8 }}>🧪</div>
         <div style={{ fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-          Sekuens Flanking &amp; Desain Primer Heuristik Belum Tersedia
+          Sekuens Flanking &amp; Desain Primer3 Belum Tersedia
         </div>
         <p style={{ margin: 0, fontSize: 13, maxWidth: 540, marginInline: "auto" }}>
           {isNoReference
-            ? "Referensi FASTA tidak tersedia; unggah berkas FASTA referensi untuk mengekstrak sekuens flanking 201 bp dan desain primer heuristik."
-            : "Tidak ditemukan Lead SNP kandidat pada job ini untuk ekstraksi sekuens flanking 201 bp dan desain primer heuristik."}
+            ? "Referensi FASTA tidak tersedia; unggah berkas FASTA referensi untuk mengekstrak sekuens flanking 201 bp dan desain primer Primer3."
+            : "Tidak ditemukan Lead SNP kandidat pada job ini untuk ekstraksi sekuens flanking 201 bp dan desain primer Primer3."}
         </p>
       </div>
     );
@@ -211,7 +211,7 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <div>
           <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#0f172a" }}>
-            Ekstraksi Sekuens Flanking (201 bp) &amp; Desain Primer Heuristik — Fase 5.4 / Fase 6–8
+            Ekstraksi Sekuens Flanking (201 bp) &amp; Desain Primer3 — Fase 5.4 / Fase 6–8
           </h4>
           <p style={{ margin: "3px 0 0", fontSize: 12, color: "#64748b" }}>
             Sekuens 100 bp upstream + `[Alel Target]` + 100 bp downstream beserta pasangan `LEFT PRIMER` &amp; `RIGHT PRIMER`.

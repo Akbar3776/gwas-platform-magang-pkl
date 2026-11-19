@@ -10,11 +10,12 @@ Service untuk Fase 5.4 / Fase 6–8:
 from __future__ import annotations
 
 import csv
-import math
 import os
 from pathlib import Path
 import re
 from typing import Any
+
+import primer3
 
 from app.tasks._common import chr_label
 
@@ -23,110 +24,13 @@ def _allow_synthetic_annotation() -> bool:
     return os.getenv("ALLOW_SYNTHETIC_ANNOTATION", "").strip().lower() in ("1", "true", "yes")
 
 
-# Parameter termodinamika Nearest-Neighbor SantaLucia (1998) (dH dalam cal/mol, dS dalam cal/(K·mol))
-NN_PARAMS: dict[str, tuple[float, float]] = {
-    "AA": (-7900.0, -22.2),
-    "TT": (-7900.0, -22.2),
-    "AT": (-7200.0, -20.4),
-    "TA": (-7200.0, -21.3),
-    "CA": (-8500.0, -22.7),
-    "TG": (-8500.0, -22.7),
-    "GT": (-8400.0, -22.4),
-    "AC": (-8400.0, -22.4),
-    "CT": (-7800.0, -21.0),
-    "AG": (-7800.0, -21.0),
-    "GA": (-8200.0, -22.2),
-    "TC": (-8200.0, -22.2),
-    "CG": (-10600.0, -27.2),
-    "GC": (-9800.0, -24.4),
-    "GG": (-8000.0, -19.9),
-    "CC": (-8000.0, -19.9),
-}
-
-COMPLEMENT_MAP = str.maketrans("ACGTacgtNn", "TGCAtgcaNn")
-
-
-def reverse_complement(seq: str) -> str:
-    """Menghasilkan sekuens komplemen terbalik (5' -> 3')."""
-    return seq.translate(COMPLEMENT_MAP)[::-1]
-
-
 def calculate_gc_percent(seq: str) -> float:
-    """Menghitung persentase GC dari oligo."""
+    """Menghitung persentase GC dari sekuens DNA."""
     if not seq:
         return 0.0
     s = seq.upper()
     gc_count = s.count("G") + s.count("C")
     return round((gc_count / len(s)) * 100.0, 2)
-
-
-def calculate_tm_santalucia(
-    seq: str,
-    mv_conc_mm: float = 50.0,
-    dv_conc_mm: float = 1.5,
-    dntp_mm: float = 0.2,
-    oligo_nm: float = 250.0,
-) -> float:
-    """
-    Menghitung suhu leleh (Tm dalam °C) menggunakan rumus Nearest-Neighbor SantaLucia (1998).
-    """
-    s = seq.upper()
-    n = len(s)
-    if n < 2:
-        return 0.0
-
-    dh = 0.0
-    ds = 0.0
-    if s[0] in ("G", "C"):
-        dh += 100.0
-        ds += -2.8
-    else:
-        dh += 2300.0
-        ds += 4.1
-    if s[-1] in ("G", "C"):
-        dh += 100.0
-        ds += -2.8
-    else:
-        dh += 2300.0
-        ds += 4.1
-
-    for i in range(n - 1):
-        dinuc = s[i:i + 2]
-        step_dh, step_ds = NN_PARAMS.get(dinuc, (-8000.0, -21.5))
-        dh += step_dh
-        ds += step_ds
-
-    free_divalent = max(0.0, dv_conc_mm - dntp_mm)
-    monovalent_eq = (mv_conc_mm + 120.0 * math.sqrt(free_divalent)) / 1000.0
-    monovalent_eq = max(monovalent_eq, 1e-5)
-    ds_salt = ds + 0.368 * (n - 1) * math.log(monovalent_eq)
-
-    r_gas = 1.9872
-    ct = (oligo_nm * 1e-9) / 4.0
-    tm_kelvin = dh / (ds_salt + r_gas * math.log(ct))
-    return round(tm_kelvin - 273.15, 2)
-
-
-def _score_secondary_structure(seq1: str, seq2: str | None = None, three_prime_only: bool = False) -> float:
-    """Mengevaluasi potensi dimer/hairpin sederhana (skor TH dalam °C, 0.00 jika tidak signifikan)."""
-    s1 = seq1.upper()
-    s2_rc = reverse_complement(seq2.upper() if seq2 is not None else s1)
-    if three_prime_only:
-        tail = s1[-6:]
-        if tail in s2_rc:
-            return round(12.40 + 2.15 * (tail.count("G") + tail.count("C")), 2)
-        if s1[-5:] in s2_rc and (s1[-5:].count("G") + s1[-5:].count("C")) >= 3:
-            return round(6.10 + 1.45 * (s1[-5:].count("G") + s1[-5:].count("C")), 2)
-        return 0.0
-
-    for k in (6, 5):
-        for i in range(len(s1) - k + 1):
-            sub = s1[i:i + k]
-            if sub in s2_rc:
-                gc = sub.count("G") + sub.count("C")
-                if k >= 6 or gc >= 3:
-                    return round(4.5 * k + 2.2 * gc - 16.0, 2)
-    return 0.0
 
 
 def build_fasta_index(fasta_path: str | Path) -> Path:
@@ -435,121 +339,79 @@ def design_primers_for_flanking(
     product_min: int = 100,
     product_max: int = 190,
 ) -> list[dict[str, Any]]:
-    """Mendesain pasangan primer (digantikan engine Primer3 penuh pada A59)."""
+    """
+    Mendesain pasangan primer menggunakan engine termodinamika asli `primer3-py`
+    (`primer3.bindings.design_primers`) yang mengapit SNP pada `snp_index_0based`.
+    """
     seq = raw_seq.upper()
     n_len = len(seq)
-    if n_len < 120:
+    if n_len < product_min or not (0 <= snp_index_0based < n_len):
         return []
 
-    overall_gc = calculate_gc_percent(seq)
-    if overall_gc < 26.0:
+    eff_prod_max = min(int(product_max), n_len)
+    if eff_prod_max < int(product_min):
         return []
 
-    left_candidates: list[dict[str, Any]] = []
-    max_left_start = min(snp_index_0based - 18, n_len - 40)
-    for start_0 in range(1, max(2, max_left_start), 2):
-        for length in (20, 21, 19, 22, 18):
-            if start_0 + length > snp_index_0based - 2:
-                continue
-            oligo = seq[start_0:start_0 + length]
-            if "N" in oligo or re.search(r"(A{5,}|T{5,}|G{5,}|C{5,})", oligo):
-                continue
-            gc = calculate_gc_percent(oligo)
-            if not (gc_min <= gc <= gc_max):
-                continue
-            tm = calculate_tm_santalucia(oligo)
-            if not (tm_min <= tm <= tm_max):
-                continue
-            any_th = _score_secondary_structure(oligo, None, three_prime_only=False)
-            three_th = _score_secondary_structure(oligo, None, three_prime_only=True)
-            hairpin = 0.0
-            penalty = abs(tm - tm_opt) * 1.5 + abs(gc - gc_opt) * 0.25 + any_th * 0.05 + three_th * 0.1
-            left_candidates.append({
-                "start": start_0 + 1,
-                "len": length,
-                "tm": tm,
-                "gc": gc,
-                "any_th": any_th,
-                "three_th": three_th,
-                "hairpin": hairpin,
-                "seq": oligo,
-                "penalty": penalty,
-            })
-            break
+    res = primer3.bindings.design_primers(
+        {
+            "SEQUENCE_ID": "flanking_target",
+            "SEQUENCE_TEMPLATE": seq,
+            "SEQUENCE_TARGET": [[int(snp_index_0based), 1]],
+        },
+        {
+            "PRIMER_TASK": "generic",
+            "PRIMER_PICK_LEFT_PRIMER": 1,
+            "PRIMER_PICK_RIGHT_PRIMER": 1,
+            "PRIMER_NUM_RETURN": int(max_pairs),
+            "PRIMER_OPT_SIZE": 20,
+            "PRIMER_MIN_SIZE": 18,
+            "PRIMER_MAX_SIZE": 22,
+            "PRIMER_OPT_TM": float(tm_opt),
+            "PRIMER_MIN_TM": float(tm_min),
+            "PRIMER_MAX_TM": float(tm_max),
+            "PRIMER_PAIR_MAX_DIFF_TM": 2.5,
+            "PRIMER_OPT_GC_PERCENT": float(gc_opt),
+            "PRIMER_MIN_GC": float(gc_min),
+            "PRIMER_MAX_GC": float(gc_max),
+            "PRIMER_MAX_POLY_X": 4,
+            "PRIMER_MAX_NS_ACCEPTED": 0,
+            "PRIMER_PRODUCT_SIZE_RANGE": [[int(product_min), eff_prod_max]],
+        },
+    )
 
-    right_candidates: list[dict[str, Any]] = []
-    min_right_5prime = max(snp_index_0based + 22, 118)
-    for end_1based in range(min_right_5prime, n_len + 1, 2):
-        for length in (20, 21, 19, 22, 18):
-            start_0 = end_1based - length
-            if start_0 <= snp_index_0based + 2:
-                continue
-            template_slice = seq[start_0:end_1based]
-            oligo_rc = reverse_complement(template_slice)
-            if "N" in oligo_rc or re.search(r"(A{5,}|T{5,}|G{5,}|C{5,})", oligo_rc):
-                continue
-            gc = calculate_gc_percent(oligo_rc)
-            if not (gc_min <= gc <= gc_max):
-                continue
-            tm = calculate_tm_santalucia(oligo_rc)
-            if not (tm_min <= tm <= tm_max):
-                continue
-            any_th = _score_secondary_structure(oligo_rc, None, three_prime_only=False)
-            three_th = _score_secondary_structure(oligo_rc, None, three_prime_only=True)
-            hairpin = 0.0
-            penalty = abs(tm - tm_opt) * 1.5 + abs(gc - gc_opt) * 0.25 + any_th * 0.05 + three_th * 0.1
-            right_candidates.append({
-                "start": end_1based,
-                "len": length,
-                "tm": tm,
-                "gc": gc,
-                "any_th": any_th,
-                "three_th": three_th,
-                "hairpin": hairpin,
-                "seq": oligo_rc,
-                "penalty": penalty,
-            })
-            break
-
-    if not left_candidates or not right_candidates:
-        return []
-
-    left_candidates.sort(key=lambda x: x["penalty"])
-    right_candidates.sort(key=lambda x: x["penalty"])
-
+    n_returned = int(res.get("PRIMER_PAIR_NUM_RETURNED", 0) or 0)
     pairs: list[dict[str, Any]] = []
-    used_left_starts: set[int] = set()
-    used_right_starts: set[int] = set()
-
-    for lc in left_candidates[:20]:
-        for rc in right_candidates[:20]:
-            prod_size = rc["start"] - lc["start"] + 1
-            if not (product_min <= prod_size <= product_max):
-                continue
-            if abs(lc["tm"] - rc["tm"]) > 2.5:
-                continue
-            if lc["start"] in used_left_starts and rc["start"] in used_right_starts:
-                continue
-
-            pair_any = _score_secondary_structure(lc["seq"], rc["seq"], three_prime_only=False)
-            pair_3 = _score_secondary_structure(lc["seq"], rc["seq"], three_prime_only=True)
-            pair_penalty = lc["penalty"] + rc["penalty"] + abs(lc["tm"] - rc["tm"]) * 2.0 + pair_any * 0.05
-
-            pairs.append({
-                "left": lc,
-                "right": rc,
-                "product_size": prod_size,
-                "pair_any_th_compl": pair_any,
-                "pair_3_th_compl": pair_3,
-                "pair_penalty": round(pair_penalty, 3),
-            })
-            used_left_starts.add(lc["start"])
-            used_right_starts.add(rc["start"])
-            break
-        if len(pairs) >= max_pairs:
-            break
-
-    pairs.sort(key=lambda p: p["pair_penalty"])
+    for i in range(n_returned):
+        left_coords = res[f"PRIMER_LEFT_{i}"]
+        right_coords = res[f"PRIMER_RIGHT_{i}"]
+        pairs.append({
+            "left": {
+                "start": int(left_coords[0]) + 1,
+                "len": int(left_coords[1]),
+                "tm": round(float(res[f"PRIMER_LEFT_{i}_TM"]), 2),
+                "gc": round(float(res[f"PRIMER_LEFT_{i}_GC_PERCENT"]), 2),
+                "any_th": round(float(res.get(f"PRIMER_LEFT_{i}_SELF_ANY_TH", 0.0)), 2),
+                "three_th": round(float(res.get(f"PRIMER_LEFT_{i}_SELF_END_TH", 0.0)), 2),
+                "hairpin": round(float(res.get(f"PRIMER_LEFT_{i}_HAIRPIN_TH", 0.0)), 2),
+                "seq": str(res[f"PRIMER_LEFT_{i}_SEQUENCE"]),
+                "penalty": round(float(res.get(f"PRIMER_LEFT_{i}_PENALTY", 0.0)), 3),
+            },
+            "right": {
+                "start": int(right_coords[0]) + 1,
+                "len": int(right_coords[1]),
+                "tm": round(float(res[f"PRIMER_RIGHT_{i}_TM"]), 2),
+                "gc": round(float(res[f"PRIMER_RIGHT_{i}_GC_PERCENT"]), 2),
+                "any_th": round(float(res.get(f"PRIMER_RIGHT_{i}_SELF_ANY_TH", 0.0)), 2),
+                "three_th": round(float(res.get(f"PRIMER_RIGHT_{i}_SELF_END_TH", 0.0)), 2),
+                "hairpin": round(float(res.get(f"PRIMER_RIGHT_{i}_HAIRPIN_TH", 0.0)), 2),
+                "seq": str(res[f"PRIMER_RIGHT_{i}_SEQUENCE"]),
+                "penalty": round(float(res.get(f"PRIMER_RIGHT_{i}_PENALTY", 0.0)), 3),
+            },
+            "product_size": int(res[f"PRIMER_PAIR_{i}_PRODUCT_SIZE"]),
+            "pair_any_th_compl": round(float(res.get(f"PRIMER_PAIR_{i}_COMPL_ANY_TH", 0.0)), 2),
+            "pair_3_th_compl": round(float(res.get(f"PRIMER_PAIR_{i}_COMPL_END_TH", 0.0)), 2),
+            "pair_penalty": round(float(res.get(f"PRIMER_PAIR_{i}_PENALTY", 0.0)), 3),
+        })
     return pairs[:max_pairs]
 
 
@@ -692,6 +554,7 @@ def generate_flanking_and_primers(
     )
     payload = {
         "status": "no_reference" if all_no_reference else "completed",
+        "design_engine": "Primer3",
         "synthetic": has_synthetic,
         "trait": trait_name,
         "total_markers": len(items),

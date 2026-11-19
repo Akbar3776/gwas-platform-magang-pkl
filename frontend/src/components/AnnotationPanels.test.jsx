@@ -71,7 +71,7 @@ describe("Annotation Synthetic Banner & Heuristic Labels", () => {
     expect(screen.queryByText(/Data simulasi — bukan hasil analisis/i)).not.toBeInTheDocument();
   });
 
-  test("PrimerDesignPanel shows simulation banner when synthetic and uses heuristic primer labels", () => {
+  test("PrimerDesignPanel shows simulation banner when synthetic and restores Primer3 labels", () => {
     const primersData = {
       status: "completed",
       synthetic: true,
@@ -101,11 +101,11 @@ describe("Annotation Synthetic Banner & Heuristic Labels", () => {
 
     const { container } = render(<PrimerDesignPanel primersData={primersData} jobId="job-1" />);
     expect(screen.getByText(/Data simulasi — bukan hasil analisis/i)).toBeInTheDocument();
-    expect(screen.getByText(/desain primer heuristik/i)).toBeInTheDocument();
-    expect(container.textContent).not.toMatch(/Primer3/i);
+    expect(screen.getByText(/Primer3/i)).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/heuristik/i);
   });
 
-  test("PrimerDesignPanel empty/no_reference state avoids Primer3 label and banner", () => {
+  test("PrimerDesignPanel empty/no_reference state uses Primer3 label without simulation banner", () => {
     const { container } = render(
       <PrimerDesignPanel
         primersData={{ status: "no_reference", synthetic: false, total_markers: 0, markers: [] }}
@@ -113,8 +113,8 @@ describe("Annotation Synthetic Banner & Heuristic Labels", () => {
       />
     );
     expect(screen.queryByText(/Data simulasi — bukan hasil analisis/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/Desain Primer Heuristik Belum Tersedia/i)).toBeInTheDocument();
-    expect(container.textContent).not.toMatch(/Primer3/i);
+    expect(screen.getByText(/Desain Primer3 Belum Tersedia/i)).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/heuristik/i);
   });
 
   test("GoEnrichmentPanel and PrimerDesignPanel export sanitized CSV via toCsv (A17)", () => {
