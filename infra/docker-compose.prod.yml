@@ -29,10 +29,11 @@ services:
     container_name: gwas_backend_prod
     restart: unless-stopped
     env_file:
-      - ../backend/.env
+      - path: ../backend/.env
+        required: false
     environment:
       ENV: production
-      DATABASE_URL: postgresql+psycopg2://gwas_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/gwas_db
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-gwas_user}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-gwas_db}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       STORAGE_ROOT: /data/storage
@@ -67,10 +68,11 @@ services:
     container_name: gwas_celery_worker_prod
     restart: unless-stopped
     env_file:
-      - ../backend/.env
+      - path: ../backend/.env
+        required: false
     environment:
       ENV: production
-      DATABASE_URL: postgresql+psycopg2://gwas_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/gwas_db
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-gwas_user}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-gwas_db}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       STORAGE_ROOT: /data/storage
@@ -97,10 +99,11 @@ services:
     container_name: gwas_celery_beat_prod
     restart: unless-stopped
     env_file:
-      - ../backend/.env
+      - path: ../backend/.env
+        required: false
     environment:
       ENV: production
-      DATABASE_URL: postgresql+psycopg2://gwas_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/gwas_db
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-gwas_user}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-gwas_db}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       STORAGE_ROOT: /data/storage
@@ -122,7 +125,8 @@ services:
     container_name: gwas_flower_prod
     restart: unless-stopped
     env_file:
-      - ../backend/.env
+      - path: ../backend/.env
+        required: false
     environment:
       ENV: production
       CELERY_BROKER_URL: redis://redis:6379/0
