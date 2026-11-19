@@ -13,6 +13,7 @@ const API_BASE = "/api/v1";
 
 let currentAccessToken = null;
 let onAuthFailure = () => {};
+let refreshPromise = null;
 
 export function setAccessToken(token) {
   currentAccessToken = token;
@@ -30,17 +31,39 @@ export function notifyAuthFailure() {
   onAuthFailure();
 }
 
-export async function refreshAccessToken() {
-  const res = await fetch(`${API_BASE}/auth/refresh`, {
-    method: "POST",
-    credentials: "include",
-  });
-  if (!res.ok) {
-    throw new Error("Refresh token tidak valid");
+export async function refreshAccessToken(expectedStaleToken = undefined) {
+  if (
+    expectedStaleToken !== undefined &&
+    currentAccessToken &&
+    currentAccessToken !== expectedStaleToken
+  ) {
+    return currentAccessToken;
   }
-  const data = await res.json();
-  currentAccessToken = data.access_token;
-  return data.access_token;
+
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/auth/refresh`, {
+          method: "POST",
+          credentials: "include",
+        });
+        if (!res.ok) {
+          throw new Error("Refresh token tidak valid");
+        }
+        const data = await res.json();
+        currentAccessToken = data.access_token;
+        return data.access_token;
+      } catch (err) {
+        currentAccessToken = null;
+        notifyAuthFailure();
+        throw err;
+      } finally {
+        refreshPromise = null;
+      }
+    })();
+  }
+
+  return refreshPromise;
 }
 
 /**
@@ -49,8 +72,9 @@ export async function refreshAccessToken() {
  */
 export async function apiFetch(path, options = {}, _isRetry = false) {
   const headers = new Headers(options.headers || {});
-  if (currentAccessToken) {
-    headers.set("Authorization", `Bearer ${currentAccessToken}`);
+  const requestToken = currentAccessToken;
+  if (requestToken) {
+    headers.set("Authorization", `Bearer ${requestToken}`);
   }
 
   const normalizedPath = path.startsWith(API_BASE)
@@ -65,10 +89,9 @@ export async function apiFetch(path, options = {}, _isRetry = false) {
 
   if (response.status === 401 && !_isRetry) {
     try {
-      await refreshAccessToken();
+      await refreshAccessToken(requestToken);
       return apiFetch(normalizedPath, options, true);
     } catch {
-      onAuthFailure();
       throw new Error("Sesi berakhir, silakan login kembali");
     }
   }

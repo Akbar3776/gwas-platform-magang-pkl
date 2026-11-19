@@ -130,8 +130,9 @@ export async function deleteJob(jobId) {
  * Mengambil daftar file input & file hasil/intermediate pada sebuah job.
  * @param {string} jobId
  */
-export async function fetchJobFiles(jobId) {
-  const { data } = await httpClient.get(`/jobs/${jobId}/files`);
+export async function fetchJobFiles(jobId, { signal } = {}) {
+  const config = signal ? { signal } : undefined;
+  const { data } = await httpClient.get(`/jobs/${jobId}/files`, config);
   return data;
 }
 
