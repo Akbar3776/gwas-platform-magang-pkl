@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { formatApiError } from "../api/formatApiError";
 import {
   cancelJob,
   deleteJob,
@@ -63,7 +64,12 @@ export function WorkspaceExplorer({
   const navigate = useNavigate();
   const [datasets, setDatasets] = useState([]);
   const [jobs, setJobs] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [datasetsError, setDatasetsError] = useState(null);
+  const [jobsError, setJobsError] = useState(null);
+  const mountedRef = useRef(true);
+  const fetchIdRef = useRef(0);
   const [previewDataset, setPreviewDataset] = useState(null);
   const [previewText, setPreviewText] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -76,17 +82,45 @@ export function WorkspaceExplorer({
   const [retryingJobId, setRetryingJobId] = useState(null);
   const [jobActionError, setJobActionError] = useState(null);
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const loadWorkspaceData = useCallback(async () => {
+    const reqId = ++fetchIdRef.current;
     try {
       setLoading(true);
-      const [dsList, jobList] = await Promise.all([
-        fetchUploadedDatasets().catch(() => []),
-        fetchUserJobs().catch(() => []),
+      const [dsResult, jobsResult] = await Promise.allSettled([
+        fetchUploadedDatasets(),
+        fetchUserJobs(),
       ]);
-      setDatasets(Array.isArray(dsList) ? dsList : []);
-      setJobs(Array.isArray(jobList) ? jobList : []);
+      if (!mountedRef.current || fetchIdRef.current !== reqId) return;
+
+      if (dsResult.status === "fulfilled") {
+        setDatasets(Array.isArray(dsResult.value) ? dsResult.value : []);
+        setDatasetsError(null);
+      } else {
+        setDatasetsError(
+          formatApiError(dsResult.reason, "Gagal memuat daftar file dataset.")
+        );
+      }
+
+      if (jobsResult.status === "fulfilled") {
+        setJobs(Array.isArray(jobsResult.value) ? jobsResult.value : []);
+        setJobsError(null);
+      } else {
+        setJobsError(
+          formatApiError(jobsResult.reason, "Gagal memuat daftar job analisis.")
+        );
+      }
     } finally {
-      setLoading(false);
+      if (mountedRef.current && fetchIdRef.current === reqId) {
+        setLoading(false);
+        setInitialLoading(false);
+      }
     }
   }, []);
 
@@ -254,7 +288,7 @@ export function WorkspaceExplorer({
           </button>
         </div>
 
-        {deleteError && (
+        {(datasetsError || deleteError) && (
           <div
             role="alert"
             style={{
@@ -266,23 +300,39 @@ export function WorkspaceExplorer({
               fontSize: 12,
             }}
           >
-            {deleteError}
+            {deleteError || datasetsError}
           </div>
         )}
 
-        {datasets.length === 0 ? (
+        {initialLoading && datasets.length === 0 ? (
           <div
+            role="status"
             style={{
               padding: 14,
               borderRadius: 8,
               background: "#f8fafc",
-              color: "#64748b",
+              color: "#475569",
               fontSize: 12,
               textAlign: "center",
             }}
           >
-            Belum ada riwayat file VCF yang diunggah.
+            Memuat daftar file VCF...
           </div>
+        ) : datasets.length === 0 ? (
+          datasetsError ? null : (
+            <div
+              style={{
+                padding: 14,
+                borderRadius: 8,
+                background: "#f8fafc",
+                color: "#64748b",
+                fontSize: 12,
+                textAlign: "center",
+              }}
+            >
+              Belum ada riwayat file VCF yang diunggah.
+            </div>
+          )
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table
@@ -666,7 +716,7 @@ export function WorkspaceExplorer({
           )}
         </div>
 
-        {jobActionError && (
+        {(jobsError || jobActionError) && (
           <div
             role="alert"
             style={{
@@ -678,23 +728,39 @@ export function WorkspaceExplorer({
               fontSize: 12,
             }}
           >
-            {jobActionError}
+            {jobActionError || jobsError}
           </div>
         )}
 
-        {jobs.length === 0 ? (
+        {initialLoading && jobs.length === 0 ? (
           <div
+            role="status"
             style={{
               padding: 14,
               borderRadius: 8,
               background: "#f8fafc",
-              color: "#64748b",
+              color: "#475569",
               fontSize: 12,
               textAlign: "center",
             }}
           >
-            Belum ada job analisis yang dijalankan.
+            Memuat daftar job analisis...
           </div>
+        ) : jobs.length === 0 ? (
+          jobsError ? null : (
+            <div
+              style={{
+                padding: 14,
+                borderRadius: 8,
+                background: "#f8fafc",
+                color: "#64748b",
+                fontSize: 12,
+                textAlign: "center",
+              }}
+            >
+              Belum ada job analisis yang dijalankan.
+            </div>
+          )
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table
