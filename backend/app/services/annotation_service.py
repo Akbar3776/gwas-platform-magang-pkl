@@ -123,6 +123,98 @@ def parse_gff3_genes(
     return genes_by_chr, seen_seqids
 
 
+_MULTILOCUS_METHOD_LABELS = {
+    "FARMCPU": "FarmCPU",
+    "BLINK": "BLINK",
+    "MLMM": "MLMM",
+}
+
+
+def _normalize_snp_source_label(raw: Any, default: str = "GEMMA") -> str:
+    txt = str(raw or "").strip()
+    if not txt:
+        return default
+    return _MULTILOCUS_METHOD_LABELS.get(txt.upper(), txt)
+
+
+def merge_annotation_input_snps(
+    gemma_snps: list[dict[str, Any]] | None,
+    multilocus_snps: list[dict[str, Any]] | None = None,
+    p_threshold: float | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Menggabungkan lead SNP GEMMA dengan SNP signifikan multi-locus dan menjaga kolom `source`.
+    """
+    merged: list[dict[str, Any]] = []
+    by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+    def _add_candidate(raw_snp: dict[str, Any], source_label: str) -> None:
+        if not isinstance(raw_snp, dict):
+            return
+        snp_id = str(raw_snp.get("snp") or raw_snp.get("rs") or "").strip()
+        chr_val = str(raw_snp.get("chr") or "").strip()
+        pos_val = int(raw_snp.get("pos") or 0)
+        if not snp_id and pos_val <= 0:
+            return
+        norm_c = normalize_chr_name(chr_val)
+        key: tuple[Any, ...] = (norm_c, pos_val) if pos_val > 0 and norm_c else ("snp", snp_id or f"{chr_val}:{pos_val}")
+
+        existing = by_key.get(key)
+        if existing is None:
+            entry = {
+                **raw_snp,
+                "snp": snp_id or f"{chr_val}:{pos_val}",
+                "chr": chr_val,
+                "pos": pos_val,
+                "source": source_label,
+                "snp_source": source_label,
+            }
+            by_key[key] = entry
+            merged.append(entry)
+            return
+
+        existing_sources = [s.strip() for s in str(existing.get("source") or "").split(",") if s.strip()]
+        if source_label not in existing_sources:
+            existing_sources.append(source_label)
+        combined_source = ", ".join(existing_sources)
+        existing["source"] = combined_source
+        existing["snp_source"] = combined_source
+        try:
+            new_p = raw_snp.get("p")
+            cur_p = existing.get("p")
+            if new_p is not None and (cur_p is None or float(new_p) < float(cur_p)):
+                existing["p"] = float(new_p)
+        except (TypeError, ValueError):
+            pass
+
+    for s in gemma_snps or []:
+        src = _normalize_snp_source_label(s.get("snp_source") or s.get("source"), default="GEMMA")
+        _add_candidate(s, src)
+
+    for s in multilocus_snps or []:
+        if not isinstance(s, dict):
+            continue
+        if "is_significant" in s:
+            if not bool(s.get("is_significant")):
+                continue
+        elif p_threshold is not None:
+            try:
+                if s.get("p") is None or float(s.get("p")) > p_threshold:
+                    continue
+            except (TypeError, ValueError):
+                continue
+        else:
+            continue
+
+        ml_src = _normalize_snp_source_label(
+            s.get("snp_source") or s.get("source") or s.get("method"),
+            default="Multi-Locus",
+        )
+        _add_candidate(s, ml_src)
+
+    return merged
+
+
 def map_lead_snps_to_genes(
     lead_snps: list[dict[str, Any]],
     genes_by_chr: dict[str, list[dict[str, Any]]],
@@ -142,11 +234,15 @@ def map_lead_snps_to_genes(
         raw_chr = str(snp.get("chr", ""))
         norm_chr = normalize_chr_name(raw_chr)
         pos = int(snp.get("pos", 0))
+        snp_source = str(snp.get("snp_source") or snp.get("source") or "GEMMA").strip() or "GEMMA"
 
         chr_genes = genes_by_chr.get(norm_chr, [])
         if not chr_genes:
             mapped_rows.append({
                 "snp": snp.get("snp"),
+                "source": snp_source,
+                "snp_source": snp_source,
+                "gff_source": "GFF3",
                 "chr": raw_chr,
                 "pos": pos,
                 "p": snp.get("p"),
@@ -238,6 +334,8 @@ def map_lead_snps_to_genes(
 
         mapped_rows.append({
             "snp": snp.get("snp"),
+            "source": snp_source,
+            "snp_source": snp_source,
             "chr": raw_chr,
             "pos": pos,
             "p": snp.get("p"),
@@ -245,7 +343,7 @@ def map_lead_snps_to_genes(
             "nearest_gene": nearest_gene["gene_id"],
             "nearest_gene_name": nearest_gene["name"],
             "gff_chrom": nearest_gene.get("gff_chrom", raw_chr),
-            "source": nearest_gene.get("source", "GFF3"),
+            "gff_source": nearest_gene.get("source", "GFF3"),
             "feature_type": nearest_gene.get("feature_type", "gene"),
             "gene_start": nearest_gene["start"],
             "gene_end": nearest_gene["end"],

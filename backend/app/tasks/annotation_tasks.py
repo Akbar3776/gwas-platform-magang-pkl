@@ -14,6 +14,7 @@ from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, 
 from app.schemas.pipeline import AnnotationConfig
 from app.services.annotation_service import (
     map_lead_snps_to_genes,
+    merge_annotation_input_snps,
     normalize_chr_name,
     parse_gff3_genes,
 )
@@ -81,18 +82,48 @@ def run_annotation(
                     gff_candidate = ds_anno
                     break
 
-        # Ambil lead SNPs dari context atau file
-        lead_snps = ctx.get("lead_snps")
-        if lead_snps is None:
+        # Ambil lead SNPs GEMMA dari context atau file
+        gemma_leads = ctx.get("lead_snps")
+        if gemma_leads is None:
             lead_snps_f = workspace.parent / "postgwas" / "lead_snps.json"
             if lead_snps_f.is_file():
                 try:
                     loaded_leads = json.loads(lead_snps_f.read_text(encoding="utf-8"))
-                    lead_snps = loaded_leads.get("snps", []) if isinstance(loaded_leads, dict) else loaded_leads
+                    gemma_leads = loaded_leads.get("snps", []) if isinstance(loaded_leads, dict) else loaded_leads
                 except Exception:
-                    lead_snps = []
+                    gemma_leads = []
             else:
-                lead_snps = []
+                gemma_leads = []
+
+        # Gabungkan dengan SNP signifikan multi-locus (jika ada)
+        ml_candidates: list[dict[str, Any]] = list(ctx.get("multilocus_lead_snps") or [])
+        ml_summary_f = workspace.parent / "multilocus" / "multilocus_summary.json"
+        if ml_summary_f.is_file():
+            try:
+                ml_data = json.loads(ml_summary_f.read_text(encoding="utf-8"))
+                if not ml_candidates:
+                    ml_candidates.extend(ml_data.get("lead_snps") or [])
+                for m_entry in (ml_data.get("results") or {}).values():
+                    if isinstance(m_entry, dict):
+                        ml_candidates.extend(m_entry.get("significant_snps") or [])
+            except Exception:
+                pass
+
+        p_thresh: float | None = None
+        thresh_f = workspace.parent / "postgwas" / "thresholds.json"
+        if thresh_f.is_file():
+            try:
+                t_data = json.loads(thresh_f.read_text(encoding="utf-8"))
+                if isinstance(t_data, dict) and t_data.get("selected_p") is not None:
+                    p_thresh = float(t_data["selected_p"])
+            except Exception:
+                p_thresh = None
+
+        lead_snps = merge_annotation_input_snps(
+            gemma_snps=gemma_leads,
+            multilocus_snps=ml_candidates,
+            p_threshold=p_thresh,
+        )
 
         # Jendela LD decay (default kb * 1000 bp)
         window_kb = cfg.window_kb or ctx.get("ld_decay_kb") or (job.parameters or {}).get("chosen_ld_decay_kb") or 100
@@ -173,11 +204,15 @@ def run_annotation(
         lead_chrs = {normalize_chr_name(str(s.get("chr", ""))) for s in lead_snps}
         common_chrs = lead_chrs.intersection(genes_by_chr.keys())
         if not common_chrs and len(lead_chrs) > 0 and len(genes_by_chr) > 0:
+            snp_examples = sorted({str(s.get("chr", "")).strip() for s in lead_snps if str(s.get("chr", "")).strip()})[:5]
+            gff_examples = sorted(seen_seqids)[:5] if seen_seqids else sorted(genes_by_chr.keys())[:5]
             msg = (
-                f"Kromosom Lead SNP ({', '.join(lead_chrs)}) tidak cocok dengan kromosom GFF3 "
-                f"({', '.join(list(genes_by_chr.keys())[:8])}). Periksa penamaan kromosom pada referensi GFF3."
+                f"Tidak ada kecocokan nama kromosom antara Lead SNP (contoh: {', '.join(snp_examples)}) "
+                f"dan referensi GFF3 (contoh: {', '.join(gff_examples)}). "
+                "Periksa kesesuaian penamaan kromosom pada VCF dan GFF3."
             )
-            append_log(log_file, f"[WARNING] {msg}")
+            append_log(log_file, f"[ERROR] {msg}")
+            raise ValueError(msg)
 
         # 2. Pemetaan Lead SNPs ke gen
         append_log(log_file, "Memetakan Lead SNPs ke gen kandidat...")
@@ -187,15 +222,11 @@ def run_annotation(
             window_bp=window_bp,
         )
 
-        # Kumpulkan daftar ID gen unik dari kategori Genik & Near-gen serta jendela LD
+        # Kumpulkan daftar ID gen unik hanya dari gen terdekat yang valid (Genik / Near-gen)
         unique_go_genes: set[str] = set()
         for r in mapped_rows:
             if r["category"] in {"Genik", "Near-gen"} and r["nearest_gene"] != "-":
                 unique_go_genes.add(r["nearest_gene"])
-            for gw in r.get("genes_in_window", []):
-                gid = gw.get("id") or gw.get("gene_id")
-                if gid:
-                    unique_go_genes.add(gid)
 
         sorted_go_genes = sorted(unique_go_genes)
 
@@ -236,11 +267,12 @@ def run_annotation(
         ekstraksi_csv = workspace / "Ekstraksi_Gen_Mentah.csv"
         with ekstraksi_csv.open("w", encoding="utf-8", newline="") as ef:
             writer = csv.writer(ef)
-            writer.writerow(["SNP", "Kromosom", "Posisi", "P_Value", "Gen_Terdekat", "Nama_Gen", "Jarak_bp", "Kategori", "Strand", "Deskripsi", "Gen_Dalam_Jendela"])
+            writer.writerow(["SNP", "Sumber", "Kromosom", "Posisi", "P_Value", "Gen_Terdekat", "Nama_Gen", "Jarak_bp", "Kategori", "Strand", "Deskripsi", "Gen_Dalam_Jendela"])
             for r in mapped_rows:
                 win_ids = ", ".join((g.get("id") or g.get("gene_id") or "") for g in r.get("genes_in_window", []))
                 writer.writerow([
                     r["snp"],
+                    r.get("source") or r.get("snp_source") or "GEMMA",
                     r["chr"],
                     r["pos"],
                     r["p"],

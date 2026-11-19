@@ -109,7 +109,15 @@ def test_normalize_candidate_genes_payload():
                         "end": 43382210,
                         "strand": "-",
                         "desc": "",
-                    }
+                    },
+                    {
+                        "id": "Asa2G_WINDOW_ONLY",
+                        "name": "Asa2G_WINDOW_ONLY",
+                        "start": 43390000,
+                        "end": 43391000,
+                        "strand": "+",
+                        "desc": "",
+                    },
                 ],
             }
         ],
@@ -125,3 +133,167 @@ def test_normalize_candidate_genes_payload():
     assert row["distance_to_closest_gene"] == 0
     assert row["genes_in_window"][0]["gene_id"] == "Asa2G01356"
     assert row["genes_in_window"][0]["distance"] == 0
+    assert row["source"] == "GEMMA"
+
+
+class _FakeAnnotationDB:
+    def __init__(self, dataset, job):
+        self.dataset = dataset
+        self.job = job
+        self.results = []
+
+    def get(self, model, object_id):
+        from app.db.engine.models import AnalysisJob, Dataset
+
+        if model is Dataset and str(object_id) == str(self.dataset.id):
+            return self.dataset
+        if model is AnalysisJob and str(object_id) == str(self.job.id):
+            return self.job
+        return None
+
+    def query(self, *models):
+        class _Q:
+            def filter(self, *args):
+                return self
+
+            def first(self):
+                return None
+
+        return _Q()
+
+    def add(self, obj):
+        self.results.append(obj)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def _setup_annotation_job(tmp_path, monkeypatch, gff_text: str):
+    import uuid
+    from app.core.config import settings
+    from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, UploadStatus
+    from app.tasks import _common as task_common, annotation_tasks
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+
+    ds_id = uuid.uuid4()
+    job_id = uuid.uuid4()
+    ds_dir = tmp_path / "datasets" / str(ds_id)
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    gff_path = ds_dir / "annotation.gff3"
+    gff_path.write_text(gff_text, encoding="utf-8")
+
+    dataset = Dataset(
+        id=ds_id,
+        owner_id=uuid.uuid4(),
+        original_filename="cohort.vcf",
+        storage_path=str(ds_dir / "cohort.vcf"),
+        annotation_file_path=str(gff_path),
+        file_size_bytes=100,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=job_id,
+        dataset_id=ds_id,
+        triggered_by=dataset.owner_id,
+        pipeline_type="full_pipeline",
+        current_step=PipelineStep.ANNOTATION,
+        overall_status=JobStatus.RUNNING_ANNOTATION,
+        parameters={"annotation": {"enabled": True, "window_kb": 50, "feature_type": "gene"}},
+    )
+    fake_db = _FakeAnnotationDB(dataset, job)
+    monkeypatch.setattr(annotation_tasks, "SessionLocal", lambda: fake_db)
+    monkeypatch.setattr(task_common, "SessionLocal", lambda: fake_db)
+    return job, dataset, tmp_path / "jobs" / str(job_id)
+
+
+def test_run_annotation_combines_gemma_and_significant_multilocus_with_source(tmp_path, monkeypatch):
+    import csv
+    import json
+    from app.db.engine.models import JobStatus
+    from app.tasks import annotation_tasks
+
+    gff_text = (
+        "##gff-version 3\n"
+        "1\tPhytozome\tgene\t1000\t2000\t.\t+\t.\tID=GENE_A;Name=GeneA;Note=Alpha\n"
+        "1\tPhytozome\tgene\t20000\t22000\t.\t+\t.\tID=GENE_WIN;Name=GeneWin;Note=WindowOnly\n"
+        "2\tPhytozome\tgene\t50000\t52000\t.\t-\t.\tID=GENE_B;Name=GeneB;Note=Beta\n"
+        "3\tPhytozome\tgene\t90000\t91000\t.\t+\t.\tID=GENE_C;Name=GeneC;Note=NonSig\n"
+    )
+    job, dataset, job_root = _setup_annotation_job(tmp_path, monkeypatch, gff_text)
+    (job_root / "postgwas").mkdir(parents=True, exist_ok=True)
+    (job_root / "multilocus").mkdir(parents=True, exist_ok=True)
+
+    (job_root / "postgwas" / "lead_snps.json").write_text(
+        json.dumps({
+            "count": 1,
+            "snps": [{"snp": "rs_gemma", "chr": "1", "pos": 1500, "p": 1e-8, "beta": 0.5}],
+        }),
+        encoding="utf-8",
+    )
+    (job_root / "multilocus" / "multilocus_summary.json").write_text(
+        json.dumps({
+            "lead_snps": [
+                {"snp": "rs_blink", "chr": "2", "pos": 51000, "p": 2e-8, "beta": -0.4, "method": "BLINK", "is_significant": True},
+                {"snp": "rs_nonsig", "chr": "3", "pos": 90500, "p": 0.2, "beta": 0.01, "method": "FARMCPU", "is_significant": False},
+            ]
+        }),
+        encoding="utf-8",
+    )
+
+    result = annotation_tasks.run_annotation(
+        prev_result={},
+        job_id=str(job.id),
+        dataset_id=str(dataset.id),
+    )
+
+    assert job.overall_status == JobStatus.COMPLETED
+    cand = result["candidate_genes"]
+    sources_by_snp = {r["snp"]: r["source"] for r in cand["rows"]}
+    assert sources_by_snp == {"rs_gemma": "GEMMA", "rs_blink": "BLINK"}
+    assert cand["candidate_genes_list"] == ["GENE_A", "GENE_B"]
+
+    go_txt = (job_root / "annotation" / "Daftar_Gen_Untuk_GO.txt").read_text(encoding="utf-8").splitlines()
+    assert go_txt == ["GENE_A", "GENE_B"]
+
+    with (job_root / "annotation" / "Ekstraksi_Gen_Mentah.csv").open("r", encoding="utf-8") as cf:
+        rows = list(csv.DictReader(cf))
+    assert {r["SNP"]: r["Sumber"] for r in rows} == {"rs_gemma": "GEMMA", "rs_blink": "BLINK"}
+
+
+def test_run_annotation_fails_when_zero_chromosomes_match(tmp_path, monkeypatch):
+    import json
+    import pytest
+    from app.db.engine.models import JobStatus
+    from app.tasks import annotation_tasks
+
+    gff_text = (
+        "##gff-version 3\n"
+        "Scaffold_01\tPhytozome\tgene\t1000\t2000\t.\t+\t.\tID=GENE_S1;Name=GeneS1\n"
+    )
+    job, dataset, job_root = _setup_annotation_job(tmp_path, monkeypatch, gff_text)
+    (job_root / "postgwas").mkdir(parents=True, exist_ok=True)
+    (job_root / "postgwas" / "lead_snps.json").write_text(
+        json.dumps({"count": 1, "snps": [{"snp": "rs_1", "chr": "1", "pos": 1500, "p": 1e-8}]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        annotation_tasks.run_annotation(
+            prev_result={},
+            job_id=str(job.id),
+            dataset_id=str(dataset.id),
+        )
+
+    assert job.overall_status == JobStatus.FAILED
+    assert job.failed_step == "annotation"
+    err = str(exc_info.value)
+    assert "1" in err
+    assert "Scaffold_01" in err

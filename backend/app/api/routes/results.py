@@ -453,6 +453,17 @@ def _normalize_candidate_genes_payload(data: dict[str, Any]) -> dict[str, Any]:
             dist_bp = r.get("distance_to_closest_gene")
         dist_val = int(dist_bp) if dist_bp is not None and int(dist_bp) >= 0 else None
 
+        closest_src = (r.get("closest_gene") or {}).get("source")
+        gff_src = r.get("gff_source") or closest_src or "GFF3"
+        raw_src = r.get("snp_source") or r.get("source")
+        if not raw_src or raw_src == "GFF3" or (closest_src and raw_src == closest_src and "snp_source" not in r):
+            snp_src = "GEMMA"
+        else:
+            snp_src = str(raw_src)
+        r["source"] = snp_src
+        r["snp_source"] = snp_src
+        r["gff_source"] = gff_src
+
         r["nearest_gene"] = nearest_id
         r["nearest_gene_name"] = nearest_name
         r["distance_bp"] = dist_val if dist_val is not None else -1
@@ -490,8 +501,6 @@ def _normalize_candidate_genes_payload(data: dict[str, Any]) -> dict[str, Any]:
                     g["distance"] = g_start - pos
                 else:
                     g["distance"] = pos - g_end
-            if gid:
-                unique_genes.add(gid)
             win_list.append(g)
 
         r["genes_in_window"] = win_list
@@ -554,11 +563,28 @@ def get_candidate_genes_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -
 
         if gff_candidate is not None:
             lead_res = get_lead_snps_data(job_id, db)
-            lead_snps = lead_res if isinstance(lead_res, list) else lead_res.get("snps", [])
+            gemma_snps = lead_res if isinstance(lead_res, list) else lead_res.get("snps", [])
+            ml_candidates: list[dict[str, Any]] = []
+            ml_summary_f = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "multilocus" / "multilocus_summary.json"
+            if ml_summary_f.is_file():
+                try:
+                    ml_data = json.loads(ml_summary_f.read_text(encoding="utf-8"))
+                    ml_candidates.extend(ml_data.get("lead_snps") or [])
+                    for m_entry in (ml_data.get("results") or {}).values():
+                        if isinstance(m_entry, dict):
+                            ml_candidates.extend(m_entry.get("significant_snps") or [])
+                except Exception:
+                    pass
+            from app.services.annotation_service import (
+                map_lead_snps_to_genes,
+                merge_annotation_input_snps,
+                parse_gff3_genes,
+            )
+
+            lead_snps = merge_annotation_input_snps(gemma_snps, ml_candidates)
             if lead_snps:
                 try:
                     import csv
-                    from app.services.annotation_service import map_lead_snps_to_genes, parse_gff3_genes
 
                     params = job.parameters or {}
                     raw_anno = params.get("annotation") or {}
@@ -597,11 +623,12 @@ def get_candidate_genes_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -
                     ekstraksi_csv = anno_dir / "Ekstraksi_Gen_Mentah.csv"
                     with ekstraksi_csv.open("w", encoding="utf-8", newline="") as ef:
                         writer = csv.writer(ef)
-                        writer.writerow(["SNP", "Kromosom", "Posisi", "P_Value", "Gen_Terdekat", "Nama_Gen", "Jarak_bp", "Kategori", "Strand", "Deskripsi", "Gen_Dalam_Jendela"])
+                        writer.writerow(["SNP", "Sumber", "Kromosom", "Posisi", "P_Value", "Gen_Terdekat", "Nama_Gen", "Jarak_bp", "Kategori", "Strand", "Deskripsi", "Gen_Dalam_Jendela"])
                         for r in payload["rows"]:
                             win_ids = ", ".join((g.get("id") or g.get("gene_id") or "") for g in r.get("genes_in_window", []))
                             writer.writerow([
                                 r.get("snp"),
+                                r.get("source") or "GEMMA",
                                 r.get("chr"),
                                 r.get("pos"),
                                 r.get("p"),

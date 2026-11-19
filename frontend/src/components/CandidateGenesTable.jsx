@@ -3,6 +3,19 @@ import { GoEnrichmentPanel } from "./GoEnrichmentPanel";
 import { Pagination } from "./Pagination";
 import { toCsv } from "../utils/csv";
 
+function getSnpSource(item) {
+  const closestSrc = item?.closest_gene?.source;
+  const raw = item?.snp_source || item?.source;
+  if (!raw || raw === "GFF3" || (closestSrc && raw === closestSrc && !item?.snp_source)) {
+    return "GEMMA";
+  }
+  return raw;
+}
+
+function getGffSource(item, closest) {
+  return item?.gff_source || closest?.source || (item?.source === "GFF3" ? "GFF3" : null) || "GFF3";
+}
+
 export function CandidateGenesTable({ annotationData = null, goEnrichmentData = null, jobId = null }) {
   const [filterText, setFilterText] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("ALL");
@@ -28,10 +41,6 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
       const gid = m.closest_gene?.gene_id || (m.nearest_gene !== "-" ? m.nearest_gene : null);
       if (gid && (m.category === "Genik" || m.category === "Near-gen")) {
         geneSet.add(gid);
-      }
-      for (const gw of m.genes_in_window || []) {
-        const wid = gw.gene_id || gw.id;
-        if (wid) geneSet.add(wid);
       }
     }
     return Array.from(geneSet).sort();
@@ -62,6 +71,7 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
       const closestName = item.closest_gene?.gene_name || (item.nearest_gene_name !== "-" ? item.nearest_gene_name : "") || "";
       const desc = item.description || item.closest_gene?.description || "";
       const snpMatch = String(item.snp || "").toLowerCase().includes(q);
+      const sourceMatch = String(getSnpSource(item)).toLowerCase().includes(q);
       const chrMatch = String(item.chr || "").toLowerCase().includes(q);
       const geneIdMatch = closestId.toLowerCase().includes(q);
       const geneNameMatch = closestName.toLowerCase().includes(q);
@@ -71,7 +81,7 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
         const gname = g.gene_name || g.name || "";
         return gid.toLowerCase().includes(q) || gname.toLowerCase().includes(q);
       });
-      return snpMatch || chrMatch || geneIdMatch || geneNameMatch || descMatch || inWindowMatch;
+      return snpMatch || sourceMatch || chrMatch || geneIdMatch || geneNameMatch || descMatch || inWindowMatch;
     });
   }, [mappings, filterText, categoryFilter]);
 
@@ -98,6 +108,7 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
     if (!mappings.length) return;
     const headers = [
       "SNP",
+      "Sumber",
       "Kromosom",
       "Posisi",
       "P_Value",
@@ -122,6 +133,7 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
         .join("; ");
       return [
         r.snp || "",
+        getSnpSource(r),
         r.chr || "",
         r.pos ?? "",
         r.p ?? "",
@@ -310,6 +322,7 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
             <thead>
               <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
                 <th style={{ padding: "8px 12px" }}>Lead SNP</th>
+                <th style={{ padding: "8px 12px" }}>Sumber</th>
                 <th style={{ padding: "8px 12px" }}>Chr:Pos</th>
                 <th style={{ padding: "8px 12px" }}>P-value</th>
                 <th style={{ padding: "8px 12px" }}>Kategori</th>
@@ -358,6 +371,9 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
                       <td style={{ padding: "8px 12px", fontWeight: 700, color: "#1e40af" }}>
                         {item.snp}
                       </td>
+                      <td style={{ padding: "8px 12px", fontSize: 11, fontWeight: 600, color: "#334155" }}>
+                        {getSnpSource(item)}
+                      </td>
                       <td style={{ padding: "8px 12px" }}>
                         {item.chr}:{(item.pos || 0).toLocaleString("id-ID")}
                       </td>
@@ -381,7 +397,7 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
                         </span>
                       </td>
                       <td style={{ padding: "8px 12px", fontSize: 11, color: "#475569" }}>
-                        <span style={{ fontWeight: 600 }}>{item.source || closest?.source || "GFF3"}</span>
+                        <span style={{ fontWeight: 600 }}>{getGffSource(item, closest)}</span>
                         {" / "}
                         <span>{item.feature_type || closest?.feature_type || "gene"}</span>
                       </td>
@@ -459,7 +475,7 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
                     {/* Expandable detail row for genes in window */}
                     {isExpanded && item.genes_in_window && item.genes_in_window.length > 0 && (
                       <tr style={{ background: "#f8fafc" }}>
-                        <td colSpan={9} style={{ padding: "10px 14px" }}>
+                        <td colSpan={10} style={{ padding: "10px 14px" }}>
                           <div
                             style={{
                               border: "1px solid #e2e8f0",
