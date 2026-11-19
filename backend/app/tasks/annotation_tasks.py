@@ -230,12 +230,28 @@ def run_annotation(
 
         sorted_go_genes = sorted(unique_go_genes)
 
-        # Jalankan Fase 5.3 Gene Ontology (GO) Enrichment & Pemetaan Ortolog
+        go_mapping_candidate: Path | None = None
+        go_meta = (dataset.extra_metadata or {}).get("go_annotation") if dataset.extra_metadata else None
+        if isinstance(go_meta, dict) and go_meta.get("path") and Path(go_meta["path"]).is_file():
+            go_mapping_candidate = Path(go_meta["path"])
+        else:
+            ds_dir = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id)
+            for cand_name in ("go_annotation.tsv", "go_annotation.gaf", "go_annotation.txt", "go_annotation.tsv.gz", "go_annotation.gaf.gz"):
+                go_f = ds_dir / cand_name
+                if go_f.is_file():
+                    go_mapping_candidate = go_f
+                    break
+
+        # Jalankan Fase 5.3 Gene Ontology (GO) Enrichment berbasis anotasi GO nyata
         go_enrichment_data = run_go_enrichment_analysis(
             mapped_rows=mapped_rows,
             candidate_genes_list=sorted_go_genes,
             trait_name=trait_name,
             output_dir=workspace,
+            gff_path=gff_candidate,
+            gff_genes_by_chr=genes_by_chr,
+            go_mapping_path=go_mapping_candidate,
+            feature_type=cfg.feature_type,
         )
         write_json(workspace / "go_enrichment.json", go_enrichment_data)
 

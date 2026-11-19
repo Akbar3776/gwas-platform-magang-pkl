@@ -431,7 +431,47 @@ def get_multilocus_results_data(job_id: uuid.UUID, db: Session = Depends(get_db)
     return data
 
 
-def _normalize_candidate_genes_payload(data: dict[str, Any]) -> dict[str, Any]:
+def _resolve_dataset_for_job(db: Session, job: AnalysisJob | None) -> Dataset | None:
+    if job is None or job.dataset_id is None:
+        return None
+    return db.query(Dataset).filter(Dataset.id == job.dataset_id).first()
+
+
+def _resolve_dataset_gff_path(db: Session, job: AnalysisJob | None) -> Path | None:
+    dataset = _resolve_dataset_for_job(db, job)
+    if dataset is None:
+        return None
+    if dataset.annotation_file_path and Path(dataset.annotation_file_path).is_file():
+        return Path(dataset.annotation_file_path)
+    ds_dir = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id)
+    for cand_name in ("annotation.gff3.gz", "annotation.gff3", "annotation.gff.gz", "annotation.gff"):
+        ds_anno = ds_dir / cand_name
+        if ds_anno.is_file():
+            return ds_anno
+    return None
+
+
+def _resolve_dataset_go_mapping_path(db: Session, job: AnalysisJob | None) -> Path | None:
+    dataset = _resolve_dataset_for_job(db, job)
+    if dataset is None:
+        return None
+    go_meta = (dataset.extra_metadata or {}).get("go_annotation") if dataset.extra_metadata else None
+    if isinstance(go_meta, dict) and go_meta.get("path") and Path(go_meta["path"]).is_file():
+        return Path(go_meta["path"])
+    ds_dir = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id)
+    for cand_name in ("go_annotation.tsv", "go_annotation.gaf", "go_annotation.txt", "go_annotation.tsv.gz", "go_annotation.gaf.gz"):
+        go_f = ds_dir / cand_name
+        if go_f.is_file():
+            return go_f
+    return None
+
+
+def _normalize_candidate_genes_payload(
+    data: dict[str, Any],
+    *,
+    gff_path: Path | None = None,
+    go_mapping_path: Path | None = None,
+) -> dict[str, Any]:
     """Pastikan struktur candidate_genes kompatibel antara backend lama (`rows`) dan frontend (`mappings`)."""
     raw_rows = data.get("mappings") or data.get("rows") or []
     normalized_rows: list[dict[str, Any]] = []
@@ -519,6 +559,8 @@ def _normalize_candidate_genes_payload(data: dict[str, Any]) -> dict[str, Any]:
             go_enrichment = run_go_enrichment_analysis(
                 mapped_rows=normalized_rows,
                 candidate_genes_list=sorted_genes,
+                gff_path=gff_path,
+                go_mapping_path=go_mapping_path,
             )
         except Exception:
             go_enrichment = None
@@ -542,25 +584,18 @@ def get_candidate_genes_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -
     data = _load_job_json_result(
         job_id, db, ResultType.CANDIDATE_GENES, "annotation", "candidate_genes.json"
     )
+    job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
+    gff_candidate = _resolve_dataset_gff_path(db, job)
+    go_mapping_candidate = _resolve_dataset_go_mapping_path(db, job)
     if isinstance(data, dict) and (data.get("rows") or data.get("mappings")):
-        return _normalize_candidate_genes_payload(data)
+        return _normalize_candidate_genes_payload(
+            data,
+            gff_path=gff_candidate,
+            go_mapping_path=go_mapping_candidate,
+        )
 
     # Pemulihan on-the-fly jika dataset memiliki file GFF3 dan job memiliki Lead SNPs
-    job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
     if job is not None and job.dataset_id is not None:
-        dataset = db.query(Dataset).filter(Dataset.id == job.dataset_id).first()
-        gff_candidate: Path | None = None
-        if dataset is not None:
-            if dataset.annotation_file_path and Path(dataset.annotation_file_path).is_file():
-                gff_candidate = Path(dataset.annotation_file_path)
-            else:
-                ds_dir = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id)
-                for cand_name in ("annotation.gff3.gz", "annotation.gff3", "annotation.gff.gz", "annotation.gff"):
-                    ds_anno = ds_dir / cand_name
-                    if ds_anno.is_file():
-                        gff_candidate = ds_anno
-                        break
-
         if gff_candidate is not None:
             lead_res = get_lead_snps_data(job_id, db)
             gemma_snps = lead_res if isinstance(lead_res, list) else lead_res.get("snps", [])
@@ -608,7 +643,7 @@ def get_candidate_genes_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -
                         "window_kb": win_kb,
                         "counts": category_counts,
                         "rows": mapped_rows,
-                    })
+                    }, gff_path=gff_candidate, go_mapping_path=go_mapping_candidate)
 
                     anno_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "annotation"
                     anno_dir.mkdir(parents=True, exist_ok=True)
@@ -675,6 +710,8 @@ def get_go_enrichment_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> 
                 candidate_genes_list=cand.get("candidate_genes_list") or [],
                 trait_name=trait_label,
                 output_dir=anno_dir,
+                gff_path=_resolve_dataset_gff_path(db, job),
+                go_mapping_path=_resolve_dataset_go_mapping_path(db, job),
             )
             go_file.write_text(json.dumps(go_payload, indent=2), encoding="utf-8")
         except Exception:

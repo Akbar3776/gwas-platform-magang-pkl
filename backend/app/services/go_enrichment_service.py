@@ -1,366 +1,187 @@
 """
-Service untuk Gene Ontology (GO) Enrichment & Pemetaan Ortolog Tanaman (Fase 5.3).
+Service untuk Gene Ontology (GO) Enrichment berbasis anotasi GO nyata (Fase 5.3).
 
-Mengimplementasikan spesifikasi `GWAS WORKFLOW (SEMUA).md` (§5.3) dan `HASIL OUTPUT.md`:
-1. Pemetaan gen kandidat (`Daftar_Gen_Untuk_GO.txt` / hasil anotasi GFF3) ke 3 domain GO:
-   - Biological Process (BP)
-   - Cellular Component (CC)
-   - Molecular Function (MF)
-   beserta tautan sumber referensi (TAIR / QuickGO / UniProt) dan ortolog Arabidopsis thaliana.
-2. Analisis Pengayaan Hipergeometrik (GO Enrichment) dengan koreksi Benjamini-Hochberg (`p.adjust`),
-   menghasilkan `GeneRatio`, `Count`, `pvalue`, `p.adjust` untuk visualisasi Dotplot GO Enrichment.
-3. Ekspor `Hasil_GO_Enrichment.csv` dan `Tabel_GO_Kandidat.csv`.
+Sumber anotasi GO, berurutan prioritas per gen:
+1. Atribut GFF3 (`Ontology_term=GO:...` / `GO=` / `Dbxref=GO:...`).
+2. File pemetaan unggahan: TSV (`gene_id<TAB>GO:xxxxxxx[<TAB>domain[<TAB>term_name]]`)
+   atau GAF 2.x (kolom 2 = gene_id, kolom 5 = GO_ID, kolom 9 = aspek P/F/C).
+
+Uji pengayaan hipergeometrik memakai ukuran background dinamis = jumlah total
+gen beranotasi GO (`>= 1` istilah GO), diikuti koreksi FDR Benjamini-Hochberg.
 """
 
 from __future__ import annotations
 
 import csv
-import hashlib
+import gzip
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 import numpy as np
 from scipy.stats import hypergeom
+
+_GO_ID_RE = re.compile(r"GO:\d{7}", re.IGNORECASE)
+_DOMAIN_MAP = {
+    "BP": "BP",
+    "P": "BP",
+    "BIOLOGICAL_PROCESS": "BP",
+    "CC": "CC",
+    "C": "CC",
+    "CELLULAR_COMPONENT": "CC",
+    "MF": "MF",
+    "F": "MF",
+    "MOLECULAR_FUNCTION": "MF",
+}
 
 
 def _allow_synthetic_annotation() -> bool:
     return os.getenv("ALLOW_SYNTHETIC_ANNOTATION", "").strip().lower() in ("1", "true", "yes")
 
 
-# Basis pengetahuan kurasi gen kandidat & ortolog tanaman (sesuai HASIL OUTPUT.md & TAIR10/QuickGO)
-CURATED_GENE_GO_DB: dict[str, dict[str, Any]] = {
-    "AT1G31650": {
-        "ortholog": "AT1G31650 (ROPGEF14)",
-        "bp": [("GO:0080092", "regulation of pollen tube growth"), ("GO:0007165", "signal transduction")],
-        "cc": [("GO:0005886", "plasma membrane"), ("GO:0005737", "cytoplasm")],
-        "mf": [("GO:0005085", "guanyl-nucleotide exchange factor activity")],
-        "source_label": "UniProt Q56WM6 / QuickGO GO:0005085",
-        "source_url": "https://www.uniprot.org/uniprotkb/Q56WM6/entry",
-    },
-    "AT5G63050": {
-        "ortholog": "AT5G63050 (EMB2759)",
-        "bp": [("GO:0009793", "embryo development ending in seed dormancy")],
-        "cc": [("GO:0009507", "chloroplast"), ("GO:0009536", "plastid")],
-        "mf": [("GO:0005515", "protein binding")],
-        "source_label": "www.arabidopsis.org (TAIR:133024)",
-        "source_url": "https://www.arabidopsis.org/locus?key=133024",
-    },
-    "AT3G21780": {
-        "ortholog": "AT3G21780 (UGT71B6)",
-        "bp": [
-            ("GO:0009687", "abscisic acid catabolic process"),
-            ("GO:0009737", "response to abscisic acid"),
-            ("GO:0006970", "response to osmotic stress"),
-            ("GO:0009651", "response to salt stress"),
-            ("GO:0019748", "secondary metabolic process"),
-        ],
-        "cc": [("GO:0009507", "chloroplast")],
-        "mf": [
-            ("GO:0008194", "UDP-glycosyltransferase activity"),
-            ("GO:0050662", "abscisic acid glucosyltransferase activity"),
-            ("GO:0016757", "glycosyltransferase activity"),
-            ("GO:0080043", "quercetin 3-O-glucosyltransferase activity"),
-        ],
-        "source_label": "www.arabidopsis.org",
-        "source_url": "https://www.arabidopsis.org/",
-    },
-    "AT3G44630": {
-        "ortholog": "AT3G44630 (TNL Resistance Protein)",
-        "bp": [("GO:0006952", "defense response"), ("GO:0009627", "systemic acquired resistance")],
-        "cc": [("GO:0005886", "plasma membrane")],
-        "mf": [("GO:0043531", "ADP binding"), ("GO:0004888", "transmembrane signaling receptor activity")],
-        "source_label": "www.arabidopsis.org",
-        "source_url": "https://www.arabidopsis.org/",
-    },
-    "AT2G26600": {
-        "ortholog": "AT2G26600 (Glycosyl hydrolase family)",
-        "bp": [
-            ("GO:0071555", "plant-type cell wall organization or biogenesis"),
-            ("GO:0005975", "carbohydrate metabolic process"),
-        ],
-        "cc": [
-            ("GO:0005886", "plasma membrane"),
-            ("GO:0005576", "extracellular region"),
-            ("GO:0016020", "membrane"),
-        ],
-        "mf": [("GO:0004553", "hydrolase activity, hydrolyzing O-glycosyl compounds")],
-        "source_label": "www.arabidopsis.org",
-        "source_url": "https://www.arabidopsis.org/",
-    },
-    "AT5G67450": {
-        "ortholog": "AT5G67450 (ZF1 / AZF1)",
-        "bp": [
-            ("GO:0009651", "hyperosmotic salinity response"),
-            ("GO:0045892", "negative regulation of DNA-templated transcription"),
-            ("GO:0009409", "response to cold"),
-            ("GO:0006357", "regulation of transcription by RNA polymerase II"),
-        ],
-        "cc": [("GO:0005634", "nucleus")],
-        "mf": [
-            ("GO:0003677", "DNA binding"),
-            ("GO:0003700", "DNA-binding transcription factor activity"),
-            ("GO:0043565", "sequence-specific DNA binding"),
-            ("GO:0000976", "transcription cis-regulatory region binding"),
-        ],
-        "source_label": "www.arabidopsis.org",
-        "source_url": "https://www.arabidopsis.org/",
-    },
-    # Allium sativum (Garlic) Top Candidate Genes dari HASIL OUTPUT.md
-    "ASA6G01390": {
-        "ortholog": "AT5G13930 (CHS / Chalcone Synthase)",
-        "bp": [
-            ("GO:0019748", "secondary metabolic process"),
-            ("GO:0009825", "multidimensional cell growth"),
-            ("GO:0009826", "unidimensional cell growth"),
-            ("GO:0071555", "plant-type cell wall organization or biogenesis"),
-        ],
-        "cc": [("GO:0005737", "cytoplasm"), ("GO:0005783", "endoplasmic reticulum")],
-        "mf": [("GO:0016747", "acyltransferase activity"), ("GO:0003824", "catalytic activity")],
-        "source_label": "TAIR10 Ortholog / QuickGO GO:0019748",
-        "source_url": "https://www.ebi.ac.uk/QuickGO/term/GO:0019748",
-    },
-    "ASA2G01610": {
-        "ortholog": "AT2G29450 (GSTU5 / Glutathione S-transferase)",
-        "bp": [
-            ("GO:0019748", "secondary metabolic process"),
-            ("GO:0009407", "toxin catabolic process"),
-            ("GO:0009404", "toxin metabolic process"),
-            ("GO:0098754", "detoxification"),
-            ("GO:0006749", "glutathione metabolic process"),
-            ("GO:0006790", "sulfur compound metabolic process"),
-        ],
-        "cc": [("GO:0005737", "cytoplasm"), ("GO:0005829", "cytosol")],
-        "mf": [("GO:0004364", "glutathione transferase activity")],
-        "source_label": "TAIR10 Ortholog / QuickGO GO:0006749",
-        "source_url": "https://www.ebi.ac.uk/QuickGO/term/GO:0006749",
-    },
-    "ASA2G01611": {
-        "ortholog": "AT2G29460 (GSTU4 / Glutathione S-transferase)",
-        "bp": [
-            ("GO:0019748", "secondary metabolic process"),
-            ("GO:0009407", "toxin catabolic process"),
-            ("GO:0009404", "toxin metabolic process"),
-            ("GO:0098754", "detoxification"),
-            ("GO:0009636", "response to toxic substance"),
-            ("GO:0006749", "glutathione metabolic process"),
-        ],
-        "cc": [("GO:0005737", "cytoplasm")],
-        "mf": [("GO:0004364", "glutathione transferase activity")],
-        "source_label": "TAIR10 Ortholog / QuickGO GO:0009407",
-        "source_url": "https://www.ebi.ac.uk/QuickGO/term/GO:0009407",
-    },
-    "ASA2G01612": {
-        "ortholog": "AT2G29470 (GSTU3 / Sulfur & Toxin Metabolism)",
-        "bp": [
-            ("GO:0019748", "secondary metabolic process"),
-            ("GO:0006790", "sulfur compound metabolic process"),
-            ("GO:0006575", "modified amino acid metabolic process"),
-            ("GO:0098754", "detoxification"),
-        ],
-        "cc": [("GO:0005829", "cytosol")],
-        "mf": [("GO:0016740", "transferase activity")],
-        "source_label": "TAIR10 Ortholog / QuickGO GO:0006790",
-        "source_url": "https://www.ebi.ac.uk/QuickGO/term/GO:0006790",
-    },
-    "ASA2G01613": {
-        "ortholog": "AT2G29490 (GSTU1 / Secondary & Glutathione Metabolism)",
-        "bp": [
-            ("GO:0019748", "secondary metabolic process"),
-            ("GO:0006749", "glutathione metabolic process"),
-            ("GO:0006790", "sulfur compound metabolic process"),
-            ("GO:0009636", "response to toxic substance"),
-        ],
-        "cc": [("GO:0005737", "cytoplasm")],
-        "mf": [("GO:0004364", "glutathione transferase activity")],
-        "source_label": "TAIR10 Ortholog / QuickGO GO:0019748",
-        "source_url": "https://www.ebi.ac.uk/QuickGO/term/GO:0019748",
-    },
-    "ASA4G05396": {
-        "ortholog": "AT4G25570 (EXP / Expansin Cell Wall Loosening)",
-        "bp": [
-            ("GO:0009826", "unidimensional cell growth"),
-            ("GO:0071555", "plant-type cell wall organization or biogenesis"),
-            ("GO:0009828", "plant-type cell wall loosening"),
-            ("GO:0009827", "plant-type cell wall modification"),
-            ("GO:0042545", "cell wall modification"),
-            ("GO:0016049", "cell growth"),
-        ],
-        "cc": [("GO:0009505", "plant-type cell wall"), ("GO:0005576", "extracellular region")],
-        "mf": [("GO:0005515", "protein binding")],
-        "source_label": "TAIR10 Ortholog / QuickGO GO:0009828",
-        "source_url": "https://www.ebi.ac.uk/QuickGO/term/GO:0009828",
-    },
-    "ASA5G01884": {
-        "ortholog": "AT5G09810 (ACT7 / Actin Cytoskeleton Organization)",
-        "bp": [
-            ("GO:0030036", "actin cytoskeleton organization"),
-            ("GO:0030029", "actin filament-based process"),
-            ("GO:0007015", "actin filament organization"),
-            ("GO:0000902", "cell morphogenesis"),
-            ("GO:0048589", "developmental growth involved in morphogenesis"),
-        ],
-        "cc": [("GO:0015629", "actin cytoskeleton"), ("GO:0005737", "cytoplasm")],
-        "mf": [("GO:0005524", "ATP binding"), ("GO:0003779", "actin binding")],
-        "source_label": "TAIR10 Ortholog / QuickGO GO:0030036",
-        "source_url": "https://www.ebi.ac.uk/QuickGO/term/GO:0030036",
-    },
-    "ASA4G06376": {
-        "ortholog": "AT4G38620 (MYB4 / Transcription Factor)",
-        "bp": [
-            ("GO:0006357", "regulation of transcription by RNA polymerase II"),
-            ("GO:0019748", "secondary metabolic process"),
-            ("GO:0045892", "negative regulation of DNA-templated transcription"),
-        ],
-        "cc": [("GO:0005634", "nucleus")],
-        "mf": [
-            ("GO:0003700", "DNA-binding transcription factor activity"),
-            ("GO:0003677", "DNA binding"),
-        ],
-        "source_label": "TAIR10 Ortholog / QuickGO GO:0006357",
-        "source_url": "https://www.ebi.ac.uk/QuickGO/term/GO:0006357",
-    },
-    "ASA3G04828": {
-        "ortholog": "AT3G16920 (CTL2 / Cell Wall Biogenesis)",
-        "bp": [
-            ("GO:0071555", "plant-type cell wall organization or biogenesis"),
-            ("GO:0009826", "unidimensional cell growth"),
-            ("GO:0000902", "cell morphogenesis"),
-            ("GO:0045229", "external encapsulating structure organization"),
-        ],
-        "cc": [("GO:0009505", "plant-type cell wall"), ("GO:0005886", "plasma membrane")],
-        "mf": [("GO:0004553", "hydrolase activity, hydrolyzing O-glycosyl compounds")],
-        "source_label": "TAIR10 Ortholog / QuickGO GO:0071555",
-        "source_url": "https://www.ebi.ac.uk/QuickGO/term/GO:0071555",
-    },
-    "ASA3G04921": {
-        "ortholog": "AT3G23240 (ERF1 / Ethylene Response Factor)",
-        "bp": [
-            ("GO:0006357", "regulation of transcription by RNA polymerase II"),
-            ("GO:0006952", "defense response"),
-            ("GO:0009737", "response to abscisic acid"),
-        ],
-        "cc": [("GO:0005634", "nucleus")],
-        "mf": [
-            ("GO:0003700", "DNA-binding transcription factor activity"),
-            ("GO:0043565", "sequence-specific DNA binding"),
-        ],
-        "source_label": "TAIR10 Ortholog / QuickGO GO:0006357",
-        "source_url": "https://www.ebi.ac.uk/QuickGO/term/GO:0006357",
-    },
-}
+def _normalize_gene_key(gene_id: Any) -> str:
+    txt = str(gene_id or "").strip()
+    if txt.lower().startswith("gene:"):
+        txt = txt.split(":", 1)[1]
+    return txt.upper()
 
 
-# Katalog modul fungsional tanaman untuk gen non-kurasi / atribut deskripsi GFF3
-PLANT_FUNCTIONAL_MODULES: list[dict[str, Any]] = [
-    {
-        "keywords": ["transcription", "myb", "wrky", "bhlh", "erf", "nac", "zinc finger", "zf", "dna-binding"],
-        "ortholog_prefix": "AT4G38620 (TF Homolog)",
-        "bp": [
-            ("GO:0006357", "regulation of transcription by RNA polymerase II"),
-            ("GO:0019748", "secondary metabolic process"),
-        ],
-        "cc": [("GO:0005634", "nucleus")],
-        "mf": [("GO:0003700", "DNA-binding transcription factor activity"), ("GO:0003677", "DNA binding")],
-        "bg_count": 1450,
-    },
-    {
-        "keywords": ["cell wall", "expansin", "cellulose", "pectin", "xyloglucan", "growth", "morphogenesis"],
-        "ortholog_prefix": "AT4G25570 (EXPA Homolog)",
-        "bp": [
-            ("GO:0071555", "plant-type cell wall organization or biogenesis"),
-            ("GO:0009826", "unidimensional cell growth"),
-            ("GO:0009828", "plant-type cell wall loosening"),
-            ("GO:0000902", "cell morphogenesis"),
-            ("GO:0016049", "cell growth"),
-        ],
-        "cc": [("GO:0009505", "plant-type cell wall"), ("GO:0005576", "extracellular region")],
-        "mf": [("GO:0004553", "hydrolase activity, hydrolyzing O-glycosyl compounds")],
-        "bg_count": 620,
-    },
-    {
-        "keywords": ["glutathione", "sulfur", "toxin", "detoxification", "alliin", "cytochrome", "secondary", "flavonoid"],
-        "ortholog_prefix": "AT2G29450 (GSTU Homolog)",
-        "bp": [
-            ("GO:0019748", "secondary metabolic process"),
-            ("GO:0009407", "toxin catabolic process"),
-            ("GO:0009404", "toxin metabolic process"),
-            ("GO:0098754", "detoxification"),
-            ("GO:0006749", "glutathione metabolic process"),
-            ("GO:0006790", "sulfur compound metabolic process"),
-        ],
-        "cc": [("GO:0005737", "cytoplasm"), ("GO:0005829", "cytosol")],
-        "mf": [("GO:0004364", "glutathione transferase activity"), ("GO:0016740", "transferase activity")],
-        "bg_count": 480,
-    },
-    {
-        "keywords": ["abscisic", "osmotic", "salt", "cold", "stress", "glycosyltransferase", "ugt"],
-        "ortholog_prefix": "AT3G21780 (UGT71B6 Homolog)",
-        "bp": [
-            ("GO:0009737", "response to abscisic acid"),
-            ("GO:0006970", "response to osmotic stress"),
-            ("GO:0009651", "response to salt stress"),
-            ("GO:0019748", "secondary metabolic process"),
-        ],
-        "cc": [("GO:0009507", "chloroplast"), ("GO:0005737", "cytoplasm")],
-        "mf": [("GO:0008194", "UDP-glycosyltransferase activity"), ("GO:0016757", "glycosyltransferase activity")],
-        "bg_count": 780,
-    },
-    {
-        "keywords": ["actin", "cytoskeleton", "filament", "tubulin", "microtubule"],
-        "ortholog_prefix": "AT5G09810 (ACT7 Homolog)",
-        "bp": [
-            ("GO:0030036", "actin cytoskeleton organization"),
-            ("GO:0030029", "actin filament-based process"),
-            ("GO:0007015", "actin filament organization"),
-            ("GO:0000902", "cell morphogenesis"),
-        ],
-        "cc": [("GO:0015629", "actin cytoskeleton"), ("GO:0005737", "cytoplasm")],
-        "mf": [("GO:0003779", "actin binding"), ("GO:0005524", "ATP binding")],
-        "bg_count": 390,
-    },
-    {
-        "keywords": ["defense", "resistance", "kinase", "receptor", "nb-arc", "lrr", "signaling"],
-        "ortholog_prefix": "AT3G44630 (NLR Homolog)",
-        "bp": [
-            ("GO:0006952", "defense response"),
-            ("GO:0007165", "signal transduction"),
-            ("GO:0006357", "regulation of transcription by RNA polymerase II"),
-        ],
-        "cc": [("GO:0005886", "plasma membrane")],
-        "mf": [("GO:0004672", "protein kinase activity"), ("GO:0005524", "ATP binding")],
-        "bg_count": 910,
-    },
-]
+def _normalize_domain(raw: Any) -> str:
+    key = str(raw or "").strip().upper().replace(" ", "_")
+    return _DOMAIN_MAP.get(key, "unknown")
 
-# Estimasi jumlah gen latar belakang per GO_ID pada genom tanaman standar (N_total = 27500)
-DEFAULT_GO_BG_COUNTS: dict[str, int] = {
-    "GO:0019748": 460,
-    "GO:0006357": 1150,
-    "GO:0009407": 180,
-    "GO:0009404": 195,
-    "GO:0098754": 240,
-    "GO:0009636": 290,
-    "GO:0006749": 210,
-    "GO:0006575": 260,
-    "GO:0006790": 340,
-    "GO:0030036": 280,
-    "GO:0030029": 310,
-    "GO:0007015": 220,
-    "GO:0009826": 295,
-    "GO:0071555": 420,
-    "GO:0048589": 350,
-    "GO:0000902": 380,
-    "GO:0016049": 340,
-    "GO:0009828": 95,
-    "GO:0009827": 160,
-    "GO:0042545": 210,
-    "GO:0045229": 390,
-    "GO:0009737": 490,
-    "GO:0006970": 430,
-    "GO:0009651": 410,
-    "GO:0006952": 720,
-}
+
+def parse_go_annotation_file(mapping_path: str | Path) -> tuple[dict[str, list[dict[str, str]]], dict[str, Any]]:
+    """
+    Membaca file pemetaan GO berformat TSV (`gene_id<TAB>GO:xxxxxxx[<TAB>domain[<TAB>term_name]]`)
+    atau GAF 2.x (`!` header, kolom 2 = gene_id, kolom 5 = GO_ID, kolom 9 = aspek P/F/C).
+    """
+    path = Path(mapping_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"File pemetaan GO tidak ditemukan: {path}")
+
+    open_fn = gzip.open if path.name.lower().endswith(".gz") else open
+    by_gene: dict[str, dict[str, dict[str, str]]] = {}
+    detected_formats: set[str] = set()
+    n_mappings = 0
+
+    with open_fn(path, "rt", encoding="utf-8", errors="replace") as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\r\n")
+            if not line.strip() or line.lstrip().startswith(("!", "#")):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+
+            head0 = parts[0].strip().lower()
+            head1 = parts[1].strip().lower()
+            if head0 in {"gene_id", "gene", "locus", "id"} and head1 in {"go_id", "go", "go_term"}:
+                continue
+
+            # GAF 2.x: >= 9 kolom, kolom 5 (idx 4) memuat GO:xxxxxxx, kolom 9 (idx 8) memuat P/F/C
+            gaf_go_match = _GO_ID_RE.search(parts[4]) if len(parts) >= 9 else None
+            if gaf_go_match is not None:
+                gene_raw = parts[1].strip()
+                go_id = gaf_go_match.group(0).upper()
+                domain = _normalize_domain(parts[8])
+                term_name = ""
+                detected_formats.add("gaf")
+            else:
+                tsv_go_match = _GO_ID_RE.search(parts[1])
+                if tsv_go_match is None:
+                    continue
+                gene_raw = parts[0].strip()
+                go_id = tsv_go_match.group(0).upper()
+                domain = _normalize_domain(parts[2]) if len(parts) >= 3 else "unknown"
+                term_name = parts[3].strip() if len(parts) >= 4 else ""
+                detected_formats.add("tsv")
+
+            gene_key = _normalize_gene_key(gene_raw)
+            if not gene_key:
+                continue
+
+            gene_terms = by_gene.setdefault(gene_key, {})
+            existing = gene_terms.get(go_id)
+            if existing is None:
+                gene_terms[go_id] = {
+                    "go_id": go_id,
+                    "ontology": domain,
+                    "description": term_name,
+                    "gene_raw": gene_raw,
+                }
+                n_mappings += 1
+            else:
+                if existing["ontology"] == "unknown" and domain != "unknown":
+                    existing["ontology"] = domain
+                if not existing["description"] and term_name:
+                    existing["description"] = term_name
+
+    annotations: dict[str, list[dict[str, str]]] = {
+        gkey: list(term_map.values())
+        for gkey, term_map in by_gene.items()
+    }
+    fmt = "gaf" if detected_formats == {"gaf"} else ("tsv" if "tsv" in detected_formats else "unknown")
+    summary = {
+        "format": fmt,
+        "n_genes": len(annotations),
+        "n_mappings": n_mappings,
+    }
+    return annotations, summary
+
+
+def _quickgo_url(go_id: str) -> str:
+    return f"https://www.ebi.ac.uk/QuickGO/term/{go_id}"
+
+
+def _format_domain_cell(entries: list[dict[str, str]], ontology: str) -> str:
+    items = [e for e in entries if e["ontology"] == ontology]
+    if not items:
+        return "-"
+    parts = [
+        f"{e['description']} ({e['go_id']})" if e["description"] and e["description"] != e["go_id"] else e["go_id"]
+        for e in items
+    ]
+    return ", ".join(parts)
+
+
+def _merge_gene_go_terms(
+    gff_go_ids: list[str],
+    uploaded_terms: list[dict[str, str]],
+    uploaded_lookup_by_go: dict[str, dict[str, str]],
+) -> tuple[list[dict[str, str]], str, str]:
+    """
+    Resolusi istilah GO untuk satu gen:
+    1) Atribut GFF3 `Ontology_term` (diperkaya domain/nama jika GO ID sama ada di file pemetaan)
+    2) File pemetaan unggahan (TSV/GAF) bila GFF3 tidak memiliki GO untuk gen ini.
+    """
+    clean_gff = list(dict.fromkeys(
+        str(g).strip().upper()
+        for g in (gff_go_ids or [])
+        if _GO_ID_RE.fullmatch(str(g).strip().upper())
+    ))
+    if clean_gff:
+        resolved: list[dict[str, str]] = []
+        for go_id in clean_gff:
+            extra = uploaded_lookup_by_go.get(go_id)
+            ontology = extra["ontology"] if extra else "unknown"
+            desc = (extra["description"] if extra and extra.get("description") else go_id)
+            resolved.append({"go_id": go_id, "ontology": ontology, "description": desc})
+        return resolved, "gff3", "GFF3 Ontology_term"
+
+    if uploaded_terms:
+        resolved = [
+            {
+                "go_id": t["go_id"],
+                "ontology": t.get("ontology") or "unknown",
+                "description": t.get("description") or t["go_id"],
+            }
+            for t in uploaded_terms
+        ]
+        return resolved, "mapping", "Uploaded GO Annotation"
+
+    return [], "unavailable", "unavailable"
 
 
 def _resolve_gene_go_entry(
@@ -368,98 +189,83 @@ def _resolve_gene_go_entry(
     gene_name: str = "",
     description: str = "",
     explicit_go_ids: list[str] | None = None,
+    uploaded_terms: list[dict[str, str]] | None = None,
+    uploaded_lookup_by_go: dict[str, dict[str, str]] | None = None,
     allow_synthetic: bool | None = None,
 ) -> dict[str, Any]:
-    """Memetakan satu gen kandidat ke anotasi GO BP, CC, MF, dan sumber referensi."""
+    """Memetakan satu gen kandidat ke istilah GO nyata (atau placeholder jika mode sintetis aktif)."""
     if allow_synthetic is None:
         allow_synthetic = _allow_synthetic_annotation()
 
-    clean_explicit = list(dict.fromkeys(str(eg).strip() for eg in (explicit_go_ids or []) if str(eg).strip()))
-    if clean_explicit:
-        bp_list = [(eg, f"annotated GO term ({eg})") for eg in clean_explicit]
+    terms, src_kind, src_label = _merge_gene_go_terms(
+        gff_go_ids=explicit_go_ids or [],
+        uploaded_terms=uploaded_terms or [],
+        uploaded_lookup_by_go=uploaded_lookup_by_go or {},
+    )
+    if terms:
+        go_ids = [t["go_id"] for t in terms]
         return {
             "gene_id": gene_id,
             "gene_name": gene_name or gene_id,
             "ortholog": "-",
-            "bp": bp_list,
-            "cc": [],
-            "mf": [],
-            "go_terms": clean_explicit,
-            "source": "annotation",
-            "source_label": "GFF3 / Annotation",
-            "source_url": f"https://www.ebi.ac.uk/QuickGO/term/{clean_explicit[0]}",
+            "terms": terms,
+            "go_terms": go_ids,
+            "source": src_kind,
+            "source_label": src_label,
+            "source_url": _quickgo_url(go_ids[0]),
             "synthetic": False,
         }
 
-    if not allow_synthetic:
+    if allow_synthetic:
+        placeholder = [{"go_id": "GO:0008150", "ontology": "BP", "description": "biological_process"}]
         return {
             "gene_id": gene_id,
             "gene_name": gene_name or gene_id,
             "ortholog": "-",
-            "bp": [],
-            "cc": [],
-            "mf": [],
-            "go_terms": [],
-            "source": "unavailable",
-            "source_label": "unavailable",
-            "source_url": "",
-            "synthetic": False,
-        }
-
-    key = str(gene_id).strip().upper()
-    if key in CURATED_GENE_GO_DB:
-        cur = CURATED_GENE_GO_DB[key]
-        go_terms = list(dict.fromkeys(gid for gid, _ in (*cur["bp"], *cur["cc"], *cur["mf"])))
-        return {
-            "gene_id": gene_id,
-            "gene_name": gene_name or gene_id,
-            "ortholog": cur["ortholog"],
-            "bp": list(cur["bp"]),
-            "cc": list(cur["cc"]),
-            "mf": list(cur["mf"]),
-            "go_terms": go_terms,
+            "terms": placeholder,
+            "go_terms": ["GO:0008150"],
             "source": "synthetic",
-            "source_label": cur["source_label"],
-            "source_url": cur["source_url"],
+            "source_label": "Synthetic Demo Placeholder",
+            "source_url": _quickgo_url("GO:0008150"),
             "synthetic": True,
         }
-
-    text_blob = f"{gene_id} {gene_name} {description}".lower()
-    chosen_mod = None
-    for mod in PLANT_FUNCTIONAL_MODULES:
-        if any(kw in text_blob for kw in mod["keywords"]):
-            chosen_mod = mod
-            break
-
-    if chosen_mod is None:
-        # Pemetaan deterministik berbasis hash stabil dari gene_id (hanya bila ALLOW_SYNTHETIC_ANNOTATION=true)
-        digest = int(hashlib.md5(key.encode("utf-8")).hexdigest()[:8], 16)
-        chosen_mod = PLANT_FUNCTIONAL_MODULES[digest % len(PLANT_FUNCTIONAL_MODULES)]
-
-    bp_list = list(chosen_mod["bp"])
-    go_terms = list(dict.fromkeys(gid for gid, _ in (*bp_list, *chosen_mod["cc"], *chosen_mod["mf"])))
-    primary_go = bp_list[0][0] if bp_list else "GO:0008150"
-    is_arabidopsis = key.startswith("AT") and len(key) >= 9 and key[3] == "G"
-    source_url = (
-        f"https://www.arabidopsis.org/servlets/TairObject?type=locus&name={key}"
-        if is_arabidopsis
-        else f"https://www.ebi.ac.uk/QuickGO/term/{primary_go}"
-    )
-    source_label = "www.arabidopsis.org" if is_arabidopsis else f"QuickGO ({primary_go})"
 
     return {
         "gene_id": gene_id,
         "gene_name": gene_name or gene_id,
-        "ortholog": key if is_arabidopsis else chosen_mod["ortholog_prefix"],
-        "bp": bp_list,
-        "cc": list(chosen_mod["cc"]),
-        "mf": list(chosen_mod["mf"]),
-        "go_terms": go_terms,
-        "source": "synthetic",
-        "source_label": source_label,
-        "source_url": source_url,
-        "synthetic": True,
+        "ortholog": "-",
+        "terms": [],
+        "go_terms": [],
+        "source": "unavailable",
+        "source_label": "unavailable",
+        "source_url": "",
+        "synthetic": False,
     }
+
+
+def _collect_gff_go_map(
+    gff_path: str | Path | None,
+    gff_genes_by_chr: dict[str, list[dict[str, Any]]] | None,
+    feature_type: str = "gene",
+) -> dict[str, list[str]]:
+    if gff_genes_by_chr is None and gff_path is not None and Path(gff_path).is_file():
+        from app.services.annotation_service import parse_gff3_genes
+
+        gff_genes_by_chr, _ = parse_gff3_genes(gff_path, feature_type=feature_type)
+
+    out: dict[str, list[str]] = {}
+    for glist in (gff_genes_by_chr or {}).values():
+        for g in glist:
+            gkey = _normalize_gene_key(g.get("gene_id"))
+            if not gkey:
+                continue
+            go_ids = list(dict.fromkeys(str(tid).strip().upper() for tid in (g.get("go_ids") or []) if tid))
+            if go_ids:
+                existing = out.setdefault(gkey, [])
+                for tid in go_ids:
+                    if tid not in existing:
+                        existing.append(tid)
+    return out
 
 
 def run_go_enrichment_analysis(
@@ -467,36 +273,41 @@ def run_go_enrichment_analysis(
     candidate_genes_list: list[str] | None = None,
     trait_name: str = "Candidate Genes",
     output_dir: str | Path | None = None,
+    gff_path: str | Path | None = None,
+    gff_genes_by_chr: dict[str, list[dict[str, Any]]] | None = None,
+    go_mapping_path: str | Path | None = None,
+    feature_type: str = "gene",
 ) -> dict[str, Any]:
     """
     Menjalankan pemetaan Tabel GO dan analisis pengayaan hipergeometrik (GO Enrichment)
-    dari daftar gen kandidat hasil anotasi GFF3 (Fase 5.3).
+    menggunakan anotasi GO asli (GFF3 `Ontology_term` atau file pemetaan TSV/GAF).
     """
     allow_synthetic = _allow_synthetic_annotation()
 
-    # 1. Kumpulkan metadata gen unik dari mapped_rows dan candidate_genes_list
-    gene_meta_map: dict[str, dict[str, Any]] = {}
+    row_meta_lookup: dict[str, dict[str, Any]] = {}
+    nearest_meta_map: dict[str, dict[str, Any]] = {}
+
     for row in mapped_rows:
         ng = row.get("nearest_gene")
         if ng and ng != "-":
             c_info = row.get("closest_gene") or {}
-            gene_meta_map.setdefault(
-                ng,
-                {
-                    "gene_id": ng,
-                    "gene_name": row.get("nearest_gene_name") or c_info.get("gene_name") or ng,
-                    "description": row.get("description") or c_info.get("description") or "",
-                    "go_ids": c_info.get("go_ids") or [],
-                    "snp": row.get("snp"),
-                    "chr": row.get("chr"),
-                    "pos": row.get("pos"),
-                    "category": row.get("category", "Genik"),
-                },
-            )
+            entry = {
+                "gene_id": ng,
+                "gene_name": row.get("nearest_gene_name") or c_info.get("gene_name") or ng,
+                "description": row.get("description") or c_info.get("description") or "",
+                "go_ids": c_info.get("go_ids") or [],
+                "snp": row.get("snp"),
+                "chr": row.get("chr"),
+                "pos": row.get("pos"),
+                "category": row.get("category", "Genik"),
+            }
+            row_meta_lookup.setdefault(ng, entry)
+            if row.get("category") in {"Genik", "Near-gen"}:
+                nearest_meta_map.setdefault(ng, entry)
         for gw in row.get("genes_in_window") or []:
             gid = gw.get("gene_id") or gw.get("id")
             if gid and gid != "-":
-                gene_meta_map.setdefault(
+                row_meta_lookup.setdefault(
                     gid,
                     {
                         "gene_id": gid,
@@ -510,9 +321,12 @@ def run_go_enrichment_analysis(
                     },
                 )
 
-    for gid in candidate_genes_list or []:
-        if gid and gid != "-":
-            gene_meta_map.setdefault(
+    if candidate_genes_list is not None:
+        gene_meta_map: dict[str, dict[str, Any]] = {}
+        for gid in candidate_genes_list:
+            if not gid or gid == "-":
+                continue
+            gene_meta_map[gid] = row_meta_lookup.get(
                 gid,
                 {
                     "gene_id": gid,
@@ -525,45 +339,81 @@ def run_go_enrichment_analysis(
                     "category": "Genik",
                 },
             )
+    else:
+        gene_meta_map = nearest_meta_map
 
     if not gene_meta_map:
-        empty_payload = {
+        return {
             "status": "empty",
             "synthetic": False,
             "trait": trait_name,
             "total_genes": 0,
+            "background_total": 0,
             "go_table": [],
             "enrichment_terms": [],
         }
-        return empty_payload
 
-    # 2. Bangun Tabel GO per Gen Kandidat (sesuai Tabel GO di HASIL OUTPUT.md)
+    gff_go_map = _collect_gff_go_map(gff_path, gff_genes_by_chr, feature_type=feature_type)
+    uploaded_annotations: dict[str, list[dict[str, str]]] = {}
+    if go_mapping_path is not None and Path(go_mapping_path).is_file():
+        uploaded_annotations, _ = parse_go_annotation_file(go_mapping_path)
+
+    uploaded_lookup_by_go: dict[str, dict[str, str]] = {}
+    for term_list in uploaded_annotations.values():
+        for t in term_list:
+            gid_code = t["go_id"]
+            cur = uploaded_lookup_by_go.get(gid_code)
+            if cur is None:
+                uploaded_lookup_by_go[gid_code] = dict(t)
+            else:
+                if cur.get("ontology", "unknown") == "unknown" and t.get("ontology", "unknown") != "unknown":
+                    cur["ontology"] = t["ontology"]
+                if not cur.get("description") and t.get("description"):
+                    cur["description"] = t["description"]
+
+    # Bangun semesta latar belakang = semua gen dengan >= 1 GO di GFF3 / file pemetaan GO
+    bg_gene_to_go: dict[str, set[str]] = {}
+    for gkey, go_ids in gff_go_map.items():
+        if go_ids:
+            bg_gene_to_go.setdefault(gkey, set()).update(go_ids)
+    for gkey, term_list in uploaded_annotations.items():
+        if gkey not in bg_gene_to_go and term_list:
+            bg_gene_to_go[gkey] = {t["go_id"] for t in term_list}
+
     go_table: list[dict[str, Any]] = []
     term_to_genes: dict[str, dict[str, Any]] = {}
 
     for gid in sorted(gene_meta_map.keys()):
         meta = gene_meta_map[gid]
+        gkey = _normalize_gene_key(gid)
+        explicit_go = list(dict.fromkeys([*(meta.get("go_ids") or []), *gff_go_map.get(gkey, [])]))
+
         resolved = _resolve_gene_go_entry(
             gene_id=gid,
             gene_name=meta.get("gene_name", gid),
             description=meta.get("description", ""),
-            explicit_go_ids=meta.get("go_ids", []),
+            explicit_go_ids=explicit_go,
+            uploaded_terms=uploaded_annotations.get(gkey),
+            uploaded_lookup_by_go=uploaded_lookup_by_go,
             allow_synthetic=allow_synthetic,
         )
-        bp_terms = resolved["bp"]
-        cc_terms = resolved["cc"]
-        mf_terms = resolved["mf"]
+        terms = resolved["terms"]
+
+        if resolved["go_terms"] and not resolved["synthetic"]:
+            bg_gene_to_go.setdefault(gkey, set()).update(resolved["go_terms"])
 
         go_table.append({
             "gene_id": gid,
             "gene_name": resolved["gene_name"],
             "ortholog": resolved["ortholog"],
-            "biological_process": ", ".join(t for _, t in bp_terms) if bp_terms else "-",
-            "cellular_component": ", ".join(t for _, t in cc_terms) if cc_terms else "-",
-            "molecular_function": ", ".join(t for _, t in mf_terms) if mf_terms else "-",
-            "bp_ids": [i for i, _ in bp_terms],
-            "cc_ids": [i for i, _ in cc_terms],
-            "mf_ids": [i for i, _ in mf_terms],
+            "biological_process": _format_domain_cell(terms, "BP"),
+            "cellular_component": _format_domain_cell(terms, "CC"),
+            "molecular_function": _format_domain_cell(terms, "MF"),
+            "unknown_go": _format_domain_cell(terms, "unknown"),
+            "bp_ids": [t["go_id"] for t in terms if t["ontology"] == "BP"],
+            "cc_ids": [t["go_id"] for t in terms if t["ontology"] == "CC"],
+            "mf_ids": [t["go_id"] for t in terms if t["ontology"] == "MF"],
+            "unknown_ids": [t["go_id"] for t in terms if t["ontology"] == "unknown"],
             "go_terms": resolved["go_terms"],
             "source": resolved["source"],
             "source_label": resolved["source_label"],
@@ -573,33 +423,46 @@ def run_go_enrichment_analysis(
             "category": meta.get("category", "Genik"),
         })
 
-        for ontology_code, term_list in [("BP", bp_terms), ("CC", cc_terms), ("MF", mf_terms)]:
-            for go_id, desc in term_list:
-                entry = term_to_genes.setdefault(
-                    go_id,
-                    {
-                        "go_id": go_id,
-                        "description": desc,
-                        "ontology": ontology_code,
-                        "genes": [],
-                        "synthetic": resolved["synthetic"],
-                    },
-                )
-                if resolved["synthetic"]:
-                    entry["synthetic"] = True
-                if gid not in entry["genes"]:
-                    entry["genes"].append(gid)
+        for t in terms:
+            go_id = t["go_id"]
+            entry = term_to_genes.setdefault(
+                go_id,
+                {
+                    "go_id": go_id,
+                    "description": t["description"],
+                    "ontology": t["ontology"],
+                    "genes": [],
+                    "synthetic": resolved["synthetic"],
+                },
+            )
+            if resolved["synthetic"]:
+                entry["synthetic"] = True
+            if gid not in entry["genes"]:
+                entry["genes"].append(gid)
 
-    # 3. Hitung statistik pengayaan hipergeometrik (GeneRatio, Count, pvalue, p.adjust)
-    n_candidates = max(len(go_table), 1)
-    n_bg_total = 27500
+    has_synthetic = any(bool(row.get("synthetic")) for row in go_table)
+    if bg_gene_to_go:
+        n_bg_total = len(bg_gene_to_go)
+        bg_term_counts: dict[str, int] = {}
+        for tids in bg_gene_to_go.values():
+            for tid in tids:
+                bg_term_counts[tid] = bg_term_counts.get(tid, 0) + 1
+    elif has_synthetic:
+        n_bg_total = max(len(go_table) * 10, 20)
+        bg_term_counts = {gid_code: max(len(info["genes"]) * 2, 4) for gid_code, info in term_to_genes.items()}
+    else:
+        n_bg_total = 0
+        bg_term_counts = {}
+
+    n_annotated_candidates = sum(1 for row in go_table if row["go_terms"])
+    n_candidates = max(n_annotated_candidates, 1)
     raw_terms: list[dict[str, Any]] = []
 
     for go_id, info in term_to_genes.items():
         k_count = len(info["genes"])
-        m_bg = DEFAULT_GO_BG_COUNTS.get(go_id, 320)
-        # Hypergeometric P(X >= k)
-        pval = float(hypergeom.sf(max(k_count - 1, 0), n_bg_total, m_bg, n_candidates))
+        m_bg = max(bg_term_counts.get(go_id, k_count), k_count)
+        effective_bg = max(n_bg_total, m_bg, n_candidates)
+        pval = float(hypergeom.sf(max(k_count - 1, 0), effective_bg, m_bg, n_candidates))
         pval = min(max(pval, 1e-60), 1.0)
         gene_ratio = round(k_count / n_candidates, 4)
         raw_terms.append({
@@ -610,14 +473,14 @@ def run_go_enrichment_analysis(
             "total_candidates": n_candidates,
             "gene_ratio": gene_ratio,
             "gene_ratio_str": f"{k_count}/{n_candidates}",
-            "bg_ratio": f"{m_bg}/{n_bg_total}",
+            "bg_ratio": f"{m_bg}/{effective_bg}",
             "pvalue": pval,
             "genes": info["genes"],
             "gene_id_str": "/".join(info["genes"]),
+            "source_url": _quickgo_url(go_id),
             "synthetic": bool(info.get("synthetic")),
         })
 
-    # Koreksi FDR Benjamini-Hochberg (p.adjust)
     if raw_terms:
         p_arr = np.array([t["pvalue"] for t in raw_terms], dtype=np.float64)
         m_tests = len(p_arr)
@@ -630,25 +493,22 @@ def run_go_enrichment_analysis(
         for rank_idx, orig_idx in enumerate(order):
             raw_terms[int(orig_idx)]["p_adjust"] = float(q_final[rank_idx])
 
-    # Prioritaskan Biological Process (BP) lalu urutkan berdasarkan gene_ratio menurun & p_adjust naik
     raw_terms.sort(key=lambda x: (0 if x["ontology"] == "BP" else 1, -x["gene_ratio"], x["p_adjust"]))
 
-    has_synthetic = any(bool(row.get("synthetic")) for row in go_table)
     result_payload = {
         "status": "unavailable" if (not raw_terms and not allow_synthetic) else "completed",
         "synthetic": has_synthetic,
         "trait": trait_name,
         "total_genes": len(go_table),
+        "background_total": n_bg_total,
         "go_table": go_table,
         "enrichment_terms": raw_terms,
     }
 
-    # 4. Tulis CSV bila output_dir diberikan
     if output_dir is not None:
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
-        # Hasil_GO_Enrichment.csv (sesuai GWAS WORKFLOW (SEMUA).md baris 921)
         enrichment_csv = out_path / "Hasil_GO_Enrichment.csv"
         with enrichment_csv.open("w", encoding="utf-8", newline="") as ef:
             writer = csv.writer(ef)
@@ -676,7 +536,6 @@ def run_go_enrichment_analysis(
                     t["gene_id_str"],
                 ])
 
-        # Tabel_GO_Kandidat.csv (sesuai Tabel GO di HASIL OUTPUT.md baris 651)
         table_csv = out_path / "Tabel_GO_Kandidat.csv"
         with table_csv.open("w", encoding="utf-8", newline="") as tf:
             writer = csv.writer(tf)

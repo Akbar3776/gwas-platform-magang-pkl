@@ -68,6 +68,9 @@ def list_uploaded_datasets(
         has_pheno = bool(ds.phenotype_file_path and Path(ds.phenotype_file_path).is_file())
         has_anno = bool(ds.annotation_file_path and Path(ds.annotation_file_path).is_file())
         anno_info = meta.get("annotation", {})
+        go_anno_info = meta.get("go_annotation", {})
+        go_anno_path = go_anno_info.get("path")
+        has_go_anno = bool(go_anno_path and Path(go_anno_path).is_file())
         pheno_name = pheno_info.get("filename") or (Path(ds.phenotype_file_path).name if has_pheno else None)
         anno_name = anno_info.get("filename") or (Path(ds.annotation_file_path).name if has_anno else None)
         items.append(
@@ -86,6 +89,9 @@ def list_uploaded_datasets(
                 "numeric_traits": pheno_info.get("numeric_columns", []),
                 "has_annotation": has_anno,
                 "annotation_filename": anno_name,
+                "has_go_annotation": has_go_anno,
+                "go_annotation_filename": go_anno_info.get("filename") if has_go_anno else None,
+                "go_annotation_n_genes": go_anno_info.get("n_genes", 0) if has_go_anno else 0,
             }
         )
     return items
@@ -527,6 +533,107 @@ def delete_annotation_file(
     dataset.annotation_file_path = None
     meta = dataset.extra_metadata or {}
     meta.pop("annotation", None)
+    dataset.extra_metadata = meta
+    db.commit()
+    return {"deleted": True}
+
+
+_MAX_GO_MAPPING_BYTES = 50 * 1024 * 1024
+_ALLOWED_GO_EXTS = (".tsv", ".txt", ".gaf", ".tsv.gz", ".txt.gz", ".gaf.gz")
+
+
+@router.post("/{file_id}/go-annotation")
+def upload_go_annotation_file(
+    file_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Mengunggah file pemetaan GO (.tsv/.txt/.gaf/.gz) per dataset untuk GO enrichment nyata."""
+    from app.services.go_enrichment_service import parse_go_annotation_file
+
+    dataset = _owned_dataset(file_id, user, db)
+    fname = file.filename or "go_annotation.tsv"
+    lower_fname = fname.lower()
+    matched_ext = next((ext for ext in _ALLOWED_GO_EXTS if lower_fname.endswith(ext)), None)
+    if matched_ext is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File pemetaan GO harus berformat .tsv, .txt, .gaf, atau .gz terkompresi.",
+        )
+
+    ds_dir = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id)
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    target_path = ds_dir / f"go_annotation{matched_ext}"
+    if not _under_storage(target_path):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path penyimpanan tidak valid")
+
+    content = file.file.read(_MAX_GO_MAPPING_BYTES + 1)
+    if len(content) > _MAX_GO_MAPPING_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Ukuran file pemetaan GO melebihi batas 50 MB.",
+        )
+    target_path.write_bytes(content)
+
+    try:
+        _, summary = parse_go_annotation_file(target_path)
+    except Exception as exc:
+        target_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Gagal membaca pemetaan GO: {exc}",
+        ) from exc
+
+    if summary["n_mappings"] == 0:
+        target_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File tidak memuat pasangan gene_id dan GO:xxxxxxx yang valid.",
+        )
+
+    meta = dict(dataset.extra_metadata or {})
+    meta["go_annotation"] = {
+        "filename": fname,
+        "path": str(target_path),
+        "format": summary["format"],
+        "n_genes": summary["n_genes"],
+        "n_mappings": summary["n_mappings"],
+    }
+    dataset.extra_metadata = meta
+    db.commit()
+
+    return {
+        "filename": fname,
+        "format": summary["format"],
+        "n_genes": summary["n_genes"],
+        "n_mappings": summary["n_mappings"],
+    }
+
+
+@router.delete("/{file_id}/go-annotation")
+def delete_go_annotation_file(
+    file_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Menghapus file pemetaan GO dari dataset."""
+    dataset = _owned_dataset(file_id, user, db)
+    jobs = db.query(AnalysisJob).filter(AnalysisJob.dataset_id == dataset.id).all()
+    for j in jobs:
+        if j.deleted_at is None and j.overall_status in ACTIVE_JOB_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="File pemetaan GO tidak dapat dihapus karena ada job yang sedang berjalan.",
+            )
+
+    meta = dict(dataset.extra_metadata or {})
+    go_info = meta.get("go_annotation") or {}
+    if go_info.get("path"):
+        go_path = Path(go_info["path"])
+        if _under_storage(go_path):
+            go_path.unlink(missing_ok=True)
+    meta.pop("go_annotation", None)
     dataset.extra_metadata = meta
     db.commit()
     return {"deleted": True}

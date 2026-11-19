@@ -1,0 +1,35 @@
+# Format pemetaan GO (TSV): gene_id<TAB>GO:xxxxxxx[<TAB>domain(BP|CC|MF)[<TAB>term_name]]
+# Contoh diekstrak sebagai fixture uji dan referensi format bagi pemilik data.
+gene_id	go_id	aspect	term_name
+AT1G31650	GO:0080092	BP	regulation of pollen tube growth
+AT1G31650	GO:0007165	BP	signal transduction
+AT1G31650	GO:0005886	CC	plasma membrane
+AT1G31650	GO:0005737	CC	cytoplasm
+AT1G31650	GO:0005085	MF	guanyl-nucleotide exchange factor activity
+AT5G63050	GO:0009793	BP	embryo development ending in seed dormancy
+AT5G63050	GO:0009507	CC	chloroplast
+AT5G63050	GO:0009536	CC	plastid
+AT5G63050	GO:0005515	MF	protein binding
+AT3G21780	GO:0009687	BP	abscisic acid catabolic process
+AT3G21780	GO:0009737	BP	response to abscisic acid
+AT3G21780	GO:0006970	BP	response to osmotic stress
+AT3G21780	GO:0009651	BP	response to salt stress
+AT3G21780	GO:0019748	BP	secondary metabolic process
+AT3G21780	GO:0008194	MF	UDP-glycosyltransferase activity
+ASA6G01390	GO:0019748	BP	secondary metabolic process
+ASA6G01390	GO:0071555	BP	plant-type cell wall organization or biogenesis
+ASA6G01390	GO:0005737	CC	cytoplasm
+ASA6G01390	GO:0016747	MF	acyltransferase activity
+ASA2G01610	GO:0019748	BP	secondary metabolic process
+ASA2G01610	GO:0006749	BP	glutathione metabolic process
+ASA2G01610	GO:0004364	MF	glutathione transferase activity
+ASA4G05396	GO:0009826	BP	unidimensional cell growth
+ASA4G05396	GO:0071555	BP	plant-type cell wall organization or biogenesis
+ASA4G05396	GO:0009828	BP	plant-type cell wall loosening
+ASA5G01884	GO:0030036	BP	actin cytoskeleton organization
+ASA5G01884	GO:0003779	MF	actin binding
+ASA4G06376	GO:0006357	BP	regulation of transcription by RNA polymerase II
+ASA4G06376	GO:0003700	MF	DNA-binding transcription factor activity
+ASA3G04828	GO:0071555	BP	plant-type cell wall organization or biogenesis
+ASA3G04921	GO:0006357	BP	regulation of transcription by RNA polymerase II
+ASA3G04921	GO:0006952	BP	defense response

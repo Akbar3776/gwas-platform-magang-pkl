@@ -113,6 +113,147 @@ def test_go_enrichment_disabled_by_default_and_uses_real_go_ids(tmp_path: Path, 
     assert len(res_real["enrichment_terms"]) == 2
 
 
+def test_go_enrichment_from_gff3_ontology_term_with_dynamic_background(tmp_path: Path, monkeypatch):
+    from scipy.stats import hypergeom
+    import pytest
+
+    monkeypatch.delenv("ALLOW_SYNTHETIC_ANNOTATION", raising=False)
+    gff_lines = ["##gff-version 3"]
+    # 8 genes with Ontology_term (4 with GO:0006357, 4 with GO:0009651), 2 genes without GO -> N=8
+    for idx in range(1, 5):
+        gff_lines.append(f"1\tGFF3\tgene\t{idx * 1000}\t{idx * 1000 + 400}\t.\t+\t.\tID=G_TF_{idx};Ontology_term=GO:0006357")
+    for idx in range(5, 9):
+        gff_lines.append(f"1\tGFF3\tgene\t{idx * 1000}\t{idx * 1000 + 400}\t.\t+\t.\tID=G_ST_{idx};Ontology_term=GO:0009651")
+    for idx in range(9, 11):
+        gff_lines.append(f"1\tGFF3\tgene\t{idx * 1000}\t{idx * 1000 + 400}\t.\t+\t.\tID=G_NOGO_{idx}")
+
+    gff_file = tmp_path / "anno.gff3"
+    gff_file.write_text("\n".join(gff_lines) + "\n", encoding="utf-8")
+
+    mapped_rows = [
+        {"snp": f"rs{i}", "chr": "1", "pos": i * 1000 + 100, "p": 1e-8, "nearest_gene": f"G_TF_{i}", "category": "Genik"}
+        for i in range(1, 4)
+    ]
+    res = run_go_enrichment_analysis(
+        mapped_rows=mapped_rows,
+        candidate_genes_list=["G_TF_1", "G_TF_2", "G_TF_3"],
+        trait_name="Real GFF3",
+        gff_path=gff_file,
+        output_dir=tmp_path / "out_gff",
+    )
+    assert res["status"] == "completed"
+    assert res["synthetic"] is False
+    assert res["background_total"] == 8
+    assert len(res["enrichment_terms"]) == 1
+    term = res["enrichment_terms"][0]
+    assert term["go_id"] == "GO:0006357"
+    assert term["description"] == "GO:0006357"
+    assert term["ontology"] == "unknown"
+    assert term["bg_ratio"] == "4/8"
+    assert term["gene_ratio_str"] == "3/3"
+    expected_p = float(hypergeom.sf(3 - 1, 8, 4, 3))
+    assert term["pvalue"] == pytest.approx(expected_p)
+
+
+def test_go_enrichment_from_uploaded_tsv_and_gaf(tmp_path: Path, monkeypatch):
+    from scipy.stats import hypergeom
+    import pytest
+
+    monkeypatch.delenv("ALLOW_SYNTHETIC_ANNOTATION", raising=False)
+    tsv_file = tmp_path / "mapping.tsv"
+    tsv_file.write_text(
+        "G1\tGO:0006357\n"
+        "G2\tGO:0006357\n"
+        "G3\tGO:0009651\n"
+        "G4\tGO:0009651\n"
+        "G5\tGO:0009651\n",
+        encoding="utf-8",
+    )
+    res_tsv = run_go_enrichment_analysis(
+        mapped_rows=[{"snp": "rs1", "chr": "1", "pos": 100, "p": 1e-8, "nearest_gene": "G1", "category": "Genik"}],
+        candidate_genes_list=["G1", "G2"],
+        trait_name="TSV Trait",
+        go_mapping_path=tsv_file,
+    )
+    assert res_tsv["status"] == "completed"
+    assert res_tsv["synthetic"] is False
+    assert res_tsv["background_total"] == 5
+    term = res_tsv["enrichment_terms"][0]
+    assert term["go_id"] == "GO:0006357"
+    assert term["ontology"] == "unknown"
+    assert term["bg_ratio"] == "2/5"
+    assert term["pvalue"] == pytest.approx(float(hypergeom.sf(2 - 1, 5, 2, 2)))
+
+    # GAF 2.x format: col2 (idx1) = gene_id, col5 (idx4) = GO id, col9 (idx8) = aspect P/F/C
+    gaf_file = tmp_path / "mapping.gaf"
+    gaf_file.write_text(
+        "!gaf-version: 2.1\n"
+        "DB\tG1\tG1\t\tGO:0006357\tPMID:1\tIEA\t\tP\tGene 1\t\tgene\ttaxon:1\t20260101\tDB\n"
+        "DB\tG1\tG1\t\tGO:0003700\tPMID:1\tIEA\t\tF\tGene 1\t\tgene\ttaxon:1\t20260101\tDB\n"
+        "DB\tG2\tG2\t\tGO:0005634\tPMID:1\tIEA\t\tC\tGene 2\t\tgene\ttaxon:1\t20260101\tDB\n",
+        encoding="utf-8",
+    )
+    res_gaf = run_go_enrichment_analysis(
+        mapped_rows=[{"snp": "rs1", "chr": "1", "pos": 100, "p": 1e-8, "nearest_gene": "G1", "category": "Genik"}],
+        candidate_genes_list=["G1", "G2"],
+        go_mapping_path=gaf_file,
+    )
+    ontologies = {t["go_id"]: t["ontology"] for t in res_gaf["enrichment_terms"]}
+    assert ontologies == {"GO:0006357": "BP", "GO:0003700": "MF", "GO:0005634": "CC"}
+
+    fixture_tsv = Path(__file__).parent / "fixtures" / "go_mapping_example.tsv"
+    res_fix = run_go_enrichment_analysis(
+        mapped_rows=[],
+        candidate_genes_list=["ASA6G01390", "ASA2G01610"],
+        go_mapping_path=fixture_tsv,
+    )
+    assert res_fix["status"] == "completed"
+    assert res_fix["total_genes"] == 2
+    assert any(t["go_id"] == "GO:0019748" and t["description"] == "secondary metabolic process" for t in res_fix["enrichment_terms"])
+
+
+def test_upload_go_annotation_endpoint(tmp_path: Path, monkeypatch):
+    import io
+    import uuid
+    from fastapi import HTTPException
+    from starlette.datastructures import UploadFile
+    from app.api.routes import upload as upload_routes
+    from app.core.config import settings
+    from app.db.engine.models import Dataset, UploadStatus, User, UserRole
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    owner = User(id=uuid.uuid4(), email="u@example.com", hashed_password="x", role=UserRole.RESEARCHER)
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=owner.id,
+        original_filename="c.vcf",
+        storage_path=str(tmp_path / "c.vcf"),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+    )
+
+    class _DB:
+        def get(self, model, oid):
+            return ds if model is Dataset and str(oid) == str(ds.id) else None
+
+        def commit(self):
+            pass
+
+    db = _DB()
+    bad_file = UploadFile(file=io.BytesIO(b"nope"), filename="bad.csv")
+    try:
+        upload_routes.upload_go_annotation_file(file_id=ds.id, file=bad_file, db=db, user=owner)
+        raise AssertionError("Expected HTTPException for invalid extension")
+    except HTTPException as exc:
+        assert exc.status_code == 400
+
+    valid_tsv = UploadFile(file=io.BytesIO(b"G1\tGO:0006357\tBP\tTF reg\nG2\tGO:0009651\n"), filename="go.tsv")
+    out = upload_routes.upload_go_annotation_file(file_id=ds.id, file=valid_tsv, db=db, user=owner)
+    assert out["filename"] == "go.tsv"
+    assert out["n_genes"] == 2
+    assert (ds.extra_metadata or {}).get("go_annotation", {}).get("n_genes") == 2
+
+
 def test_go_enrichment_synthetic_opt_in_marks_entries(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ALLOW_SYNTHETIC_ANNOTATION", "true")
     mapped_rows = [
@@ -124,29 +265,22 @@ def test_go_enrichment_synthetic_opt_in_marks_entries(tmp_path: Path, monkeypatc
             "nearest_gene": "Asa6G01390",
             "nearest_gene_name": "Asa6G01390",
             "category": "Near-gen",
-            "genes_in_window": [
-                {"gene_id": "Asa2G01610", "gene_name": "Asa2G01610", "distance": 25000},
-                {"gene_id": "AT1G31650", "gene_name": "ROPGEF14", "distance": 0},
-            ],
+            "genes_in_window": [],
         }
     ]
     res = run_go_enrichment_analysis(
         mapped_rows=mapped_rows,
-        candidate_genes_list=["Asa6G01390", "Asa2G01610", "AT1G31650"],
+        candidate_genes_list=["Asa6G01390", "Asa2G01610"],
         trait_name="Clove Weight",
         output_dir=tmp_path,
     )
     assert res["status"] == "completed"
     assert res["synthetic"] is True
-    assert res["total_genes"] == 3
-    assert len(res["go_table"]) == 3
+    assert res["total_genes"] == 2
+    assert len(res["go_table"]) == 2
     assert all(row.get("synthetic") is True for row in res["go_table"])
     assert len(res["enrichment_terms"]) > 0
     assert all(term.get("synthetic") is True for term in res["enrichment_terms"])
-    first_term = res["enrichment_terms"][0]
-    assert "gene_ratio" in first_term
-    assert "p_adjust" in first_term
-    assert "count" in first_term
     assert (tmp_path / "Hasil_GO_Enrichment.csv").is_file()
     assert (tmp_path / "Tabel_GO_Kandidat.csv").is_file()
 
