@@ -41,7 +41,7 @@ function AppLayout({ children }) {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <Link to="/upload" className="brand">GWAS Platform</Link>
+        <Link to={isAuthenticated ? '/upload' : '/login'} className="brand">GWAS Platform</Link>
         {isAuthenticated && (
           <nav>
             <span>{user?.full_name || user?.email}</span>

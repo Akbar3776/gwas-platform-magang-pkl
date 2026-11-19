@@ -98,6 +98,43 @@ describe("Routing, document.title, 404 NotFoundPage, and session status (A39)", 
     expect(statusNode).toHaveClass("session-status");
   });
 
+  test("brand link points to /login when logged out and /upload when authenticated (A53)", async () => {
+    const { unmount } = render(
+      <MemoryRouter
+        initialEntries={["/login"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("link", { name: "GWAS Platform" })).toHaveAttribute("href", "/login");
+    unmount();
+
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        access_token: "tok-a53",
+        user: { email: "researcher@example.com", full_name: "Peneliti" },
+      }),
+    });
+
+    render(
+      <MemoryRouter
+        initialEntries={["/upload"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(screen.getByText("Mock Upload Page")).toBeInTheDocument());
+    expect(screen.getByRole("link", { name: "GWAS Platform" })).toHaveAttribute("href", "/upload");
+  });
+
   test("lazy-loaded protected route renders inside Suspense and sets route title", async () => {
     globalThis.fetch = jest.fn().mockResolvedValue({
       ok: true,

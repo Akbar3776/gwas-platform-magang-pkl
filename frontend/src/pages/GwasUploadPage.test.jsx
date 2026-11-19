@@ -45,7 +45,7 @@ describe("GwasUploadPage capabilities integration (A24)", () => {
     });
 
     const { container } = render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <GwasUploadPage />
       </MemoryRouter>
     );

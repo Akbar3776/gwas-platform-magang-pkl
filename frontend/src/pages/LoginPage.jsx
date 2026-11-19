@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 
-// Placeholder minimal — sesuaikan styling dengan kebutuhan UI final.
 export default function LoginPage() {
   const { login } = useAuth()
   const navigate = useNavigate()
@@ -20,8 +19,6 @@ export default function LoginPage() {
     setError(null)
     setSubmitting(true)
     try {
-      // login() di AuthContext.jsx melempar Error biasa dengan .message
-      // sudah berisi pesan yang siap ditampilkan ke user.
       await login(email, password)
       navigate(from, { replace: true })
     } catch (err) {
@@ -43,6 +40,14 @@ export default function LoginPage() {
             autoComplete="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
+            onInvalid={(e) => {
+              if (e.target.validity.valueMissing) {
+                e.target.setCustomValidity('Email wajib diisi.')
+              } else {
+                e.target.setCustomValidity('Masukkan alamat email yang valid.')
+              }
+            }}
+            onInput={(e) => e.target.setCustomValidity('')}
             aria-invalid={error ? 'true' : undefined}
             aria-describedby={error ? errorId : undefined}
             required
@@ -56,6 +61,8 @@ export default function LoginPage() {
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            onInvalid={(e) => e.target.setCustomValidity('Password wajib diisi.')}
+            onInput={(e) => e.target.setCustomValidity('')}
             aria-invalid={error ? 'true' : undefined}
             aria-describedby={error ? errorId : undefined}
             required

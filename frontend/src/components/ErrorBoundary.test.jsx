@@ -73,7 +73,7 @@ describe("ErrorBoundary & 422 Validation Handling (A15)", () => {
 
     const { container } = render(
       <ErrorBoundary>
-        <MemoryRouter>
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <GwasUploadPage />
         </MemoryRouter>
       </ErrorBoundary>

@@ -20,7 +20,7 @@ describe("Auth pages accessibility and error semantics (A18)", () => {
     useAuth.mockReturnValue({ login: loginMock });
 
     const { container } = render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LoginPage />
       </MemoryRouter>
     );
@@ -53,7 +53,7 @@ describe("Auth pages accessibility and error semantics (A18)", () => {
     useAuth.mockReturnValue({ register: registerMock });
 
     const { container } = render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <RegisterPage />
       </MemoryRouter>
     );
@@ -82,5 +82,36 @@ describe("Auth pages accessibility and error semantics (A18)", () => {
       expect(input).toHaveAttribute("aria-invalid", "true");
       expect(input).toHaveAttribute("aria-describedby", alert.id);
     }
+  });
+
+  test("sets Indonesian browser validation messages on invalid inputs (A53)", () => {
+    useAuth.mockReturnValue({ login: jest.fn(), register: jest.fn() });
+
+    const { unmount } = render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LoginPage />
+      </MemoryRouter>
+    );
+    const loginEmail = screen.getByLabelText(/Email/i);
+    const loginPassword = screen.getByLabelText(/Password/i);
+    fireEvent.invalid(loginEmail);
+    expect(loginEmail.validationMessage).toBe("Email wajib diisi.");
+    fireEvent.input(loginEmail, { target: { value: "bukan-email" } });
+    fireEvent.invalid(loginEmail);
+    expect(loginEmail.validationMessage).toBe("Masukkan alamat email yang valid.");
+    fireEvent.input(loginEmail, { target: { value: "peneliti@example.com" } });
+    expect(loginEmail.validationMessage).toBe("");
+    fireEvent.invalid(loginPassword);
+    expect(loginPassword.validationMessage).toBe("Password wajib diisi.");
+    unmount();
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <RegisterPage />
+      </MemoryRouter>
+    );
+    const fullNameInput = screen.getByLabelText(/Nama Lengkap/i);
+    fireEvent.invalid(fullNameInput);
+    expect(fullNameInput.validationMessage).toBe("Nama lengkap wajib diisi.");
   });
 });

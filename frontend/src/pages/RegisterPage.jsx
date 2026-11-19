@@ -2,8 +2,6 @@ import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 
-// Placeholder minimal — pakai register() dari AuthContext.jsx langsung
-// (bukan panggil apiClient sendiri) supaya endpoint & error handling konsisten.
 export default function RegisterPage() {
   const { register } = useAuth()
   const navigate = useNavigate()
@@ -19,8 +17,6 @@ export default function RegisterPage() {
     setError(null)
     setSubmitting(true)
     try {
-      // Signature: register(email, password, fullName) — lihat AuthContext.jsx.
-      // Registrasi berhasil TIDAK auto-login, jadi arahkan ke /login.
       await register(form.email, form.password, form.fullName)
       navigate('/login', { replace: true })
     } catch (err) {
@@ -42,6 +38,8 @@ export default function RegisterPage() {
             autoComplete="name"
             value={form.fullName}
             onChange={handleChange}
+            onInvalid={(e) => e.target.setCustomValidity('Nama lengkap wajib diisi.')}
+            onInput={(e) => e.target.setCustomValidity('')}
             aria-invalid={error ? 'true' : undefined}
             aria-describedby={error ? errorId : undefined}
             required
@@ -55,6 +53,14 @@ export default function RegisterPage() {
             autoComplete="email"
             value={form.email}
             onChange={handleChange}
+            onInvalid={(e) => {
+              if (e.target.validity.valueMissing) {
+                e.target.setCustomValidity('Email wajib diisi.')
+              } else {
+                e.target.setCustomValidity('Masukkan alamat email yang valid.')
+              }
+            }}
+            onInput={(e) => e.target.setCustomValidity('')}
             aria-invalid={error ? 'true' : undefined}
             aria-describedby={error ? errorId : undefined}
             required
@@ -68,6 +74,8 @@ export default function RegisterPage() {
             autoComplete="new-password"
             value={form.password}
             onChange={handleChange}
+            onInvalid={(e) => e.target.setCustomValidity('Password wajib diisi.')}
+            onInput={(e) => e.target.setCustomValidity('')}
             aria-invalid={error ? 'true' : undefined}
             aria-describedby={error ? errorId : undefined}
             required

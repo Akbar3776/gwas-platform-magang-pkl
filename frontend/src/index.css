@@ -61,7 +61,7 @@ body {
 
 /* Auth pages (Login & Register) */
 .auth-page {
-  width: calc(100% - 24px);
+  width: calc(100% - 32px);
   max-width: 420px;
   margin: 40px auto;
   padding: 24px 20px;
@@ -264,7 +264,7 @@ body {
 }
 
 .not-found-page {
-  width: calc(100% - 24px);
+  width: calc(100% - 32px);
   max-width: 520px;
   margin: 56px auto;
   padding: 28px 24px;
