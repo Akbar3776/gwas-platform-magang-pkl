@@ -22,7 +22,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 24px;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 20px;
   background: #ffffff;
   border-bottom: 1px solid #e2e8f0;
 }
@@ -59,9 +61,10 @@ body {
 
 /* Auth pages (Login & Register) */
 .auth-page {
+  width: calc(100% - 24px);
   max-width: 420px;
-  margin: 56px auto;
-  padding: 28px 24px;
+  margin: 40px auto;
+  padding: 24px 20px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
@@ -253,6 +256,73 @@ body {
   outline: 2px solid #2563eb;
   outline-offset: 2px;
 }
+/* Session checking & 404 page */
+.session-status {
+  min-height: 60vh;
+  padding: 24px;
+  text-align: center;
+}
+
+.not-found-page {
+  width: calc(100% - 24px);
+  max-width: 520px;
+  margin: 56px auto;
+  padding: 28px 24px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+
+.not-found-code {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #2563eb;
+}
+
+.not-found-page h1 {
+  margin: 0 0 10px;
+  font-size: 22px;
+  color: #0f172a;
+}
+
+.not-found-desc {
+  margin: 0 0 20px;
+  font-size: 14px;
+  color: #64748b;
+}
+
+.not-found-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+.btn-primary-link,
+.btn-secondary-link {
+  display: inline-block;
+  padding: 9px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.btn-primary-link {
+  background: #1d4ed8;
+  color: #ffffff;
+}
+
+.btn-secondary-link {
+  background: #f8fafc;
+  color: #0f172a;
+  border: 1px solid #cbd5e1;
+}
+
 @media (min-width: 640px) {
   .sm\:flex-row { flex-direction: row; }
 }

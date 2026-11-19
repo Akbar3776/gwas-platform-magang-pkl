@@ -152,7 +152,10 @@ export function ProtectedRoute() {
 
   if (status === "checking") {
     return (
-      <div className="flex h-screen items-center justify-center text-sm text-slate-500">
+      <div
+        role="status"
+        className="flex session-status items-center justify-center text-sm text-slate-500"
+      >
         Memeriksa sesi login…
       </div>
     );
