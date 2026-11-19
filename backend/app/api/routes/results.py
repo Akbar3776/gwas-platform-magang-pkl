@@ -5,6 +5,7 @@ untuk dirender pada visualisasi interaktif frontend.
 
 from __future__ import annotations
 
+from functools import lru_cache
 import json
 import logging
 from pathlib import Path
@@ -289,6 +290,19 @@ def get_thresholds_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dic
     )
 
 
+@lru_cache(maxsize=64)
+def _cached_greedy_clumping(
+    norm_assoc_str: str,
+    mtime_ns: int,
+    size_bytes: int,
+    sel_p: float,
+) -> tuple[dict[str, Any], ...]:
+    from app.services.postgwas_service import run_greedy_clumping
+
+    snps = run_greedy_clumping(assoc_file=Path(norm_assoc_str), selected_p=sel_p)
+    return tuple(dict(item) for item in (snps or []))
+
+
 @router.get("/{job_id}/lead-snps", summary="Daftar Lead SNPs independen hasil clumping (Fase 4F)")
 def get_lead_snps_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
     data = _load_job_json_result(
@@ -305,32 +319,18 @@ def get_lead_snps_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict
         ]
         norm_assoc = next((p for p in candidates if p.is_file()), None)
         if norm_assoc is not None:
-            from app.services.postgwas_service import run_greedy_clumping
             thresh_data = _load_job_json_result(job_id, db, ResultType.THRESHOLDS, "postgwas", "thresholds.json")
             sel_p = float(thresh_data.get("selected_p") or 5e-8) if isinstance(thresh_data, dict) else 5e-8
-            regenerated = run_greedy_clumping(assoc_file=norm_assoc, selected_p=sel_p)
+            st = norm_assoc.stat()
+            regenerated = [
+                dict(item)
+                for item in _cached_greedy_clumping(str(norm_assoc), st.st_mtime_ns, st.st_size, sel_p)
+            ]
             if regenerated:
-                postgwas_dir = job_root / "postgwas"
-                if postgwas_dir.is_dir():
-                    try:
-                        lead_f = postgwas_dir / "lead_snps.json"
-                        lead_f.write_text(
-                            json.dumps({"count": len(regenerated), "snps": regenerated}, indent=2),
-                            encoding="utf-8",
-                        )
-                    except Exception:
-                        pass
                 return {"count": len(regenerated), "snps": regenerated}
 
     if isinstance(data, list):
-        wrapped = {"count": len(data), "snps": data}
-        try:
-            lead_f = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "postgwas" / "lead_snps.json"
-            if lead_f.is_file():
-                lead_f.write_text(json.dumps(wrapped, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-        return wrapped
+        return {"count": len(data), "snps": data}
     if isinstance(data, dict) and "snps" not in data:
         return {**data, "count": len(raw_snps), "snps": raw_snps}
     return data

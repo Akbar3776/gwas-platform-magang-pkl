@@ -238,3 +238,56 @@ def test_multilocus_leads_peak_comparison_and_primers_preserve_ca_contig(tmp_pat
     )
     assert [m["chr"] for m in primer_payload["markers"]] == ["Ca1", "contig_12"]
     assert primer_payload["markers"][0]["marker_id"] == "trait_Ca1_1000"
+
+
+def test_get_lead_snps_is_strictly_read_only_on_disk(tmp_path, monkeypatch):
+    import json
+    import uuid
+    from app.api.routes.results import get_lead_snps_data
+    from app.core.config import settings
+
+    class _EmptyQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return None
+
+    class _EmptyDB:
+        def query(self, *args, **kwargs):
+            return _EmptyQuery()
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+
+    # Case 1: legacy JSON list on disk must remain untouched (no disk rewrite)
+    job_a = uuid.uuid4()
+    pg_a = tmp_path / "jobs" / str(job_a) / "postgwas"
+    pg_a.mkdir(parents=True)
+    lead_a = pg_a / "lead_snps.json"
+    orig_list_raw = json.dumps([{"snp": "rs1", "chr": "1", "pos": 100, "p": 1e-8}])
+    lead_a.write_text(orig_list_raw, encoding="utf-8")
+    out_a = get_lead_snps_data(job_id=job_a, db=_EmptyDB())
+    assert out_a["count"] == 1
+    assert lead_a.read_text(encoding="utf-8") == orig_list_raw
+
+    # Case 2: empty lead_snps.json + fallback clumping from normalized TSV must not overwrite lead_snps.json
+    job_b = uuid.uuid4()
+    job_root_b = tmp_path / "jobs" / str(job_b)
+    pg_b = job_root_b / "postgwas"
+    gwas_b = job_root_b / "gwas"
+    pg_b.mkdir(parents=True)
+    gwas_b.mkdir(parents=True)
+    orig_empty_raw = json.dumps({"count": 0, "snps": []})
+    lead_b = pg_b / "lead_snps.json"
+    lead_b.write_text(orig_empty_raw, encoding="utf-8")
+    (pg_b / "thresholds.json").write_text(json.dumps({"selected_p": 1e-6}), encoding="utf-8")
+    (gwas_b / "gwas_results.normalized.tsv").write_text(
+        "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn\n"
+        "1\t500\trs_regen\tA\tG\t0.3\t0.5\t0.08\t1e-8\t100\n",
+        encoding="utf-8",
+    )
+
+    out_b = get_lead_snps_data(job_id=job_b, db=_EmptyDB())
+    assert out_b["count"] == 1
+    assert out_b["snps"][0]["snp"] == "rs_regen"
+    assert lead_b.read_text(encoding="utf-8") == orig_empty_raw
