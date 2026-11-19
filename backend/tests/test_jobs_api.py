@@ -557,3 +557,43 @@ def test_get_job_file_content_requires_exact_file_key(tmp_path, monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.body.decode("utf-8") == "qc-log-content"
+
+
+def test_build_job_steps_reflects_skipped_stages_and_glm_model(tmp_path):
+    from app.api.routes import report as report_routes
+
+    job_id = uuid.uuid4()
+    job_root = tmp_path / "jobs" / str(job_id)
+    (job_root / "normalization").mkdir(parents=True)
+    (job_root / "normalization" / "normalized.vcf.gz").write_bytes(b"vcf")
+    (job_root / "qc").mkdir(parents=True)
+    (job_root / "qc" / "plink_qc.bed").write_bytes(b"bed")
+    (job_root / "imputation").mkdir(parents=True)
+    (job_root / "imputation" / "skipped.json").write_text('{"status": "skipped"}', encoding="utf-8")
+    (job_root / "gwas").mkdir(parents=True)
+    (job_root / "gwas" / "gwas_results.normalized.tsv").write_text("chr\tps\n", encoding="utf-8")
+    (job_root / "multilocus").mkdir(parents=True)
+    (job_root / "multilocus" / "skipped.json").write_text('{"status": "skipped"}', encoding="utf-8")
+
+    job = AnalysisJob(
+        id=job_id,
+        dataset_id=uuid.uuid4(),
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.COMPLETED,
+        current_step=PipelineStep.ANNOTATION,
+        parameters={"gwas": {"model": "glm"}},
+        completed_at=datetime.now(timezone.utc),
+    )
+
+    steps = report_routes.build_job_steps(job, job_root=job_root)
+    by_name = {s["step_name"]: s for s in steps}
+
+    assert by_name["Normalisasi VCF (bcftools)"]["status"] == "COMPLETED"
+    assert by_name["Quality Control (PLINK)"]["status"] == "COMPLETED"
+    assert by_name["Imputasi Genotipe (Beagle)"]["status"] == "SKIPPED"
+    assert by_name["Analisis Multi-Locus (FarmCPU / BLINK / MLMM)"]["status"] == "SKIPPED"
+    assert any(
+        "GEMMA -lm" in s["step_name"] and s["status"] == "COMPLETED"
+        for s in steps
+    )
+    assert by_name["Visualisasi & Cache Plot"]["status"] == "NOT_RUN"
