@@ -18,6 +18,9 @@ export function LdDecayPlot({
   const cutoffR2 = data?.cutoff_r2 ?? 0.2;
   const chosenKb = data?.chosen_kb;
   const reason = data?.reason;
+  const ldAriaLabel = `${title}: ${bins.length} bin jarak, ambang cutoff r2 ${cutoffR2}${
+    chosenKb !== undefined && chosenKb !== null ? `, jendela LD ${chosenKb} kb` : ""
+  }`;
 
   const plotWidth = width - MARGIN.left - MARGIN.right;
   const plotHeight = height - MARGIN.top - MARGIN.bottom;
@@ -185,6 +188,8 @@ export function LdDecayPlot({
       <div style={{ position: "relative", width, height }}>
         <canvas
           ref={canvasRef}
+          role="img"
+          aria-label={ldAriaLabel}
           onMouseMove={handleMouseMove}
           onMouseLeave={() => setHoveredBin(null)}
           style={{ borderRadius: 8, border: "1px solid #e2e8f0" }}

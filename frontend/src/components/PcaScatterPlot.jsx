@@ -20,6 +20,7 @@ export function PcaScatterPlot({
   const pve = data?.pve || EMPTY_PVE;
   const pveX = pve[pcX - 1] ? (pve[pcX - 1] * 100).toFixed(1) : null;
   const pveY = pve[pcY - 1] ? (pve[pcY - 1] * 100).toFixed(1) : null;
+  const pcaAriaLabel = `${title}: PC${pcX} (${pveX ?? "N/A"}% varians) vs PC${pcY} (${pveY ?? "N/A"}% varians) untuk ${samples.length} sampel`;
 
   const plotWidth = width - MARGIN.left - MARGIN.right;
   const plotHeight = height - MARGIN.top - MARGIN.bottom;
@@ -190,6 +191,8 @@ export function PcaScatterPlot({
     <div style={{ position: "relative", width, height }}>
       <canvas
         ref={canvasRef}
+        role="img"
+        aria-label={pcaAriaLabel}
         onMouseMove={handleMouseMove}
         onMouseLeave={() => setHoveredSample(null)}
         style={{ borderRadius: 8, border: "1px solid #e2e8f0" }}

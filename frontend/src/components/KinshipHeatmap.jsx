@@ -16,6 +16,24 @@ export function KinshipHeatmap({
   const matrix = data?.matrix || EMPTY_MATRIX;
   const order = data?.order || EMPTY_ORDER;
   const n = matrix.length;
+  let kinshipRangeText = "";
+  if (n > 0) {
+    let minVal = Infinity;
+    let maxVal = -Infinity;
+    for (let i = 0; i < n; i += 1) {
+      for (let j = 0; j < n; j += 1) {
+        const val = Number(matrix[i]?.[j]);
+        if (Number.isFinite(val)) {
+          if (val < minVal) minVal = val;
+          if (val > maxVal) maxVal = val;
+        }
+      }
+    }
+    if (Number.isFinite(minVal) && Number.isFinite(maxVal)) {
+      kinshipRangeText = `, rentang nilai kinship ${minVal.toFixed(2)} hingga ${maxVal.toFixed(2)}`;
+    }
+  }
+  const kinshipAriaLabel = `${title}: matriks ${n} x ${n} sampel${kinshipRangeText}`;
 
   const margin = { top: 32, right: 20, bottom: 20, left: 20 };
   const heatSize = Math.min(width - margin.left - margin.right, height - margin.top - margin.bottom);
@@ -97,6 +115,8 @@ export function KinshipHeatmap({
     <div style={{ position: "relative", width, height }}>
       <canvas
         ref={canvasRef}
+        role="img"
+        aria-label={kinshipAriaLabel}
         onMouseMove={handleMouseMove}
         onMouseLeave={() => setHoveredCell(null)}
         style={{ borderRadius: 8, border: "1px solid #e2e8f0" }}
