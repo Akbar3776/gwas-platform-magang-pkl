@@ -230,8 +230,14 @@ def _run_python_multilocus_engine(
     _check_cancel()
     append_log(log_file, "[INFO] Menginisialisasi Python Native Engine untuk Multi-Locus GWAS...")
 
-    # 1. Muat Genotipe
-    candidate_bfile = workspace.parent / "qc" / "plink_qc"
+    # 1. Muat Genotipe (utamakan bfile hasil imputasi / konteks daripada pra-imputasi QC)
+    ctx_bfile = ctx.get("genotype_bfile_prefix") or ctx.get("output_prefix") or ctx.get("qc_bfile_prefix")
+    if ctx_bfile and Path(f"{ctx_bfile}.bed").is_file():
+        candidate_bfile = Path(str(ctx_bfile))
+    elif (workspace.parent / "imputation" / "imputed.bed").is_file():
+        candidate_bfile = workspace.parent / "imputation" / "imputed"
+    else:
+        candidate_bfile = workspace.parent / "qc" / "plink_qc"
     G_mat: np.ndarray | None = None
     variants_meta: list[dict[str, Any]] = []
     samples: list[str] = []

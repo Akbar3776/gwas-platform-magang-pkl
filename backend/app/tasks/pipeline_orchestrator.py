@@ -181,6 +181,11 @@ def discover_resume_state(
         "dataset_id": str(dataset_id),
     }
 
+    imp_dir = job_root / "imputation"
+    has_imputed_vcf = (imp_dir / "imputed.vcf.gz").is_file()
+    has_imputed_bed = (imp_dir / "imputed.bed").is_file()
+    imp_skipped = (imp_dir / "skipped.json").is_file()
+
     stage_checks: list[tuple[str, bool, dict[str, Any]]] = [
         (
             "inspection",
@@ -215,24 +220,30 @@ def discover_resume_state(
         ),
         (
             "imputation",
-            (job_root / "imputation" / "imputed.vcf.gz").is_file()
-            or (job_root / "imputation" / "skipped.json").is_file(),
+            has_imputed_vcf or imp_skipped,
             {
                 "output_vcf": str(
                     (
-                        (job_root / "imputation" / "imputed.vcf.gz")
-                        if (job_root / "imputation" / "imputed.vcf.gz").is_file()
+                        (imp_dir / "imputed.vcf.gz")
+                        if has_imputed_vcf
                         else (job_root / "qc" / "plink_qc.vcf.gz")
                     ).resolve()
                 ),
                 "genotype_vcf_path": str(
                     (
-                        (job_root / "imputation" / "imputed.vcf.gz")
-                        if (job_root / "imputation" / "imputed.vcf.gz").is_file()
+                        (imp_dir / "imputed.vcf.gz")
+                        if has_imputed_vcf
                         else (job_root / "qc" / "plink_qc.vcf.gz")
                     ).resolve()
                 ),
-                "imputation_skipped": not (job_root / "imputation" / "imputed.vcf.gz").is_file(),
+                "genotype_bfile_prefix": str(
+                    (
+                        (imp_dir / "imputed")
+                        if (has_imputed_vcf and has_imputed_bed)
+                        else (job_root / "qc" / "plink_qc")
+                    ).resolve()
+                ),
+                "imputation_skipped": not has_imputed_vcf,
             },
         ),
         (

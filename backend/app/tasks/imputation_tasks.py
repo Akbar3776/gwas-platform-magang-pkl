@@ -384,7 +384,11 @@ def run_imputation(
             if not output_vcf.is_file():
                 raise RuntimeError(f"Beagle selesai tetapi output tidak ditemukan: {output_vcf}")
 
-            # Konversi balik ke PLINK biner bila plink2 tersedia
+            # Konversi balik ke PLINK biner sekaligus filter ulang MAF/geno pasca-imputasi
+            qc_cfg = (job.parameters or {}).get("qc") or ctx.get("qc_params") or {}
+            maf_val = qc_cfg.get("maf", 0.05) if isinstance(qc_cfg, dict) else 0.05
+            geno_val = qc_cfg.get("geno", 0.05) if isinstance(qc_cfg, dict) else 0.05
+
             plink2_bin = which_tool("plink2") or which_tool("plink")
             if plink2_bin:
                 conv_cmd = [
@@ -392,10 +396,16 @@ def run_imputation(
                     "--vcf", str(output_vcf),
                     "--double-id",
                     "--allow-extra-chr",
-                    "--make-bed",
-                    "--out", str(output_prefix),
                 ]
-                append_log(log_file, f"Konversi balik PLINK bed: {' '.join(conv_cmd)}")
+                if maf_val is not None:
+                    conv_cmd.extend(["--maf", str(maf_val)])
+                if geno_val is not None:
+                    conv_cmd.extend(["--geno", str(geno_val)])
+                conv_cmd.extend(["--make-bed", "--out", str(output_prefix)])
+                append_log(
+                    log_file,
+                    f"Konversi & QC ulang pasca-imputasi (maf={maf_val}, geno={geno_val}): {' '.join(conv_cmd)}",
+                )
                 run_cli_command(
                     conv_cmd,
                     cwd=workspace,

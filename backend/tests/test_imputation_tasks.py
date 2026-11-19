@@ -293,3 +293,149 @@ def test_imputation_success_with_single_marker_isolation(tmp_path):
             assert "rs_chr1_a" in all_content
             assert "rs_chr1_b" in all_content
             assert "scaffold10019" not in all_content
+
+
+def test_post_beagle_conversion_reapplies_maf_and_geno_filters(tmp_path):
+    import gzip
+    import uuid
+
+    job_id = str(uuid.uuid4())
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    qc_file = workspace / "qc.vcf.gz"
+    with gzip.open(qc_file, "wt", encoding="utf-8") as gz:
+        gz.write(
+            "##fileformat=VCFv4.2\n"
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n"
+            "1\t1000\trs1\tA\tG\t.\tPASS\t.\tGT\t0/1\t0/0\n"
+            "1\t2000\trs2\tT\tC\t.\tPASS\t.\tGT\t1/0\t1/1\n"
+        )
+
+    mock_db = MagicMock()
+    mock_job = MagicMock()
+    mock_job.work_dir = str(workspace)
+    mock_job.parameters = {
+        "imputation": {"mode": "reference_free"},
+        "qc": {"maf": 0.05, "geno": 0.1},
+    }
+    mock_db.get.return_value = mock_job
+
+    captured_cmds = []
+
+    def fake_run_cli(cmd, **kwargs):
+        captured_cmds.append(list(cmd))
+        if "--make-bed" in cmd:
+            out_prefix = cmd[cmd.index("--out") + 1]
+            for ext in (".bed", ".bim", ".fam"):
+                Path(f"{out_prefix}{ext}").write_bytes(b"bed")
+        elif any(str(arg).startswith("out=") for arg in cmd):
+            out_prefix = next(arg.split("out=")[1] for arg in cmd if str(arg).startswith("out="))
+            with gzip.open(Path(f"{out_prefix}.vcf.gz"), "wt", encoding="utf-8") as gz:
+                gz.write(
+                    "##fileformat=VCFv4.2\n"
+                    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n"
+                    "1\t1000\trs1\tA\tG\t.\tPASS\t.\tGT\t0|1\t0|0\n"
+                    "1\t2000\trs2\tT\tC\t.\tPASS\t.\tGT\t1|0\t1|1\n"
+                )
+
+    with (
+        patch("app.tasks.imputation_tasks.SessionLocal", return_value=mock_db),
+        patch("app.tasks.imputation_tasks.stage_dir", return_value=workspace),
+        patch("app.tasks.imputation_tasks.which_tool") as mock_tool,
+        patch("app.tasks.imputation_tasks.run_cli_command", side_effect=fake_run_cli),
+    ):
+        mock_tool.side_effect = lambda t: {
+            "java": "/custom/bin/java",
+            "beagle_jar": str(workspace / "beagle.jar"),
+            "plink2": "/usr/local/bin/plink2",
+            "plink": "/usr/local/bin/plink",
+        }.get(t)
+        (workspace / "beagle.jar").touch()
+
+        result = run_imputation(
+            {"status": "completed", "job_id": job_id, "qc_vcf_path": str(qc_file)},
+            job_id=job_id,
+            reference_vcf_path=None,
+            params={"mode": "reference_free"},
+        )
+
+    assert result["status"] == "completed"
+    plink_cmds = [c for c in captured_cmds if "--make-bed" in c]
+    assert len(plink_cmds) == 1
+    plink_cmd = plink_cmds[0]
+    assert "--maf" in plink_cmd and plink_cmd[plink_cmd.index("--maf") + 1] == "0.05"
+    assert "--geno" in plink_cmd and plink_cmd[plink_cmd.index("--geno") + 1] == "0.1"
+
+
+def test_resume_from_structure_uses_imputed_bfile_and_multilocus_engine_reads_it(tmp_path, monkeypatch):
+    from app.core.config import settings
+    from app.schemas.pipeline import QCPipelineConfig
+    from app.services.qc_service import run_python_fallback_qc
+    from app.tasks import multilocus_tasks, pipeline_orchestrator
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = "job-a27-resume"
+    job_root = tmp_path / "jobs" / job_id
+
+    (job_root / "inspection").mkdir(parents=True)
+    (job_root / "inspection" / "pheno_plink.txt").write_text(
+        "FID\tIID\tPHENO1\n"
+        "S1\tS1\t10.0\n"
+        "S2\tS2\t12.0\n"
+        "S3\tS3\t14.0\n"
+        "S4\tS4\t16.0\n"
+        "S5\tS5\t18.0\n",
+        encoding="utf-8",
+    )
+    (job_root / "inspection" / "keep_ids.txt").write_text("S1\tS1\n", encoding="utf-8")
+    (job_root / "normalization").mkdir(parents=True)
+    (job_root / "normalization" / "normalized.vcf.gz").write_bytes(b"gz")
+
+    qc_dir = job_root / "qc"
+    qc_dir.mkdir(parents=True)
+    qc_vcf = qc_dir / "src_qc.vcf"
+    qc_vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\tS3\tS4\tS5\n"
+        "1\t100\trs_qc_only\tA\tG\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1\t0/0\t0/1\n"
+        "1\t200\trs_qc_two\tC\tT\t.\tPASS\t.\tGT\t0/1\t1/1\t1/0\t0/0\t0/1\n",
+        encoding="utf-8",
+    )
+    run_python_fallback_qc(str(qc_vcf), qc_dir / "plink_qc", QCPipelineConfig(maf=0.01, geno=0.5, mind=0.5))
+
+    imp_dir = job_root / "imputation"
+    imp_dir.mkdir(parents=True)
+    imp_vcf_src = imp_dir / "src_imp.vcf"
+    imp_vcf_src.write_text(
+        "##fileformat=VCFv4.2\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\tS3\tS4\tS5\n"
+        "1\t300\trs_imputed_snps\tG\tA\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1\t0/1\t1/1\n"
+        "1\t400\trs_imputed_two\tT\tA\t.\tPASS\t.\tGT\t1/1\t0/1\t0/0\t0/1\t0/0\n",
+        encoding="utf-8",
+    )
+    run_python_fallback_qc(str(imp_vcf_src), imp_dir / "imputed", QCPipelineConfig(maf=0.01, geno=0.5, mind=0.5))
+    (imp_dir / "imputed.vcf.gz").write_bytes(b"gz")
+
+    _, start_stage, resume_ctx = pipeline_orchestrator.discover_resume_state(
+        job_id=job_id,
+        dataset_id="ds-a27",
+        job_parameters={},
+        failed_step="structure",
+    )
+    assert start_stage == "structure"
+    assert resume_ctx.get("genotype_bfile_prefix") == str((imp_dir / "imputed").resolve())
+
+    ml_dir = job_root / "multilocus"
+    ml_dir.mkdir(parents=True)
+    multilocus_tasks._run_python_multilocus_engine(
+        job_id=job_id,
+        dataset_id="ds-a27",
+        methods=["FarmCPU"],
+        workspace=ml_dir,
+        log_file=ml_dir / "multilocus.log",
+        ctx=resume_ctx,
+    )
+    farmcpu_tsv = (ml_dir / "farmcpu_results.tsv").read_text(encoding="utf-8")
+    assert "\t300\t" in farmcpu_tsv and "\t400\t" in farmcpu_tsv
+    assert "\t100\t" not in farmcpu_tsv and "\t200\t" not in farmcpu_tsv
