@@ -17,6 +17,12 @@ export function HistogramChart({
 
   const plotWidth = width - MARGIN.left - MARGIN.right;
   const plotHeight = height - MARGIN.top - MARGIN.bottom;
+  const totalSamples = counts.reduce((acc, c) => acc + Number(c || 0), 0);
+  const rangeLabel =
+    edges.length >= 2
+      ? ` dari ${Number(edges[0]).toFixed(2)} hingga ${Number(edges[edges.length - 1]).toFixed(2)}`
+      : "";
+  const histAriaLabel = `${title}: ${totalSamples} sampel pada ${counts.length} bin${rangeLabel}`;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -137,6 +143,8 @@ export function HistogramChart({
     <div style={{ position: "relative", width, height }}>
       <canvas
         ref={canvasRef}
+        role="img"
+        aria-label={histAriaLabel}
         onMouseMove={handleMouseMove}
         onMouseLeave={() => setHoveredBin(null)}
         style={{ borderRadius: 8, border: "1px solid #e2e8f0" }}

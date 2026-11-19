@@ -14,6 +14,14 @@ export function ScreePlot({
 
   const plotWidth = width - MARGIN.left - MARGIN.right;
   const plotHeight = height - MARGIN.top - MARGIN.bottom;
+  const pcCount = Math.min(pve.length, 10);
+  const pc1Pct = pve[0] !== undefined ? (pve[0] * 100).toFixed(1) : null;
+  const pc2Pct = pve[1] !== undefined ? (pve[1] * 100).toFixed(1) : null;
+  const lastCumVal = pcCount > 0 ? cumulativePve[pcCount - 1] : undefined;
+  const cumPct = lastCumVal !== undefined ? (lastCumVal * 100).toFixed(1) : null;
+  const screeAriaLabel = `${title}: ${pcCount} komponen${
+    pc1Pct ? `, PC1 ${pc1Pct}%` : ""
+  }${pc2Pct ? `, PC2 ${pc2Pct}%` : ""}${cumPct ? `, kumulatif ${cumPct}%` : ""}`;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -131,7 +139,12 @@ export function ScreePlot({
 
   return (
     <div style={{ position: "relative", width, height }}>
-      <canvas ref={canvasRef} style={{ borderRadius: 8, border: "1px solid #e2e8f0" }} />
+      <canvas
+        ref={canvasRef}
+        role="img"
+        aria-label={screeAriaLabel}
+        style={{ borderRadius: 8, border: "1px solid #e2e8f0" }}
+      />
     </div>
   );
 }

@@ -35,6 +35,14 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
     return (filtered.length > 0 ? filtered : allTerms).slice(0, 14);
   }, [allTerms, ontologyFilter]);
 
+  const topGoTerm = displayedTerms[0];
+  const topGoLabel = topGoTerm
+    ? `, istilah teratas: ${topGoTerm.description || topGoTerm.term_name || topGoTerm.go_id}`
+    : "";
+  const goCanvasAriaLabel = `Dotplot GO Enrichment (${
+    ontologyFilter === "ALL" ? "Semua Domain" : ontologyFilter
+  }): ${displayedTerms.length} istilah untuk ${goData?.trait || "gen kandidat"}${topGoLabel}`;
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || displayedTerms.length === 0) return;
@@ -326,6 +334,8 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
         <div style={{ overflowX: "auto", border: "1px solid #f1f5f9", borderRadius: 6, background: "#fff" }}>
           <canvas
             ref={canvasRef}
+            role="img"
+            aria-label={goCanvasAriaLabel}
             width={880}
             height={Math.max(320, displayedTerms.length * 30 + 100)}
             style={{ display: "block", maxWidth: "100%", height: "auto" }}

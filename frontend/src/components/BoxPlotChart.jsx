@@ -32,6 +32,7 @@ export function BoxPlotChart({
 
   const plotWidth = width - MARGIN.left - MARGIN.right;
   const plotHeight = height - MARGIN.top - MARGIN.bottom;
+  const boxAriaLabel = `${title}: median ${safeMedian.toFixed(2)}, IQR ${safeQ1.toFixed(2)} hingga ${safeQ3.toFixed(2)}, rentang ${safeWhiskerLow.toFixed(2)}–${safeWhiskerHigh.toFixed(2)}, ${safeOutliers.length} outlier`;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -194,6 +195,8 @@ export function BoxPlotChart({
     <div style={{ position: "relative", width, height }}>
       <canvas
         ref={canvasRef}
+        role="img"
+        aria-label={boxAriaLabel}
         onMouseMove={handleMouseMove}
         onMouseLeave={() => setHoveredOutlier(null)}
         style={{ borderRadius: 8, border: "1px solid #e2e8f0" }}
