@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
 import { Pagination } from "./Pagination";
 import { toCsv } from "../utils/csv";
+import { saveBlob } from "../utils/download";
 
 function interpolateColor(t) {
   // Gradien p.adjust: t=0 (p.adjust paling kecil/signifikan) -> merah (#e25856), t=1 -> biru (#2c7bb6)
@@ -203,14 +204,7 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
       t.gene_id_str || (t.genes || []).join("/"),
     ]);
     const blob = new Blob([toCsv(headers, rows)], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `Hasil_GO_Enrichment_${jobId || "gwas"}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    saveBlob(blob, `Hasil_GO_Enrichment_${jobId || "gwas"}.csv`);
   };
 
   const handleDownloadGoTableCsv = () => {
@@ -225,14 +219,7 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
       r.source_url || "",
     ]);
     const blob = new Blob([toCsv(headers, rows)], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `Tabel_GO_Kandidat_${jobId || "gwas"}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    saveBlob(blob, `Tabel_GO_Kandidat_${jobId || "gwas"}.csv`);
   };
 
   const isSynthetic = Boolean(

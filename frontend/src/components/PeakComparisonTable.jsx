@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { Pagination } from "./Pagination";
 import { toCsv } from "../utils/csv";
+import { saveBlob } from "../utils/download";
 
 function formatP(val) {
   if (val === null || val === undefined || val === "") return "-";
@@ -181,14 +182,10 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
     const blob = new Blob([toCsv(headers, csvLines)], {
       type: "text/csv;charset=utf-8",
     });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${activeModelFilter === "ALL" ? "MultiLocus" : activeModelFilter}_Significant_SNPs_PVE.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    saveBlob(
+      blob,
+      `${activeModelFilter === "ALL" ? "MultiLocus" : activeModelFilter}_Significant_SNPs_PVE.csv`
+    );
   };
 
   const handleDownloadPeakSummaryCsv = () => {
@@ -209,14 +206,7 @@ export function PeakComparisonTable({ comparison, multilocusSummary }) {
     const blob = new Blob([toCsv(headers, csvLines)], {
       type: "text/csv;charset=utf-8",
     });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "Ringkasan_Puncak_GWAS.csv";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    saveBlob(blob, "Ringkasan_Puncak_GWAS.csv");
   };
 
   return (

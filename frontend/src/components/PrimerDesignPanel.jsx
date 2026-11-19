@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { Pagination } from "./Pagination";
 import { toCsv } from "../utils/csv";
+import { saveBlob } from "../utils/download";
 
 function renderHighlightedFlanking(seqStr) {
   if (!seqStr) return "-";
@@ -62,14 +63,7 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
       (m) => `### ${m.rank}. ${m.marker_id}\n\n> ${m.flanking_sequence}\n\n\`\`\`\n${m.primer3_output}\n\`\`\`\n`
     );
     const blob = new Blob([blocks.join("\n")], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `Flanking_Primer3_${jobId || "gwas"}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    saveBlob(blob, `Flanking_Primer3_${jobId || "gwas"}.txt`);
   };
 
   const handleDownloadPrimerCsv = () => {
@@ -146,14 +140,7 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
       }
     }
     const blob = new Blob([toCsv(headers, rows)], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `Desain_Primer_Kandidat_${jobId || "gwas"}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    saveBlob(blob, `Desain_Primer_Kandidat_${jobId || "gwas"}.csv`);
   };
 
   const isSynthetic = Boolean(

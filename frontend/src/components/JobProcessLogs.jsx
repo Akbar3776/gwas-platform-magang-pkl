@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchJobLogs } from "../api/jobsApi";
+import { saveBlob } from "../utils/download";
 
 const DEFAULT_STEPS = [
   { step: "inspection", label: "Inspeksi Fenotipe & Sampel", tool: "Python / Stats", status: "pending", line_count: 0, log_text: "" },
@@ -106,14 +107,7 @@ export function JobProcessLogs({
   const handleDownloadLog = () => {
     const content = buildCombinedLogText();
     const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `gwas_job_${jobId || "pipeline"}_${activeTab}_logs.txt`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.URL.revokeObjectURL(url);
+    saveBlob(blob, `gwas_job_${jobId || "pipeline"}_${activeTab}_logs.txt`);
   };
 
   return (

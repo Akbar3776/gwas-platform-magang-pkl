@@ -107,6 +107,8 @@ export function AuthProvider({ children }) {
   const logout = useCallback(async () => {
     try {
       await apiFetch("/auth/logout", { method: "POST" });
+    } catch {
+      // Pastikan sesi lokal tetap dibersihkan meski server logout gagal/offline
     } finally {
       setAccessToken(null);
       setUser(null);

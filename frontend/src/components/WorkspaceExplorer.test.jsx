@@ -2,7 +2,7 @@ import "@testing-library/jest-dom";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
-import { fetchUploadedDatasets, fetchUserJobs } from "../api/jobsApi";
+import { downloadUploadedDataset, fetchUploadedDatasets, fetchUserJobs } from "../api/jobsApi";
 import { WorkspaceExplorer } from "./WorkspaceExplorer";
 
 jest.mock("../api/jobsApi", () => ({
@@ -101,5 +101,40 @@ describe("WorkspaceExplorer error & loading state resilience (A33)", () => {
 
     // Data lama tetap bertahan meski kedua endpoint gagal pada refresh
     expect(screen.getAllByText("rice_panel.vcf.gz")).toHaveLength(2);
+  });
+
+  test("menampilkan pesan alert saat unduh dataset workspace gagal tanpa unhandled rejection (A34)", async () => {
+    fetchUploadedDatasets.mockResolvedValueOnce([
+      {
+        file_id: "ds-dl",
+        original_filename: "dl_test.vcf.gz",
+        file_size_bytes: 512,
+        upload_status: "uploaded",
+        file_exists: true,
+        uploaded_at: "2026-11-19T10:00:00Z",
+      },
+    ]);
+    fetchUserJobs.mockResolvedValueOnce([]);
+    downloadUploadedDataset.mockRejectedValueOnce(
+      new Error("Dataset sumber sudah tidak ditemukan di disk.")
+    );
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <WorkspaceExplorer />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("dl_test.vcf.gz")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Unduh" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /Dataset sumber sudah tidak ditemukan di disk/i
+      );
+    });
   });
 });

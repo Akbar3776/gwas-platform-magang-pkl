@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
-import { fetchJobFiles } from "../api/jobsApi";
+import { downloadJobFile, fetchJobFiles } from "../api/jobsApi";
 import { JobFilesPanel } from "./JobFilesPanel";
 
 jest.mock("../api/jobsApi", () => ({
@@ -91,5 +91,34 @@ describe("JobFilesPanel polling lifecycle and stale response guard (A14)", () =>
 
     expect(screen.getByText("new_output.tsv")).toBeInTheDocument();
     expect(screen.queryByText("stale_old.log")).not.toBeInTheDocument();
+  });
+
+  test("menampilkan pesan alert saat unduh file gagal (respons Blob error JSON) tanpa unhandled rejection (A34)", async () => {
+    fetchJobFiles.mockResolvedValueOnce({
+      job_id: "job-1",
+      overall_status: "completed",
+      files: [{ file_key: "k2", filename: "assoc.tsv", stage: "gwas", size_bytes: 450 }],
+    });
+    const errorBlob = new Blob(
+      [JSON.stringify({ detail: "File hasil telah kadaluarsa di storage." })],
+      { type: "application/json" }
+    );
+    downloadJobFile.mockRejectedValueOnce({
+      response: { status: 404, data: errorBlob },
+    });
+
+    render(<JobFilesPanel jobId="job-1" isRunning={false} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("assoc.tsv")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Unduh" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /File hasil telah kadaluarsa di storage/i
+      );
+    });
   });
 });

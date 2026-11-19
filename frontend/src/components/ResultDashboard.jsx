@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { apiFetch } from "../api/apiClient";
+import { saveBlob } from "../utils/download";
 
 /**
  * ResultDashboard.jsx
@@ -133,14 +134,7 @@ async function triggerBrowserDownload(path, fallbackFilename, signal) {
   const filename = match ? match[1] : fallbackFilename;
 
   const blob = await response.blob();
-  const objectUrl = window.URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = objectUrl;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.URL.revokeObjectURL(objectUrl);
+  saveBlob(blob, filename);
 }
 
 export default function ResultDashboard({ jobId }) {

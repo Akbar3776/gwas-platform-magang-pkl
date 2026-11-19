@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import { GoEnrichmentPanel } from "./GoEnrichmentPanel";
 import { Pagination } from "./Pagination";
 import { toCsv } from "../utils/csv";
+import { saveBlob } from "../utils/download";
 
 function getSnpSource(item) {
   const closestSrc = item?.closest_gene?.source;
@@ -94,14 +95,7 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
     if (!uniqueGenes.length) return;
     const content = uniqueGenes.join("\n") + "\n";
     const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `Daftar_Gen_Untuk_GO_${jobId || "gwas"}.txt`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    saveBlob(blob, `Daftar_Gen_Untuk_GO_${jobId || "gwas"}.txt`);
   };
 
   const handleDownloadCsv = () => {
@@ -148,14 +142,7 @@ export function CandidateGenesTable({ annotationData = null, goEnrichmentData = 
     });
     const csvContent = toCsv(headers, rowsCsv);
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `Ekstraksi_Gen_Kandidat_${jobId || "gwas"}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    saveBlob(blob, `Ekstraksi_Gen_Kandidat_${jobId || "gwas"}.csv`);
   };
 
   if (!annotationData || annotationData.status === "skipped" || (!mappings.length && !annotationData.total_lead_snps)) {

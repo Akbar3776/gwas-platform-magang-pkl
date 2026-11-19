@@ -1,4 +1,5 @@
 import { httpClient } from "./httpClient";
+import { extractDownloadErrorMessage, saveBlob } from "../utils/download";
 
 /**
  * Men-trigger job Quality Control (PLINK) untuk sebuah dataset yang sudah
@@ -67,17 +68,15 @@ export async function previewUploadedDataset(fileId) {
  * @param {string} filename
  */
 export async function downloadUploadedDataset(fileId, filename) {
-  const response = await httpClient.get(`/upload/${fileId}/download`, {
-    responseType: "blob",
-  });
-  const blobUrl = window.URL.createObjectURL(response.data);
-  const a = document.createElement("a");
-  a.href = blobUrl;
-  a.download = filename || `dataset_${fileId}.vcf`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.URL.revokeObjectURL(blobUrl);
+  try {
+    const response = await httpClient.get(`/upload/${fileId}/download`, {
+      responseType: "blob",
+    });
+    saveBlob(response.data, filename || `dataset_${fileId}.vcf`);
+  } catch (err) {
+    const message = await extractDownloadErrorMessage(err, "Gagal mengunduh file dataset.");
+    throw new Error(message);
+  }
 }
 
 /**
@@ -156,18 +155,16 @@ export async function previewJobFile(jobId, fileKey) {
  * @param {string} filename
  */
 export async function downloadJobFile(jobId, fileKey, filename) {
-  const response = await httpClient.get(`/jobs/${jobId}/files/content`, {
-    params: { file_key: fileKey, preview: false },
-    responseType: "blob",
-  });
-  const blobUrl = window.URL.createObjectURL(response.data);
-  const a = document.createElement("a");
-  a.href = blobUrl;
-  a.download = filename || "job_file";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.URL.revokeObjectURL(blobUrl);
+  try {
+    const response = await httpClient.get(`/jobs/${jobId}/files/content`, {
+      params: { file_key: fileKey, preview: false },
+      responseType: "blob",
+    });
+    saveBlob(response.data, filename || "job_file");
+  } catch (err) {
+    const message = await extractDownloadErrorMessage(err, "Gagal mengunduh file job.");
+    throw new Error(message);
+  }
 }
 
 /**
@@ -259,17 +256,15 @@ export async function fetchInspection(fileId, { trait, idColumn = "IID", fidColu
  * Unduh file teks hasil rekonsiliasi ID (keep_ids.txt, dsb).
  */
 export async function downloadInspectionFile(fileId, filename) {
-  const response = await httpClient.get(`/upload/${fileId}/inspection/files/${filename}`, {
-    responseType: "blob",
-  });
-  const blobUrl = window.URL.createObjectURL(response.data);
-  const a = document.createElement("a");
-  a.href = blobUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.URL.revokeObjectURL(blobUrl);
+  try {
+    const response = await httpClient.get(`/upload/${fileId}/inspection/files/${filename}`, {
+      responseType: "blob",
+    });
+    saveBlob(response.data, filename);
+  } catch (err) {
+    const message = await extractDownloadErrorMessage(err, "Gagal mengunduh file inspeksi.");
+    throw new Error(message);
+  }
 }
 
 /**

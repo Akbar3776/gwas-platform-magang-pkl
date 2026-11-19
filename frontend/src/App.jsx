@@ -15,6 +15,9 @@ function ResultsPageRoute() {
 function AppLayout({ children }) {
   const { status, user, logout } = useAuth()
   const isAuthenticated = status === 'authenticated'
+  const handleLogout = () => {
+    Promise.resolve(logout()).catch(() => {})
+  }
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -22,7 +25,7 @@ function AppLayout({ children }) {
         {isAuthenticated && (
           <nav>
             <span>{user?.full_name || user?.email}</span>
-            <button onClick={logout}>Keluar</button>
+            <button type="button" onClick={handleLogout}>Keluar</button>
           </nav>
         )}
       </header>

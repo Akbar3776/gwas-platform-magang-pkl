@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { downloadJobFile, fetchJobFiles, previewJobFile } from "../api/jobsApi";
+import { extractDownloadErrorMessage } from "../utils/download";
 
 const TERMINAL_STATUSES = new Set(["COMPLETED", "SUCCESS", "FAILED", "CANCELLED"]);
 
@@ -48,6 +49,7 @@ export function JobFilesPanel({ jobId, isRunning = false }) {
   const [previewText, setPreviewText] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [downloadingKey, setDownloadingKey] = useState(null);
+  const [downloadError, setDownloadError] = useState(null);
 
   const activeJobIdRef = useRef(jobId);
   const requestSeqRef = useRef(0);
@@ -59,6 +61,7 @@ export function JobFilesPanel({ jobId, isRunning = false }) {
     setServerTerminal(false);
     setPreviewItem(null);
     setPreviewText("");
+    setDownloadError(null);
   }, [jobId]);
 
   useEffect(() => {
@@ -164,9 +167,16 @@ export function JobFilesPanel({ jobId, isRunning = false }) {
   };
 
   const handleDownload = async (item) => {
+    setDownloadError(null);
     setDownloadingKey(item.file_key);
     try {
       await downloadJobFile(jobId, item.file_key, item.filename);
+    } catch (err) {
+      const message = await extractDownloadErrorMessage(
+        err,
+        `Gagal mengunduh file ${item.filename}.`
+      );
+      setDownloadError(message);
     } finally {
       setDownloadingKey(null);
     }
@@ -281,6 +291,22 @@ export function JobFilesPanel({ jobId, isRunning = false }) {
       </div>
 
       {/* File Table */}
+      {downloadError && (
+        <div
+          role="alert"
+          style={{
+            margin: "8px 12px 0",
+            padding: "8px 12px",
+            borderRadius: 8,
+            background: "#fef2f2",
+            color: "#991b1b",
+            border: "1px solid #fecaca",
+            fontSize: 12,
+          }}
+        >
+          {downloadError}
+        </div>
+      )}
       {filteredFiles.length === 0 ? (
         <div style={{ padding: 16, fontSize: 12, color: "#64748b", textAlign: "center" }}>
           Belum ada file pada kategori ini.

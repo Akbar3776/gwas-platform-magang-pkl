@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { formatApiError } from "../api/formatApiError";
+import { extractDownloadErrorMessage } from "../utils/download";
 import {
   cancelJob,
   deleteJob,
@@ -185,6 +186,19 @@ export function WorkspaceExplorer({
       );
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const handleDownloadDataset = async (ds) => {
+    setDeleteError(null);
+    try {
+      await downloadUploadedDataset(ds.file_id, ds.original_filename);
+    } catch (err) {
+      const message = await extractDownloadErrorMessage(
+        err,
+        `Gagal mengunduh file ${ds.original_filename}.`
+      );
+      setDeleteError(message);
     }
   };
 
@@ -526,12 +540,7 @@ export function WorkspaceExplorer({
                             </button>
                             <button
                               type="button"
-                              onClick={() =>
-                                downloadUploadedDataset(
-                                  ds.file_id,
-                                  ds.original_filename
-                                )
-                              }
+                              onClick={() => handleDownloadDataset(ds)}
                               style={{
                                 marginRight: 6,
                                 padding: "4px 8px",
