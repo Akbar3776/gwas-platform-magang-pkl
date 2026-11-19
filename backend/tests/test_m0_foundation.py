@@ -58,3 +58,37 @@ def test_fixtures_generation():
     assert vcf.stat().st_size > 1000
     assert pheno.stat().st_size > 500
     assert gff.stat().st_size > 300
+
+
+def test_capabilities_uses_which_tool_tool_names_and_multilocus_availability(monkeypatch):
+    from app.api.routes import capabilities as cap_routes
+
+    fake_tools = {
+        "plink2": "/usr/local/bin/plink2",
+        "plink": "/usr/local/bin/plink",
+        "gemma": "/usr/local/bin/gemma",
+        "bcftools": "/usr/bin/bcftools",
+        "Rscript": None,
+        "beagle_jar": None,
+        "java": None,
+    }
+    monkeypatch.setattr(cap_routes, "which_tool", lambda name, *a, **kw: fake_tools.get(name))
+    monkeypatch.delenv("ALLOW_PYTHON_MULTILOCUS", raising=False)
+
+    caps = cap_routes.get_pipeline_capabilities()
+    assert caps["plink2"] is True
+    assert caps["plink"] is True
+    assert caps["gemma"] is True
+    assert caps["bcftools"] is True
+    assert caps["rscript"] is False
+    assert caps["beagle"] is False
+    assert caps["multilocus_available"] is True
+
+    monkeypatch.setenv("ALLOW_PYTHON_MULTILOCUS", "false")
+    caps_no_py = cap_routes.get_pipeline_capabilities()
+    assert caps_no_py["multilocus_available"] is False
+
+    fake_tools["Rscript"] = "/usr/bin/Rscript"
+    caps_with_r = cap_routes.get_pipeline_capabilities()
+    assert caps_with_r["rscript"] is True
+    assert caps_with_r["multilocus_available"] is True

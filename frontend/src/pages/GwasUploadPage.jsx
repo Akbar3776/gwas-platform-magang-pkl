@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { formatApiError } from "../api/formatApiError";
-import { fetchReferencePanels, triggerFullPipeline } from "../api/jobsApi";
+import { fetchCapabilities, fetchReferencePanels, triggerFullPipeline } from "../api/jobsApi";
 import { JobFilesPanel } from "../components/JobFilesPanel";
 import { JobStatusTracker } from "../components/JobStatusTracker";
 import { VcfUploader } from "../components/VcfUploader";
@@ -81,6 +81,7 @@ export function GwasUploadPage() {
   const [refreshCount, setRefreshCount] = useState(0);
   const [form, setForm] = useState(INITIAL_FORM);
   const [referencePanels, setReferencePanels] = useState([]);
+  const [capabilities, setCapabilities] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -108,6 +109,17 @@ export function GwasUploadPage() {
       .catch(() => {
         if (active) setReferencePanels([]);
       });
+    if (typeof fetchCapabilities === "function") {
+      fetchCapabilities()
+        .then((caps) => {
+          if (active && caps && typeof caps === "object") {
+            setCapabilities(caps);
+          }
+        })
+        .catch(() => {
+          if (active) setCapabilities(null);
+        });
+    }
     return () => {
       active = false;
     };
@@ -583,6 +595,11 @@ export function GwasUploadPage() {
               <legend style={{ fontWeight: 800, padding: "0 6px", color: "#1e293b" }}>
                 B. Imputasi Genotipe (Beagle 5)
               </legend>
+              {capabilities?.beagle === false && (
+                <div style={{ fontSize: 12, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 6, padding: "8px 10px" }}>
+                  Imputasi Beagle tidak tersedia karena Java atau <code>beagle.jar</code> belum terpasang di server.
+                </div>
+              )}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14 }}>
                 <Field label="Strategi Imputasi" hint="Gunakan 'none' bila tanpa panel referensi teruji">
                   <select
@@ -592,8 +609,16 @@ export function GwasUploadPage() {
                     style={inputStyle}
                   >
                     <option value="none">Lewati Imputasi (Gunakan Genotipe Asli)</option>
-                    <option value="reference">Dengan Panel Referensi (Reference-guided)</option>
-                    <option value="reference_free">Tanpa Referensi (Reference-free Beagle)</option>
+                    <option value="reference" disabled={capabilities?.beagle === false}>
+                      {capabilities?.beagle === false
+                        ? "Dengan Panel Referensi (Tidak tersedia: Beagle/Java tidak terpasang)"
+                        : "Dengan Panel Referensi (Reference-guided)"}
+                    </option>
+                    <option value="reference_free" disabled={capabilities?.beagle === false}>
+                      {capabilities?.beagle === false
+                        ? "Tanpa Referensi (Tidak tersedia: Beagle/Java tidak terpasang)"
+                        : "Tanpa Referensi (Reference-free Beagle)"}
+                    </option>
                   </select>
                 </Field>
                 {form.imputation_mode === "reference" && (
@@ -717,9 +742,21 @@ export function GwasUploadPage() {
                     <option value="auto">Auto (Rekomendasi Berdasarkan Struktur & Kinship)</option>
                     <option value="lmm">Linear Mixed Model (GEMMA Wald LMM)</option>
                     <option value="glm">Generalized Linear Model (PLINK2 Linear GLM)</option>
-                    <option value="farmcpu">FarmCPU (Fixed and Random Model Iterative)</option>
-                    <option value="blink">BLINK (Bayesian Information & LD Pruned Keyway)</option>
-                    <option value="mlmm">MLMM (Multiple Locus Mixed Model Stepwise)</option>
+                    <option value="farmcpu" disabled={capabilities?.multilocus_available === false}>
+                      {capabilities?.multilocus_available === false
+                        ? "FarmCPU (Tidak tersedia di server)"
+                        : "FarmCPU (Fixed and Random Model Iterative)"}
+                    </option>
+                    <option value="blink" disabled={capabilities?.multilocus_available === false}>
+                      {capabilities?.multilocus_available === false
+                        ? "BLINK (Tidak tersedia di server)"
+                        : "BLINK (Bayesian Information & LD Pruned Keyway)"}
+                    </option>
+                    <option value="mlmm" disabled={capabilities?.multilocus_available === false}>
+                      {capabilities?.multilocus_available === false
+                        ? "MLMM (Tidak tersedia di server)"
+                        : "MLMM (Multiple Locus Mixed Model Stepwise)"}
+                    </option>
                   </select>
                 </Field>
                 <Field label="Jumlah PC Kovariat" hint="Jumlah PC yang dimasukkan ke model">
@@ -736,17 +773,28 @@ export function GwasUploadPage() {
                 </Field>
               </div>
               <div style={{ display: "grid", gap: 8, marginTop: 4 }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#334155", cursor: "pointer" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: capabilities?.multilocus_available === false ? "#94a3b8" : "#334155", cursor: capabilities?.multilocus_available === false ? "not-allowed" : "pointer" }}>
                   <input
                     type="checkbox"
                     name="enable_multilocus"
-                    checked={form.enable_multilocus}
+                    checked={capabilities?.multilocus_available === false ? false : form.enable_multilocus}
+                    disabled={capabilities?.multilocus_available === false}
                     onChange={updateField}
                   />
                   <span style={{ fontWeight: 600 }}>
                     Jalankan juga Multi-Locus GWAS (FarmCPU, BLINK & MLMM)
                   </span>
                 </label>
+                {capabilities?.multilocus_available === false && (
+                  <div style={{ fontSize: 12, color: "#92400e", marginLeft: 24 }}>
+                    Multi-Locus GWAS tidak tersedia pada konfigurasi server saat ini.
+                  </div>
+                )}
+                {capabilities?.multilocus_available && capabilities?.rscript === false && (
+                  <div style={{ fontSize: 11, color: "#475569", marginLeft: 24 }}>
+                    Rscript/GAPIT tidak terpasang; Multi-Locus berjalan memakai engine Python Native.
+                  </div>
+                )}
                 {form.enable_multilocus && (
                   <div style={{ display: "flex", gap: 16, marginLeft: 24, flexWrap: "wrap", fontSize: 12, color: "#475569" }}>
                     {["FarmCPU", "BLINK", "MLMM"].map((m) => {
