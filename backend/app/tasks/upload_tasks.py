@@ -11,12 +11,18 @@ sehingga session database dibuat manual dari `SessionLocal` dan WAJIB ditutup
 di blok `finally`.
 """
 
+import shutil
+
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import Dataset, UploadStatus
 from app.services import upload_service
 from app.tasks.celery_app import celery_app, get_task_logger
 
 logger = get_task_logger(__name__)
+
+
+class ChecksumMismatchError(ValueError):
+    """Dilempar saat checksum SHA-256 berkas rakitan tidak cocok dengan kiriman klien."""
 
 
 @celery_app.task(
@@ -49,16 +55,19 @@ def assemble_dataset_task(self, dataset_id: str, total_chunks: int, expected_sha
             )
 
             checksum = upload_service.compute_sha256(final_path)
-            if expected_sha256 and checksum.lower() != expected_sha256.lower():
+            if expected_sha256 and checksum.lower() != expected_sha256.strip().lower():
                 final_path.unlink(missing_ok=True)
-                raise ValueError(
-                    f"Checksum tidak cocok: expected={expected_sha256}, actual={checksum}"
+                raise ChecksumMismatchError(
+                    f"Checksum tidak cocok: expected={expected_sha256.strip().lower()}, actual={checksum}"
                 )
 
             # Ini adalah status "completed" yang dimaksud pada requirement —
             # model `Dataset` sudah mendefinisikan nilai ini sebagai UPLOADED
             # (lihat app/db/models.py), menandakan file fisik sudah utuh dan
             # tersimpan permanen, siap masuk tahap validasi/normalisasi berikutnya.
+            meta = dict(dataset.extra_metadata or {})
+            meta.pop("upload_error", None)
+            dataset.extra_metadata = meta
             dataset.storage_path = str(final_path)
             dataset.file_size_bytes = total_size
             dataset.checksum_sha256 = checksum
@@ -77,10 +86,17 @@ def assemble_dataset_task(self, dataset_id: str, total_chunks: int, expected_sha
                 "checksum_sha256": checksum,
             }
 
-        except FileNotFoundError as exc:
-            # Chunk hilang / upload tidak lengkap — bukan error transient,
-            # tidak perlu di-retry otomatis, cukup tandai FAILED.
+        except (FileNotFoundError, ChecksumMismatchError) as exc:
+            # Chunk hilang atau checksum tidak cocok — bukan error transient, jangan retry.
             logger.warning("Assembly gagal untuk dataset %s: %s", dataset_id, exc)
+            try:
+                shutil.rmtree(upload_service.get_staging_dir(str(dataset.id)), ignore_errors=True)
+            except Exception:
+                pass
+            meta = dict(dataset.extra_metadata or {})
+            meta["upload_error"] = str(exc)
+            dataset.extra_metadata = meta
+            dataset.storage_path = ""
             dataset.upload_status = UploadStatus.FAILED
             db.commit()
             return {"status": "error", "reason": str(exc)}

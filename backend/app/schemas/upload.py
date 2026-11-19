@@ -57,3 +57,4 @@ class UploadStatusResponse(BaseModel):
     received_chunk_indices: list[int]
     storage_path: str | None = None
     file_size_bytes: int | None = None
+    error_message: str | None = None

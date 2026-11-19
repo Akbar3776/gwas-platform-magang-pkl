@@ -1,3 +1,5 @@
+import crypto from "crypto";
+import { TextEncoder } from "util";
 import "@testing-library/jest-dom";
 import { act, fireEvent, render, renderHook, waitFor } from "@testing-library/react";
 import React from "react";
@@ -113,5 +115,63 @@ describe("useChunkUpload cancellation, concurrency guard, and unmount safety (A1
     });
 
     expect(onDatasetReady).not.toHaveBeenCalled();
+  });
+
+  test("sends expected_sha256 in /upload/finalize without calling whole-file arrayBuffer (A26)", async () => {
+    let capturedFinalizeForm = null;
+    httpClient.post.mockImplementation((url, body) => {
+      if (url === "/upload/init") {
+        return Promise.resolve({ data: { file_id: "ds-sha" } });
+      }
+      if (url === "/upload/chunk") {
+        return Promise.resolve({ data: { is_complete: true } });
+      }
+      if (url === "/upload/finalize") {
+        capturedFinalizeForm = body;
+        return Promise.resolve({ data: { upload_status: "VALIDATING" } });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    httpClient.get.mockResolvedValue({ data: { upload_status: "UPLOADED" } });
+
+    const textPayload = "##fileformat=VCFv4.2\n#CHROM\tPOS\n1\t1000\trs1\tA\tG\n";
+    const expectedDigest = crypto
+      .createHash("sha256")
+      .update(new TextEncoder().encode(textPayload))
+      .digest("hex");
+    const file = new File([textPayload], "cohort.vcf", { type: "text/plain" });
+    file.arrayBuffer = jest.fn(() => Promise.reject(new Error("must stream slices only")));
+
+    const { result } = renderHook(() => useChunkUpload());
+    let uploadedId;
+    await act(async () => {
+      uploadedId = await result.current.startUpload(file);
+    });
+
+    expect(uploadedId).toBe("ds-sha");
+    expect(file.arrayBuffer).not.toHaveBeenCalled();
+    expect(capturedFinalizeForm).toBeInstanceOf(FormData);
+    expect(capturedFinalizeForm.get("expected_sha256")).toBe(expectedDigest);
+  });
+
+  test("surfaces server checksum mismatch error when upload status returns FAILED (A26)", async () => {
+    httpClient.post.mockImplementation((url) => {
+      if (url === "/upload/init") {
+        return Promise.resolve({ data: { file_id: "ds-fail" } });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    httpClient.get.mockResolvedValue({
+      data: { upload_status: "FAILED", error_message: "Checksum tidak cocok" },
+    });
+
+    const file = new File(["abc"], "bad.vcf", { type: "text/plain" });
+    const { result } = renderHook(() => useChunkUpload());
+
+    await act(async () => {
+      await expect(result.current.startUpload(file)).rejects.toThrow("Checksum tidak cocok");
+    });
+    expect(result.current.stage).toBe(UPLOAD_STAGE.ERROR);
+    expect(result.current.errorMessage).toContain("Checksum tidak cocok");
   });
 });

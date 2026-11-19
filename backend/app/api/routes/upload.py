@@ -183,6 +183,15 @@ def finalize_upload(
     if dataset.upload_status != UploadStatus.UPLOADING:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Upload sudah difinalisasi atau gagal")
 
+    normalized_sha256: str | None = None
+    if expected_sha256 is not None and expected_sha256.strip() != "":
+        normalized_sha256 = expected_sha256.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", normalized_sha256):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Format expected_sha256 tidak valid (harus 64 karakter heksadesimal).",
+            )
+
     received_indices = upload_service.get_received_chunk_indices(str(file_id))
     if len(received_indices) != total_chunks or received_indices != list(range(total_chunks)):
         raise HTTPException(
@@ -192,7 +201,7 @@ def finalize_upload(
 
     dataset.upload_status = UploadStatus.VALIDATING
     db.commit()
-    task = assemble_dataset_task.delay(str(file_id), total_chunks, expected_sha256)
+    task = assemble_dataset_task.delay(str(file_id), total_chunks, normalized_sha256)
     return FinalizeUploadResponse(
         file_id=file_id,
         upload_status=dataset.upload_status.value,
@@ -210,12 +219,16 @@ def get_upload_status(
     received_indices = []
     if dataset.upload_status == UploadStatus.UPLOADING:
         received_indices = upload_service.get_received_chunk_indices(str(file_id))
+    err_msg = None
+    if dataset.upload_status == UploadStatus.FAILED:
+        err_msg = (dataset.extra_metadata or {}).get("upload_error")
     return UploadStatusResponse(
         file_id=dataset.id,
         upload_status=dataset.upload_status.value,
         received_chunk_indices=received_indices,
         storage_path=dataset.storage_path or None,
         file_size_bytes=dataset.file_size_bytes,
+        error_message=err_msg,
     )
 
 

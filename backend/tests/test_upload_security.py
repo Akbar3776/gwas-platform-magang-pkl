@@ -275,3 +275,127 @@ def test_init_upload_enforces_max_upload_size_bytes(monkeypatch):
             user=owner,
         )
     assert exc.value.status_code == 413
+
+
+def test_finalize_upload_validates_and_forwards_expected_sha256(tmp_path, monkeypatch):
+    staging_root = tmp_path / "staging"
+    monkeypatch.setattr(upload_service, "_STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(upload_service, "_STAGING_ROOT", staging_root)
+    monkeypatch.setattr(upload_service, "_DATASETS_ROOT", tmp_path / "datasets")
+
+    owner = User(
+        id=uuid.uuid4(),
+        email="owner@example.com",
+        hashed_password="x",
+        role=UserRole.RESEARCHER,
+    )
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=owner.id,
+        original_filename="cohort.vcf",
+        storage_path="",
+        file_size_bytes=20,
+        upload_status=UploadStatus.UPLOADING,
+    )
+    staging_dir = upload_service.get_staging_dir(str(ds.id))
+    (staging_dir / "chunk_00000000.part").write_bytes(b"##fileformat=VCFv4.2\n")
+    fake_db = _FakeSession(ds)
+
+    called = {}
+
+    class _FakeTask:
+        id = "task-sha-1"
+
+    monkeypatch.setattr(
+        upload_routes.assemble_dataset_task,
+        "delay",
+        lambda fid, total, exp: called.update({"fid": fid, "total": total, "exp": exp}) or _FakeTask(),
+    )
+
+    with pytest.raises(HTTPException) as bad_exc:
+        upload_routes.finalize_upload(
+            file_id=ds.id,
+            total_chunks=1,
+            expected_sha256="not-a-valid-sha256",
+            db=fake_db,
+            user=owner,
+        )
+    assert bad_exc.value.status_code == 422
+
+    digest_upper = "A" * 64
+    res = upload_routes.finalize_upload(
+        file_id=ds.id,
+        total_chunks=1,
+        expected_sha256=digest_upper,
+        db=fake_db,
+        user=owner,
+    )
+    assert res.upload_status == UploadStatus.VALIDATING.value
+    assert called["exp"] == digest_upper.lower()
+
+
+def test_assemble_dataset_task_marks_failed_on_sha256_mismatch(tmp_path, monkeypatch):
+    import hashlib
+    from app.tasks import upload_tasks
+
+    staging_root = tmp_path / "staging"
+    datasets_root = tmp_path / "datasets"
+    monkeypatch.setattr(upload_service, "_STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(upload_service, "_STAGING_ROOT", staging_root)
+    monkeypatch.setattr(upload_service, "_DATASETS_ROOT", datasets_root)
+
+    payload = b"##fileformat=VCFv4.2\n#CHROM\tPOS\n"
+    expected_ok = hashlib.sha256(payload).hexdigest()
+
+    owner_id = uuid.uuid4()
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=owner_id,
+        original_filename="cohort.vcf",
+        storage_path="",
+        file_size_bytes=len(payload),
+        upload_status=UploadStatus.VALIDATING,
+    )
+
+    class _TaskDB(_FakeSession):
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    db = _TaskDB(ds)
+    monkeypatch.setattr(upload_tasks, "SessionLocal", lambda: db)
+    retry_calls = []
+    monkeypatch.setattr(
+        upload_tasks.assemble_dataset_task,
+        "retry",
+        lambda *a, **kw: retry_calls.append(kw),
+        raising=False,
+    )
+
+    staging_dir = upload_service.get_staging_dir(str(ds.id))
+    (staging_dir / "chunk_00000000.part").write_bytes(payload)
+
+    res = upload_tasks.assemble_dataset_task(
+        dataset_id=str(ds.id),
+        total_chunks=1,
+        expected_sha256="0" * 64,
+    )
+    assert res["status"] == "error"
+    assert retry_calls == []
+    assert ds.upload_status == UploadStatus.FAILED
+    assert not (datasets_root / str(ds.id) / "cohort.vcf").exists()
+    assert "Checksum" in (ds.extra_metadata or {}).get("upload_error", "")
+
+    ds.upload_status = UploadStatus.VALIDATING
+    (upload_service.get_staging_dir(str(ds.id)) / "chunk_00000000.part").write_bytes(payload)
+    res_ok = upload_tasks.assemble_dataset_task(
+        dataset_id=str(ds.id),
+        total_chunks=1,
+        expected_sha256=expected_ok,
+    )
+    assert res_ok["status"] == "success"
+    assert res_ok["checksum_sha256"] == expected_ok
+    assert ds.upload_status == UploadStatus.UPLOADED
+    assert ds.checksum_sha256 == expected_ok

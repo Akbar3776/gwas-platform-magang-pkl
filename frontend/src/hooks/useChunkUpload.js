@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { httpClient } from "../api/httpClient";
+import { createIncrementalSha256, readBlobAsUint8Array } from "../utils/sha256";
 
 const CHUNK_SIZE = 10 * 1024 * 1024;
 const MAX_RETRIES = 3;
@@ -119,7 +120,9 @@ export function useChunkUpload() {
       if (isAborted(token, mountedRef)) return null;
       const status = String(data.upload_status).toUpperCase();
       if (status === "UPLOADED" || status === "READY") return data;
-      if (status === "FAILED") throw new Error("Server gagal merakit file upload.");
+      if (status === "FAILED") {
+        throw new Error(data.error_message || "Server gagal merakit file upload.");
+      }
       await wait(STATUS_POLL_MS, token.controller.signal);
     }
     return null;
@@ -155,6 +158,7 @@ export function useChunkUpload() {
         const id = init.file_id;
         setFileId(id);
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+        const hasher = createIncrementalSha256();
 
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
           if (isAborted(token, mountedRef) || activeTokenRef.current !== token) {
@@ -162,11 +166,18 @@ export function useChunkUpload() {
           }
           const start = chunkIndex * CHUNK_SIZE;
           const end = Math.min(start + CHUNK_SIZE, file.size);
+          const chunkBlob = file.slice(start, end);
+          const chunkBytes = await readBlobAsUint8Array(chunkBlob);
+          if (isAborted(token, mountedRef) || activeTokenRef.current !== token) {
+            return null;
+          }
+          hasher.update(chunkBytes);
+
           const formData = new FormData();
           formData.append("file_id", id);
           formData.append("chunk_index", String(chunkIndex));
           formData.append("total_chunks", String(totalChunks));
-          formData.append("chunk", file.slice(start, end), file.name);
+          formData.append("chunk", chunkBlob, file.name);
           const res = await postChunkWithRetry(formData, token, mountedRef);
           if (res === null || isAborted(token, mountedRef) || activeTokenRef.current !== token) {
             return null;
@@ -180,9 +191,11 @@ export function useChunkUpload() {
           setEtaSeconds((file.size - bytes) / speed);
         }
 
+        const expectedSha256 = hasher.digest();
         const finalizeData = new FormData();
         finalizeData.append("file_id", id);
         finalizeData.append("total_chunks", String(totalChunks));
+        finalizeData.append("expected_sha256", expectedSha256);
         setStage(UPLOAD_STAGE.PROCESSING);
         await httpClient.post("/upload/finalize", finalizeData, {
           signal: token.controller.signal,
