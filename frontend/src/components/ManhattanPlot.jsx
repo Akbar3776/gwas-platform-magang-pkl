@@ -72,7 +72,7 @@ export default function ManhattanPlot({
     return { chr, bp, snp, log10_p };
   }, [data, selectedChr]);
 
-  const layout = useMemo(() => {
+  const baseLayout = useMemo(() => {
     const { points, chromosomeTicks, totalGenomeLength, chromosomeBands = [] } =
       buildManhattanLayout(filteredData);
     const safeLen = Math.max(totalGenomeLength, 1);
@@ -82,33 +82,60 @@ export default function ManhattanPlot({
       chrOrderMap.set(chromosomeBands[i].chr, i);
     }
 
-    let maxY = threshold;
+    let maxDataY = 0;
+    const chrIndices = new Int32Array(points.length);
     for (let i = 0; i < points.length; i += 1) {
-      if (points[i].y > maxY) maxY = points[i].y;
+      const p = points[i];
+      if (p.y > maxDataY) maxDataY = p.y;
+      chrIndices[i] = chrOrderMap.get(p.chr) ?? (Number(p.chr) || 0);
     }
+
+    return {
+      points,
+      chrIndices,
+      chromosomeTicks,
+      chromosomeBands,
+      totalGenomeLength: safeLen,
+      maxDataY,
+    };
+  }, [filteredData]);
+
+  const layout = useMemo(() => {
+    const {
+      points,
+      chrIndices,
+      chromosomeTicks,
+      chromosomeBands,
+      totalGenomeLength: safeLen,
+      maxDataY,
+    } = baseLayout;
+    const maxY = Math.max(maxDataY, threshold);
     const yAxisMax = Math.max(Math.ceil(maxY) + 1, 8);
+    const xScale = plotW / safeLen;
+    const yScale = PLOT_H / yAxisMax;
+    const gridW = Math.ceil((PAD_LEFT + plotW) / 2) + 2;
+    const gridH = Math.ceil(CANVAS_H / 2) + 2;
+    const useBucket = points.length > 6000;
+    const seenGrid = useBucket ? new Uint8Array(gridW * gridH) : null;
 
     // 2D pixel-bucket deduplication: eliminates redundant overlapping points
     // that map to the exact same 2x2 pixel cell while preserving 100% of peaks
-    const seenBuckets = new Set();
     const decimated = [];
     for (let i = 0; i < points.length; i += 1) {
       const p = points[i];
-      const cx = PAD_LEFT + (p.x / safeLen) * plotW;
-      const cy =
-        PAD_TOP +
-        PLOT_H -
-        (Math.min(Math.max(p.y, 0), yAxisMax) / yAxisMax) * PLOT_H;
+      const cx = PAD_LEFT + p.x * xScale;
+      const clampedY = p.y <= 0 ? 0 : p.y >= yAxisMax ? yAxisMax : p.y;
+      const cy = PAD_TOP + PLOT_H - clampedY * yScale;
       const isSig = p.y >= threshold;
 
-      if (!isSig && points.length > 6000) {
+      if (!isSig && seenGrid) {
         const bx = Math.round(cx / 2);
         const by = Math.round(cy / 2);
-        const bucketKey = (bx << 16) | by;
-        if (seenBuckets.has(bucketKey)) {
+        const idx = by * gridW + bx;
+        if (seenGrid[idx]) {
           continue;
         }
-        seenBuckets.add(bucketKey);
+        seenGrid[idx] = 1;
       }
 
       decimated.push({
@@ -116,7 +143,7 @@ export default function ManhattanPlot({
         cx,
         cy,
         isSig,
-        chrIdx: chrOrderMap.get(p.chr) ?? (Number(p.chr) || 0),
+        chrIdx: chrIndices[i],
       });
     }
 
@@ -128,7 +155,7 @@ export default function ManhattanPlot({
       totalGenomeLength: safeLen,
       yAxisMax,
     };
-  }, [filteredData, threshold, plotW]);
+  }, [baseLayout, threshold, plotW]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
