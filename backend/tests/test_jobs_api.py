@@ -75,7 +75,7 @@ def test_trigger_qc_creates_pending_job_and_enqueues_task(monkeypatch):
     body = response.json()
     assert body["overall_status"] == "pending"
     assert body["celery_task_id"] == "celery-task-123"
-    assert task_call["args"][1] == body["job_id"]
+    assert task_call["kwargs"]["job_id"] == body["job_id"]
 
 
 def test_retry_job_resumes_from_failed_stage(monkeypatch):

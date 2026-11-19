@@ -21,7 +21,6 @@ try:
     from celery.canvas import Signature
     from celery.exceptions import SoftTimeLimitExceeded
     from celery.schedules import crontab
-    from celery.signals import task_postrun
     from celery.utils.log import get_task_logger
 
     _HAS_CELERY = True
@@ -194,10 +193,3 @@ def _cleanup_deleted_job_after_task(job_id: Any) -> None:
         cleanup_if_job_deleted(str(job_id))
     except Exception:
         pass
-
-
-if _HAS_CELERY:
-    @task_postrun.connect
-    def _on_celery_task_postrun(kwargs=None, **_extra: Any) -> None:
-        if isinstance(kwargs, dict):
-            _cleanup_deleted_job_after_task(kwargs.get("job_id"))

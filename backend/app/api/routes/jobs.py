@@ -513,7 +513,13 @@ def trigger_qc_job(
     db.commit()
     db.refresh(job)
 
-    task = run_qc_pipeline.delay(None, str(job.id), str(dataset.id), job.parameters, run_id=run_id)
+    task = run_qc_pipeline.delay(
+        None,
+        job_id=str(job.id),
+        dataset_id=str(dataset.id),
+        qc_params=job.parameters,
+        run_id=run_id,
+    )
 
     return JobTriggerResponse(
         job_id=job.id,

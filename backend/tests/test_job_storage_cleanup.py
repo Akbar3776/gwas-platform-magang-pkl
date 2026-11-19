@@ -667,3 +667,58 @@ def test_delete_and_purge_dataset_remove_ref_staging_dir(tmp_path, monkeypatch):
     assert not staging_dirs["soft"][1].exists()
     assert staging_dirs["active"][0].exists()
     assert staging_dirs["active"][1].exists()
+
+
+def test_trigger_qc_job_passes_job_id_kwarg_and_single_cleanup_invocation(tmp_path, monkeypatch):
+    from app.db.engine.models import UploadStatus, User, UserRole
+    from app.schemas.jobs import QCJobRequest
+
+    Session = _make_session(tmp_path)
+    db = Session()
+    try:
+        owner = User(
+            id=uuid.uuid4(),
+            email="qc-a42@test.local",
+            hashed_password="x",
+            role=UserRole.RESEARCHER,
+        )
+        ds = Dataset(
+            id=uuid.uuid4(),
+            owner_id=owner.id,
+            original_filename="qc.vcf.gz",
+            storage_path=str(tmp_path / "qc.vcf.gz"),
+            upload_status=UploadStatus.UPLOADED,
+        )
+        db.add_all([owner, ds])
+        db.commit()
+
+        captured = {}
+
+        class _FakeAsync:
+            id = "qc-task-a42"
+
+        def fake_delay(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return _FakeAsync()
+
+        monkeypatch.setattr(jobs_routes.run_qc_pipeline, "delay", fake_delay)
+        resp = jobs_routes.trigger_qc_job(
+            payload=QCJobRequest(dataset_id=ds.id),
+            db=db,
+            user=owner,
+        )
+        assert captured["kwargs"].get("job_id") == str(resp.job_id)
+    finally:
+        db.close()
+
+    # Verify cleanup_if_job_deleted executes at most once per task invocation
+    calls = []
+    monkeypatch.setattr(_common, "cleanup_if_job_deleted", lambda jid, **kw: calls.append(jid) or 0)
+
+    @celery_mod.celery_app.task(bind=True, name="tests.a42_single_cleanup")
+    def _a42_task(self, *args, job_id=None, **kwargs):
+        return "ok"
+
+    _a42_task(None, job_id="job-a42-once")
+    assert calls == ["job-a42-once"]

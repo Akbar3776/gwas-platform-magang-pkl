@@ -152,3 +152,10 @@ def test_celery_visibility_timeout_exceeds_longest_task():
     assert backend_timeout > IMPUTATION_TIMEOUT_SECONDS + 120
     assert backend_timeout > GEMMA_TIMEOUT_SECONDS + 120
     assert celery_app.conf.worker_prefetch_multiplier == 1
+
+
+def test_single_cleanup_hook_configured_in_celery_app():
+    celery_src = (TASKS_DIR / "celery_app.py").read_text(encoding="utf-8")
+    assert "task_postrun" not in celery_src
+    assert "_on_celery_task_postrun" not in celery_src
+    assert celery_src.count("_cleanup_deleted_job_after_task(kwargs.get(\"job_id\"))") <= 2
