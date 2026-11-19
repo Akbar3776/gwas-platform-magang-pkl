@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { formatApiError } from "../api/formatApiError";
 import { fetchJobStatus } from "../api/jobsApi";
 
 // Status yang menandakan job sudah tidak akan berubah lagi -> polling berhenti.
@@ -61,9 +62,7 @@ export function useJobPolling(jobId, { intervalMs = 3000, pollTrigger = 0 } = {}
         // Error jaringan sementara TIDAK menghentikan tracker — tetap coba
         // lagi di interval berikutnya, supaya hiccup koneksi singkat tidak
         // membuat progress tracker "macet" secara permanen di mata user.
-        setPollError(
-          err.response?.data?.detail || err.message || "Gagal memuat status pekerjaan."
-        );
+        setPollError(formatApiError(err, "Gagal memuat status pekerjaan."));
         timerRef.current = setTimeout(poll, intervalMs);
       }
     };

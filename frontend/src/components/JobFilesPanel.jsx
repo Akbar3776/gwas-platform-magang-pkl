@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { formatApiError } from "../api/formatApiError";
 import { downloadJobFile, fetchJobFiles, previewJobFile } from "../api/jobsApi";
 import { extractDownloadErrorMessage } from "../utils/download";
 
@@ -158,9 +159,7 @@ export function JobFilesPanel({ jobId, isRunning = false }) {
       const content = await previewJobFile(jobId, item.file_key);
       setPreviewText(content || "(File kosong)");
     } catch (err) {
-      setPreviewText(
-        err.response?.data?.detail || "Tidak dapat memuat pratinjau file."
-      );
+      setPreviewText(formatApiError(err, "Tidak dapat memuat pratinjau file."));
     } finally {
       setPreviewLoading(false);
     }

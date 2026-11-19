@@ -51,4 +51,19 @@ describe("useJobPolling jobId isolation (A31)", () => {
       expect(result.current.jobStatus?.job_id).toBe("job-B");
     });
   });
+
+  test("memformat detail array 422 menjadi string terbaca pada pollError via formatApiError (A35c)", async () => {
+    fetchJobStatus.mockRejectedValueOnce({
+      response: {
+        status: 422,
+        data: { detail: [{ loc: ["path", "job_id"], msg: "invalid uuid" }] },
+      },
+    });
+
+    const { result } = renderHook(() => useJobPolling("job-bad", { intervalMs: 60000 }));
+
+    await waitFor(() => {
+      expect(result.current.pollError).toBe("path.job_id: invalid uuid");
+    });
+  });
 });

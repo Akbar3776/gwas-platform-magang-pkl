@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { formatApiError } from "../api/formatApiError";
 import { cancelJob, retryJob } from "../api/jobsApi";
 import { useJobPolling } from "../hooks/useJobPolling";
 import { JobProcessLogs } from "./JobProcessLogs";
@@ -141,9 +142,7 @@ export function JobStatusTracker({ jobId, onComplete, onCancelled, onRetried, on
         onRetried(jobId, res);
       }
     } catch (err) {
-      setRetryError(
-        err.response?.data?.detail || err.message || "Gagal menjalankan ulang job."
-      );
+      setRetryError(formatApiError(err, "Gagal menjalankan ulang job."));
     } finally {
       setIsRetrying(false);
     }

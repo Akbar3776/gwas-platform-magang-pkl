@@ -156,9 +156,7 @@ export function WorkspaceExplorer({
       const text = await previewUploadedDataset(ds.file_id);
       setPreviewText(text || "(File kosong)");
     } catch (err) {
-      setPreviewText(
-        err.response?.data?.detail || "Tidak dapat memuat pratinjau file."
-      );
+      setPreviewText(formatApiError(err, "Tidak dapat memuat pratinjau file."));
     } finally {
       setPreviewLoading(false);
     }
@@ -179,11 +177,7 @@ export function WorkspaceExplorer({
       }
       await loadWorkspaceData();
     } catch (err) {
-      setDeleteError(
-        err.response?.data?.detail ||
-          err.message ||
-          "Gagal menghapus file dataset."
-      );
+      setDeleteError(formatApiError(err, "Gagal menghapus file dataset."));
     } finally {
       setDeletingId(null);
     }
@@ -209,9 +203,7 @@ export function WorkspaceExplorer({
       await cancelJob(jobId);
       await loadWorkspaceData();
     } catch (err) {
-      setJobActionError(
-        err.response?.data?.detail || err.message || "Gagal menghentikan job."
-      );
+      setJobActionError(formatApiError(err, "Gagal menghentikan job."));
     } finally {
       setCancellingJobId(null);
     }
@@ -227,9 +219,7 @@ export function WorkspaceExplorer({
         onSelectJob(jobId);
       }
     } catch (err) {
-      setJobActionError(
-        err.response?.data?.detail || err.message || "Gagal menjalankan ulang job."
-      );
+      setJobActionError(formatApiError(err, "Gagal menjalankan ulang job."));
     } finally {
       setRetryingJobId(null);
     }
@@ -246,9 +236,7 @@ export function WorkspaceExplorer({
       }
       await loadWorkspaceData();
     } catch (err) {
-      setJobActionError(
-        err.response?.data?.detail || err.message || "Gagal menghapus job."
-      );
+      setJobActionError(formatApiError(err, "Gagal menghapus job."));
     } finally {
       setDeletingJobId(null);
     }
