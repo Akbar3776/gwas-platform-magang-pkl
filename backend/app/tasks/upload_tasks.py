@@ -124,6 +124,43 @@ def _reference_staging_id(dataset_id: str) -> str:
     return f"{dataset_id}_ref"
 
 
+def _fail_reference_fasta(
+    db,
+    *,
+    dataset_id: str,
+    staging_id: str,
+    original_filename: str,
+    cleanup_paths: list[Path | None],
+    reason: str,
+) -> dict:
+    try:
+        shutil.rmtree(upload_service.get_staging_dir(staging_id), ignore_errors=True)
+    except Exception:
+        pass
+    for artifact in cleanup_paths:
+        if artifact is not None:
+            try:
+                artifact.unlink(missing_ok=True)
+            except OSError:
+                pass
+    try:
+        db.rollback()
+    except Exception:
+        pass
+    dataset = db.get(Dataset, dataset_id)
+    if dataset is not None:
+        meta = dict(dataset.extra_metadata or {})
+        meta["reference_fasta"] = {
+            **(meta.get("reference_fasta") or {}),
+            "status": UploadStatus.FAILED.value,
+            "filename": original_filename,
+            "error_message": reason,
+        }
+        dataset.extra_metadata = meta
+        db.commit()
+    return {"status": "error", "reason": reason}
+
+
 @celery_app.task(
     bind=True,
     name="app.tasks.upload_tasks.assemble_reference_fasta_task",
@@ -142,6 +179,9 @@ def assemble_reference_fasta_task(
     """
     db = SessionLocal()
     staging_id = _reference_staging_id(dataset_id)
+    assembled_path: Path | None = None
+    target_fa: Path | None = None
+    old_fai: Path | None = None
     try:
         dataset = db.get(Dataset, dataset_id)
         if dataset is None:
@@ -183,7 +223,7 @@ def assemble_reference_fasta_task(
             if not contigs:
                 target_fa.unlink(missing_ok=True)
                 fai_path.unlink(missing_ok=True)
-                raise ChecksumMismatchError("File FASTA tidak memuat contig (>chr) yang valid.")
+                raise ValueError("File FASTA tidak memuat contig (>chr) yang valid.")
 
             meta = dict(dataset.extra_metadata or {})
             meta["reference_fasta"] = {
@@ -209,20 +249,25 @@ def assemble_reference_fasta_task(
 
         except (FileNotFoundError, ChecksumMismatchError, ValueError, OSError) as exc:
             logger.warning("Assembly FASTA referensi gagal untuk dataset %s: %s", dataset_id, exc)
-            try:
-                shutil.rmtree(upload_service.get_staging_dir(staging_id), ignore_errors=True)
-            except Exception:
-                pass
-            meta = dict(dataset.extra_metadata or {})
-            meta["reference_fasta"] = {
-                **(meta.get("reference_fasta") or {}),
-                "status": UploadStatus.FAILED.value,
-                "filename": original_filename,
-                "error_message": str(exc),
-            }
-            dataset.extra_metadata = meta
-            db.commit()
-            return {"status": "error", "reason": str(exc)}
+            return _fail_reference_fasta(
+                db,
+                dataset_id=dataset_id,
+                staging_id=staging_id,
+                original_filename=original_filename,
+                cleanup_paths=[assembled_path, target_fa, old_fai],
+                reason=str(exc),
+            )
+
+        except Exception as exc:
+            logger.exception("Error tak terduga saat assembly FASTA referensi untuk dataset %s", dataset_id)
+            return _fail_reference_fasta(
+                db,
+                dataset_id=dataset_id,
+                staging_id=staging_id,
+                original_filename=original_filename,
+                cleanup_paths=[assembled_path, target_fa, old_fai],
+                reason=str(exc),
+            )
 
     finally:
         db.close()

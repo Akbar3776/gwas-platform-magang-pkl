@@ -581,3 +581,89 @@ def test_deleted_or_unauthorized_export_report_and_pipeline_return_404(tmp_path,
         assert "Dataset tidak ditemukan" in exc_pipe_del.value.detail
     finally:
         db.close()
+
+
+def test_delete_and_purge_dataset_remove_ref_staging_dir(tmp_path, monkeypatch):
+    from app.api.routes.upload import delete_uploaded_dataset
+    from app.db.engine.models import UploadStatus, User, UserRole
+
+    storage_root = tmp_path / "storage"
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(storage_root))
+    db_path = tmp_path / "storage_cleanup.db"
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{db_path}")
+    Session = _make_session(tmp_path)
+    monkeypatch.setattr(retention_tasks, "SessionLocal", Session)
+
+    old_time = datetime.now(timezone.utc) - timedelta(days=retention_tasks.RETENTION_DAYS + 5)
+    db = Session()
+    try:
+        owner = User(
+            id=uuid.uuid4(),
+            email="owner-ref@test.local",
+            hashed_password="x",
+            role=UserRole.RESEARCHER,
+        )
+        db.add(owner)
+        db.flush()
+
+        # 1. Dataset deleted explicitly via upload route -> both staging/<id> and staging/<id>_ref removed
+        ds_route = Dataset(
+            id=uuid.uuid4(),
+            owner_id=owner.id,
+            original_filename="route.vcf",
+            storage_path="",
+            upload_status=UploadStatus.UPLOADED,
+        )
+        # 2. Dataset expired via retention _purge_dataset -> both staging/<id> and staging/<id>_ref removed
+        ds_purge = Dataset(
+            id=uuid.uuid4(),
+            owner_id=owner.id,
+            original_filename="purge.vcf",
+            storage_path="",
+            upload_status=UploadStatus.UPLOADED,
+            uploaded_at=old_time,
+        )
+        # 3. Soft-deleted dataset with lingering staging/<id>_ref swept by purge_orphan_storage_dirs
+        ds_soft = Dataset(
+            id=uuid.uuid4(),
+            owner_id=owner.id,
+            original_filename="soft.vcf",
+            storage_path="",
+            upload_status=UploadStatus.UPLOADED,
+            deleted_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+        )
+        # 4. Active dataset -> staging/<id>_ref MUST stay untouched
+        ds_active = Dataset(
+            id=uuid.uuid4(),
+            owner_id=owner.id,
+            original_filename="active.vcf",
+            storage_path="",
+            upload_status=UploadStatus.UPLOADED,
+        )
+        db.add_all([ds_route, ds_purge, ds_soft, ds_active])
+        db.commit()
+
+        staging_dirs = {}
+        for key, ds_obj in (("route", ds_route), ("purge", ds_purge), ("soft", ds_soft), ("active", ds_active)):
+            d = storage_root / "staging" / str(ds_obj.id)
+            d_ref = storage_root / "staging" / f"{ds_obj.id}_ref"
+            d.mkdir(parents=True)
+            d_ref.mkdir(parents=True)
+            (d / "chunk_000000.part").write_text("x", encoding="utf-8")
+            (d_ref / "chunk_000000.part").write_text("ref", encoding="utf-8")
+            staging_dirs[key] = (d, d_ref)
+
+        delete_uploaded_dataset(file_id=ds_route.id, db=db, user=owner)
+        assert not staging_dirs["route"][0].exists()
+        assert not staging_dirs["route"][1].exists()
+    finally:
+        db.close()
+
+    res = retention_tasks.purge_expired_records()
+    assert res["datasets_purged"] >= 1
+    assert not staging_dirs["purge"][0].exists()
+    assert not staging_dirs["purge"][1].exists()
+    assert not staging_dirs["soft"][0].exists()
+    assert not staging_dirs["soft"][1].exists()
+    assert staging_dirs["active"][0].exists()
+    assert staging_dirs["active"][1].exists()

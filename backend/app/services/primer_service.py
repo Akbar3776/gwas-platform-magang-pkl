@@ -33,10 +33,13 @@ def calculate_gc_percent(seq: str) -> float:
     return round((gc_count / len(s)) * 100.0, 2)
 
 
+_FASTA_LINE_CHUNK_BYTES = 1 << 20  # 1 MiB chunk so unwrapped GB-scale chromosomes never load into RAM
+
+
 def build_fasta_index(fasta_path: str | Path) -> Path:
     """
     Membangun indeks `.fai` berformat samtools faidx (`NAME\tLENGTH\tOFFSET\tLINEBASES\tLINEWIDTH`)
-    untuk pembacaan byte-offset acak cepat tanpa memuat file FASTA ke RAM.
+    untuk pembacaan byte-offset acak cepat secara streaming tanpa memuat baris panjang ke RAM.
     """
     path = Path(fasta_path)
     if not path.is_file():
@@ -55,28 +58,57 @@ def build_fasta_index(fasta_path: str | Path) -> Path:
             entries.append((cur_name, cur_len, cur_offset, max(line_bases, 1), max(line_width, 1)))
 
     with path.open("rb") as fh:
+        line_no = 0
+        byte_pos = 0
         while True:
-            line_start = fh.tell()
-            raw_line = fh.readline()
-            if not raw_line:
+            line_start = byte_pos
+            chunk = fh.readline(_FASTA_LINE_CHUNK_BYTES)
+            if not chunk:
                 break
-            if raw_line.startswith(b">"):
+            byte_pos += len(chunk)
+            line_no += 1
+
+            if chunk.startswith(b">"):
                 _flush()
-                header_token = raw_line[1:].strip().split()[0].decode("utf-8", errors="replace")
-                cur_name = header_token
+                header_buf = bytearray(chunk[1:4096])
+                while not chunk.endswith(b"\n"):
+                    chunk = fh.readline(_FASTA_LINE_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    byte_pos += len(chunk)
+                    if len(header_buf) < 4096:
+                        header_buf.extend(chunk[:4096 - len(header_buf)])
+                tokens = bytes(header_buf).strip().split()
+                if not tokens:
+                    raise ValueError(f"Header FASTA kosong ('>') ditemukan pada baris {line_no}.")
+                cur_name = tokens[0].decode("utf-8", errors="replace")
                 cur_len = 0
-                cur_offset = fh.tell()
+                cur_offset = byte_pos
                 line_bases = 0
                 line_width = 0
                 saw_short_line = False
                 continue
 
+            raw_len = len(chunk)
+            tail2 = chunk[-2:]
+            ended_nl = chunk.endswith(b"\n")
+            while not ended_nl:
+                nxt = fh.readline(_FASTA_LINE_CHUNK_BYTES)
+                if not nxt:
+                    break
+                byte_pos += len(nxt)
+                raw_len += len(nxt)
+                tail2 = (tail2 + nxt)[-2:]
+                ended_nl = nxt.endswith(b"\n")
+
+            if ended_nl:
+                seq_len = raw_len - (2 if tail2 == b"\r\n" else 1)
+            else:
+                seq_len = raw_len - (1 if tail2.endswith(b"\r") else 0)
+
             if cur_name is None:
                 continue
 
-            raw_len = len(raw_line)
-            seq_bytes = raw_line.rstrip(b"\r\n")
-            seq_len = len(seq_bytes)
             if seq_len == 0:
                 if cur_len > 0:
                     saw_short_line = True

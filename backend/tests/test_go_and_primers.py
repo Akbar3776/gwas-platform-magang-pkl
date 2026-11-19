@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import numpy as np
+import pytest
 
 from app.services.go_enrichment_service import run_go_enrichment_analysis
 from app.services.primer_service import (
@@ -610,3 +611,167 @@ def test_design_primers_uses_primer3_and_removes_heuristics():
     empty_pairs = primer_service.design_primers_for_flanking(poly_a, snp_index_0based=100, max_pairs=5)
     assert empty_pairs == []
     assert primer_service.format_primer3_block(empty_pairs) == "no primers found"
+
+
+def test_build_fasta_index_unwrapped_20mb_low_memory_and_seek(tmp_path: Path):
+    import tracemalloc
+    from app.services import primer_service
+
+    fasta_path = tmp_path / "unwrapped_20mb.fa"
+    total_bases = 20 * 1024 * 1024  # 20 MiB single-line contig
+    block = (b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT" * 16384)  # 1 MiB
+    assert len(block) == 1024 * 1024
+    start_marker = b"AACCGGTTAACCGGTTAACCGGTT"
+    mid_marker = b"GGGGCCCCAAAATTTTGGGGCCCC"
+    end_marker = b"TTTTAAAACCCCGGGGTTTTAAAA"
+
+    with fasta_path.open("wb") as fh:
+        fh.write(b">chr1\n")
+        for mb_idx in range(20):
+            chunk = bytearray(block)
+            if mb_idx == 0:
+                chunk[0:len(start_marker)] = start_marker
+            elif mb_idx == 10:
+                chunk[0:len(mid_marker)] = mid_marker
+            elif mb_idx == 19:
+                pos = len(chunk) - len(end_marker)
+                chunk[pos:len(chunk)] = end_marker
+            fh.write(chunk)
+        fh.write(b"\n")
+
+    tracemalloc.start()
+    try:
+        fai_path = primer_service.build_fasta_index(fasta_path)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 8 * 1024 * 1024, f"Peak memory terlalu tinggi: {peak} bytes"
+    fai_line = fai_path.read_text(encoding="utf-8").strip()
+    parts = fai_line.split("\t")
+    assert parts[0] == "chr1"
+    assert int(parts[1]) == total_bases
+    assert int(parts[3]) == total_bases
+
+    idx = primer_service.load_fasta_index(fasta_path)
+    assert primer_service._read_fasta_region(fasta_path, "chr1", 1, len(start_marker), index=idx) == start_marker.decode()
+    mid_start = 10 * 1024 * 1024 + 1
+    assert primer_service._read_fasta_region(
+        fasta_path, "chr1", mid_start, mid_start + len(mid_marker) - 1, index=idx
+    ) == mid_marker.decode()
+    end_start = total_bases - len(end_marker) + 1
+    assert primer_service._read_fasta_region(
+        fasta_path, "chr1", end_start, total_bases, index=idx
+    ) == end_marker.decode()
+    fasta_path.unlink(missing_ok=True)
+
+
+def test_build_fasta_index_empty_header_raises_value_error(tmp_path: Path):
+    from app.services.primer_service import build_fasta_index
+
+    bad_fa = tmp_path / "empty_hdr.fa"
+    bad_fa.write_text(">chr1\nACGTACGT\n>\nTGCATGCA\n", encoding="utf-8")
+    with pytest.raises(ValueError) as exc_info:
+        build_fasta_index(bad_fa)
+    assert "baris 3" in str(exc_info.value).lower() or "kosong" in str(exc_info.value).lower()
+
+
+def test_assemble_reference_fasta_never_sticks_validating_on_errors(tmp_path: Path, monkeypatch):
+    import hashlib
+    import io
+    import uuid
+    from starlette.datastructures import UploadFile
+    from app.api.routes import upload as upload_routes
+    from app.core.config import settings
+    from app.db.engine.models import Dataset, UploadStatus, User, UserRole
+    from app.schemas.upload import InitUploadRequest
+    from app.services import upload_service
+    from app.tasks import upload_tasks
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(upload_service, "_STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(upload_service, "_STAGING_ROOT", tmp_path / "staging")
+    monkeypatch.setattr(upload_service, "_DATASETS_ROOT", tmp_path / "datasets")
+
+    owner = User(id=uuid.uuid4(), email="u-a61@example.com", hashed_password="x", role=UserRole.RESEARCHER)
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=owner.id,
+        original_filename="cohort.vcf",
+        storage_path=str(tmp_path / "datasets" / "cohort.vcf"),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+    )
+
+    class _DB:
+        def get(self, model, oid):
+            return ds if model is Dataset and str(oid) == str(ds.id) else None
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    db = _DB()
+    monkeypatch.setattr(upload_tasks, "SessionLocal", lambda: db)
+    monkeypatch.setattr(upload_tasks.assemble_reference_fasta_task, "retry", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(upload_routes.assemble_reference_fasta_task, "delay", lambda *a, **kw: type("_T", (), {"id": "t"})())
+
+    def _upload_and_run(raw_bytes: bytes, fname: str):
+        sha = hashlib.sha256(raw_bytes).hexdigest()
+        upload_routes.init_reference_upload(
+            file_id=ds.id,
+            payload=InitUploadRequest(original_filename=fname, total_size_bytes=len(raw_bytes)),
+            db=db,
+            user=owner,
+        )
+        upload_routes.upload_reference_chunk(
+            file_id=ds.id,
+            chunk_index=0,
+            total_chunks=1,
+            chunk=UploadFile(file=io.BytesIO(raw_bytes), filename=fname),
+            db=db,
+            user=owner,
+        )
+        upload_routes.finalize_reference_upload(
+            file_id=ds.id,
+            total_chunks=1,
+            expected_sha256=sha,
+            db=db,
+            user=owner,
+        )
+        return upload_tasks.assemble_reference_fasta_task(
+            dataset_id=str(ds.id),
+            total_chunks=1,
+            original_filename=fname,
+            expected_sha256=sha,
+        )
+
+    # Case 1: empty '>' header must transition status to FAILED (not remain VALIDATING)
+    out1 = _upload_and_run(b">\nACGTACGT\n", "empty.fa")
+    assert out1["status"] == "error"
+    st1 = upload_routes.get_reference_status(file_id=ds.id, db=db, user=owner)
+    assert st1["upload_status"] == UploadStatus.FAILED.value
+    assert not (tmp_path / "staging" / f"{ds.id}_ref").exists()
+    assert not (tmp_path / "datasets" / str(ds.id) / "reference.fa").exists()
+
+    # Case 2: no-contig FASTA uses ValueError path and marks status FAILED
+    out_nocontig = _upload_and_run(b"ACGTACGTACGT\n", "nocontig.fa")
+    assert out_nocontig["status"] == "error"
+    assert "contig" in (out_nocontig.get("reason") or "").lower()
+    st_nocontig = upload_routes.get_reference_status(file_id=ds.id, db=db, user=owner)
+    assert st_nocontig["upload_status"] == UploadStatus.FAILED.value
+
+    # Case 3: unexpected RuntimeError in build_fasta_index must transition status to FAILED cleanly
+    monkeypatch.setattr(upload_tasks, "build_fasta_index", lambda _p: (_ for _ in ()).throw(RuntimeError("boom index")))
+    out2 = _upload_and_run(b">chr1\nACGTACGT\n", "boom.fa")
+    assert out2["status"] == "error"
+    st2 = upload_routes.get_reference_status(file_id=ds.id, db=db, user=owner)
+    assert st2["upload_status"] == UploadStatus.FAILED.value
+    assert "boom index" in (st2.get("error_message") or "")
+    assert not (tmp_path / "datasets" / str(ds.id) / "reference.fa").exists()
+    assert not (tmp_path / "datasets" / str(ds.id) / "reference.fa.fai").exists()

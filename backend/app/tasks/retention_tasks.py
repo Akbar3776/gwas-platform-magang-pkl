@@ -137,8 +137,13 @@ def purge_orphan_storage_dirs(
         unreferenced: list[Path] = []
         for entry in entries:
             record = None
+            raw_uid = (
+                entry.name[:-4]
+                if (bucket_name == "staging" and entry.name.endswith("_ref"))
+                else entry.name
+            )
             try:
-                uid = uuid.UUID(entry.name)
+                uid = uuid.UUID(raw_uid)
             except (ValueError, TypeError):
                 uid = None
             if uid is not None:
@@ -205,9 +210,11 @@ def _purge_dataset(db: Session, dataset: Dataset) -> int:
         # cuma file VCF-nya, untuk menyapu file pendamping (.tbi, dsb) juga.
         freed += _remove_path(str(Path(dataset.storage_path).parent))
 
-    staging_dir = Path(settings.STORAGE_ROOT) / "staging" / str(dataset.id)
-    if staging_dir.is_dir():
-        freed += remove_tree_under_storage(staging_dir)
+    staging_root = Path(settings.STORAGE_ROOT) / "staging"
+    for staging_name in (str(dataset.id), f"{dataset.id}_ref"):
+        staging_dir = staging_root / staging_name
+        if staging_dir.is_dir():
+            freed += remove_tree_under_storage(staging_dir)
 
     if HARD_DELETE_DB_ROW:
         db.delete(dataset)  # cascade ke `analysis_jobs` -> `results` otomatis
