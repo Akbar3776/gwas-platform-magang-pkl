@@ -174,3 +174,88 @@ def test_parse_vcf_genotypes_preserves_non_numeric_and_high_chr_labels(tmp_path)
     assert samples == ["S1", "S2"]
     assert [v["chr"] for v in variants] == ["Gm01", "Gm07", "X", "27", "H1"]
     assert variants[0]["rs"] == f"Gm01:{variants[0]['ps']}"
+
+
+def test_run_gemma_streams_assoc_row_count_without_read_text(tmp_path):
+    from pathlib import Path
+    from app.tasks.gemma_tasks import run_gemma_gwas
+
+    work_dir = tmp_path / "gwas_stream"
+    work_dir.mkdir()
+    imputation_dir = tmp_path / "imputation"
+    imputation_dir.mkdir()
+    (imputation_dir / "imputed.bed").touch()
+    (imputation_dir / "imputed.bim").touch()
+    (imputation_dir / "imputed.fam").write_text("FID1 IID1 0 0 0 1.5\nFID2 IID2 0 0 0 2.5\n", encoding="utf-8")
+
+    pheno_file = tmp_path / "pheno.txt"
+    pheno_file.write_text("IID\ttrait\nIID1\t10.0\nIID2\t20.0\n", encoding="utf-8")
+
+    output_dir = work_dir / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    assoc_file = output_dir / "association.assoc.txt"
+    assoc_file.write_text(
+        "chr\trs\tps\tn_miss\tallele1\tallele0\taf\tbeta\tse\tp_wald\n"
+        "1\trs1\t100\t0\tA\tG\t0.2\t0.1\t0.02\t1e-4\n"
+        "1\trs2\t200\t0\tC\tT\t0.3\t0.2\t0.03\t2e-4\n"
+        "2\trs3\t300\t0\tG\tA\t0.4\t-0.1\t0.02\t3e-4\n",
+        encoding="utf-8",
+    )
+
+    mock_db = MagicMock()
+    mock_job = MagicMock()
+    mock_job.work_dir = str(work_dir)
+    mock_db.get.return_value = mock_job
+
+    dummy_gemma = tmp_path / "dummy_gemma"
+    dummy_gemma.touch()
+    dummy_plink = tmp_path / "dummy_plink2"
+    dummy_plink.touch()
+
+    orig_read_text = Path.read_text
+
+    def guarded_read_text(self, *args, **kwargs):
+        if self.name == "association.assoc.txt":
+            raise AssertionError("association.assoc.txt tidak boleh dibaca utuh ke memori lewat read_text()")
+        return orig_read_text(self, *args, **kwargs)
+
+    with (
+        patch.object(Path, "read_text", guarded_read_text),
+        patch("app.tasks.gemma_tasks.SessionLocal", return_value=mock_db),
+        patch("app.tasks.gemma_tasks.mark_job"),
+        patch("app.tasks.gemma_tasks._upsert_result"),
+        patch("app.tasks.gemma_tasks.GEMMA_BINARY", str(dummy_gemma)),
+        patch("app.tasks.gemma_tasks.PLINK_BINARY", str(dummy_plink)),
+        patch("app.tasks.gemma_tasks.run_cli_command"),
+    ):
+        res = run_gemma_gwas(
+            {
+                "status": "completed",
+                "imputation_skipped": False,
+                "genotype_bfile_prefix": str(imputation_dir / "imputed"),
+                "output_vcf": str(imputation_dir / "imputed.vcf.gz"),
+            },
+            job_id="job-a41",
+            phenotype_path=str(pheno_file),
+            model="glm",
+            params={"output_dir": str(work_dir)},
+        )
+        assert res["status"] == "completed"
+        log_text = orig_read_text(work_dir / "gemma.log", encoding="utf-8")
+        assert "3 SNP" in log_text
+
+        # Empty variant table (header-only) must still raise RuntimeError
+        assoc_file.write_text("chr\trs\tps\tn_miss\tallele1\tallele0\taf\tbeta\tse\tp_wald\n", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="tidak menghasilkan baris varian"):
+            run_gemma_gwas(
+                {
+                    "status": "completed",
+                    "imputation_skipped": False,
+                    "genotype_bfile_prefix": str(imputation_dir / "imputed"),
+                    "output_vcf": str(imputation_dir / "imputed.vcf.gz"),
+                },
+                job_id="job-a41-empty",
+                phenotype_path=str(pheno_file),
+                model="glm",
+                params={"output_dir": str(work_dir)},
+            )

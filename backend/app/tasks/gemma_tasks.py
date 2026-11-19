@@ -700,12 +700,13 @@ def run_gemma_gwas(
 
                 if not assoc_path.is_file():
                     raise RuntimeError(f"File hasil asosiasi GEMMA tidak ditemukan: {assoc_path}")
-                lines = assoc_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                if len(lines) <= 1:
+                with assoc_path.open("r", encoding="utf-8", errors="replace") as assoc_fh:
+                    nonempty_lines = sum(1 for raw_line in assoc_fh if raw_line.strip())
+                if nonempty_lines <= 1:
                     raise RuntimeError("GEMMA selesai tetapi tidak menghasilkan baris varian pada file asosiasi.")
                 append_log(
                     log_file,
-                    f"[6.5] GEMMA CLI berhasil menganalisis {len(lines) - 1} SNP -> {assoc_path}",
+                    f"[6.5] GEMMA CLI berhasil menganalisis {nonempty_lines - 1} SNP -> {assoc_path}",
                 )
             except (JobCancelledError, CLICancelledError):
                 raise
