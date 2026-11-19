@@ -96,3 +96,90 @@ def test_inspect_phenotype_blocking_errors():
     res_few = inspect_phenotype(vcf_ids, df_few, trait="TRAIT", id_column="IID")
     assert len(res_few["blocking_errors"]) > 0
     assert any("< 3" in err for err in res_few["blocking_errors"])
+
+
+def test_run_inspection_keeps_first_valid_value_for_duplicate_iid(tmp_path, monkeypatch):
+    import uuid
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.core.config import settings
+    from app.db.base import Base
+    from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, UploadStatus, User, UserRole
+    from app.tasks import _common as task_common, gemma_tasks, inspection_tasks
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    engine = create_engine(f"sqlite:///{tmp_path / 'a22.db'}")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    monkeypatch.setattr(inspection_tasks, "SessionLocal", Session)
+    monkeypatch.setattr(task_common, "SessionLocal", Session)
+
+    vcf_path = tmp_path / "small.vcf"
+    vcf_path.write_text(
+        "##fileformat=VCFv4.2\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\tS3\tS4\n"
+        "1\t100\trs1\tA\tG\t99\tPASS\t.\tGT\t0/0\t0/1\t1/1\t0/1\n",
+        encoding="utf-8",
+    )
+    pheno_path = tmp_path / "pheno.tsv"
+    pheno_path.write_text(
+        "FID\tIID\tTRAIT1\n"
+        "S1\tS1\t10\n"
+        "S2\tS2\t12\n"
+        "S3\tS3\t15\n"
+        "S4\tS4\tNA\n"
+        "S1\tS1\t20\n"
+        "S4\tS4\t30\n",
+        encoding="utf-8",
+    )
+
+    db = Session()
+    try:
+        user = User(id=uuid.uuid4(), email="a22@test.local", hashed_password="x", role=UserRole.RESEARCHER)
+        ds = Dataset(
+            id=uuid.uuid4(),
+            owner_id=user.id,
+            original_filename="small.vcf",
+            storage_path=str(vcf_path),
+            phenotype_file_path=str(pheno_path),
+            upload_status=UploadStatus.UPLOADED,
+        )
+        job = AnalysisJob(
+            id=uuid.uuid4(),
+            dataset_id=ds.id,
+            triggered_by=user.id,
+            pipeline_type="full_pipeline",
+            current_step=PipelineStep.INSPECTION,
+            overall_status=JobStatus.PENDING,
+            parameters={},
+        )
+        db.add_all([user, ds, job])
+        db.commit()
+        job_id = str(job.id)
+        ds_id = str(ds.id)
+    finally:
+        db.close()
+
+    res = inspection_tasks.run_inspection(
+        job_id=job_id,
+        dataset_id=ds_id,
+        phenotype_cfg={"trait": "TRAIT1", "id_column": "IID", "fid_column": "FID"},
+    )
+    pheno_lines = Path(res["pheno_path"]).read_text(encoding="utf-8").splitlines()[1:]
+    s1_lines = [ln for ln in pheno_lines if ln.startswith("S1\t")]
+    s4_lines = [ln for ln in pheno_lines if ln.startswith("S4\t")]
+    assert len(s1_lines) == 1
+    assert s1_lines[0].split("\t")[-1] == "10"
+    assert len(s4_lines) == 1
+    assert s4_lines[0].split("\t")[-1] == "30"
+
+    gemma_ws = tmp_path / "jobs" / job_id / "gwas"
+    gemma_ws.mkdir(parents=True, exist_ok=True)
+    vec, _ = gemma_tasks._prepare_phenotype_vector(
+        ["S1", "S2", "S3", "S4"],
+        [],
+        res["pheno_path"],
+        gemma_ws,
+        gemma_ws / "gemma.log",
+    )
+    assert vec.tolist() == [10.0, 12.0, 15.0, 30.0]

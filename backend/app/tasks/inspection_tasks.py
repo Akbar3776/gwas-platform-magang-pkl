@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 from pathlib import Path
 from typing import Any
 import uuid
@@ -126,20 +127,31 @@ def run_inspection(
         hanya_pheno_file = out_dir / "id_hanya_fenotipe.txt"
         hanya_pheno_file.write_text("\n".join(report.get("only_in_pheno_sample", [])) + "\n", encoding="utf-8")
 
-        # Create pheno_plink.txt: FID IID <TRAIT>
+        # Create pheno_plink.txt: FID IID <TRAIT> (satu baris per IID dengan nilai valid pertama)
         pheno_plink_file = out_dir / "pheno_plink.txt"
         matched_set = set(report["matched_ids"])
         matched_rows = ["FID\tIID\t" + report["trait"]]
 
         matched_id_col = report["id_column"]
         matched_trait_col = report["trait"]
+        missing_upper = {t.upper() for t in missing_tokens}
+        seen_iids: set[str] = set()
 
         for _, row in pheno_df.iterrows():
             iid = str(row[matched_id_col]).strip()
-            if iid in matched_set:
-                raw_val = str(row[matched_trait_col]).strip()
-                val_str = raw_val if raw_val and raw_val.upper() not in set(t.upper() for t in missing_tokens) else "NA"
-                matched_rows.append(f"{iid}\t{iid}\t{val_str}")
+            if iid not in matched_set or iid in seen_iids:
+                continue
+            raw_val = str(row[matched_trait_col]).strip()
+            if not raw_val or raw_val.upper() in missing_upper:
+                continue
+            try:
+                num_val = float(raw_val)
+            except ValueError:
+                continue
+            if not math.isfinite(num_val):
+                continue
+            seen_iids.add(iid)
+            matched_rows.append(f"{iid}\t{iid}\t{raw_val}")
         pheno_plink_file.write_text("\n".join(matched_rows) + "\n", encoding="utf-8")
 
         report_json_file = out_dir / "inspection_report.json"
