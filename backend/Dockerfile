@@ -34,7 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #    Catatan: sesuaikan URL versi PLINK sesuai kebutuhan (PLINK 1.9 vs PLINK 2.0)
 # ------------------------------------------------------------------------------
 ARG PLINK_VERSION=20260913
-RUN wget -q "https://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20260913.zip" \
+RUN wget -q "https://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_${PLINK_VERSION}.zip" \
     -O /tmp/plink.zip \
     && unzip -o /tmp/plink.zip -d /usr/local/bin \
     && chmod +x /usr/local/bin/plink \
@@ -45,7 +45,7 @@ RUN wget -q "https://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20260913.
 #    Sesuaikan GEMMA_VERSION dengan rilis terbaru saat build image.
 # ------------------------------------------------------------------------------
 ARG GEMMA_VERSION=0.98.5
-RUN wget -q "https://github.com/genetics-statistics/GEMMA/releases/download/v0.98.5/gemma-0.98.5-linux-static-AMD64.gz" \
+RUN wget -q "https://github.com/genetics-statistics/GEMMA/releases/download/v${GEMMA_VERSION}/gemma-${GEMMA_VERSION}-linux-static-AMD64.gz" \
     -O /tmp/gemma.gz \
     && gunzip -c /tmp/gemma.gz > /usr/local/bin/gemma \
     && chmod +x /usr/local/bin/gemma \
@@ -102,7 +102,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 #     R + GAPIT3 dan dependensi Python tetap memakai cache)
 # ------------------------------------------------------------------------------
 ARG PLINK2_VERSION=20261107
-RUN wget -q "https://s3.amazonaws.com/plink2-assets/beta1/plink2_linux_x86_64_20261107.zip" \
+RUN wget -q "https://s3.amazonaws.com/plink2-assets/beta1/plink2_linux_x86_64_${PLINK2_VERSION}.zip" \
     -O /tmp/plink2.zip \
     && echo "16b5cf92faed7e8b8aa1010c6eab9bac17c92b57ccfa69c4d059b1b17b98eb70  /tmp/plink2.zip" | sha256sum -c - \
     && unzip -o -q /tmp/plink2.zip plink2 -d /usr/local/bin \

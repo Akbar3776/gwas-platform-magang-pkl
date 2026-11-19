@@ -477,7 +477,3 @@ def run_imputation(
         raise
     finally:
         db.close()
-
-
-# Compatibility alias
-task_imputation = run_imputation

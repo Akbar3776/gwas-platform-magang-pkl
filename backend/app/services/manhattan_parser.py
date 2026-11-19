@@ -213,19 +213,13 @@ def compute_assoc_summary_stats(
 
     lambda_gc = 1.0
     if sampled_pvalues:
+        from scipy.stats import chi2
+
         all_p = np.concatenate(sampled_pvalues)
         median_p = float(np.median(all_p))
         median_p = float(np.clip(median_p, 1e-300, 1.0 - 1e-15))
-        try:
-            from scipy.stats import chi2  # type: ignore[import-untyped]
-
-            chi2_median = float(chi2.isf(median_p, df=1))
-            lambda_gc = round(float(chi2_median / 0.4549364231195728), 3)
-        except Exception:
-            # Fallback approximation using Ramanujan/Wilson-Hilferty if scipy is unavailable
-            z = float(np.sqrt(max(-2.0 * np.log(median_p), 0.0)))
-            chi2_approx = z * z
-            lambda_gc = round(float(chi2_approx / 0.4549364231195728), 3)
+        chi2_median = float(chi2.isf(median_p, df=1))
+        lambda_gc = round(float(chi2_median / 0.4549364231195728), 3)
 
     return {
         "total_snps": total_snps,

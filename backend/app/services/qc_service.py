@@ -19,16 +19,12 @@ from __future__ import annotations
 
 import gzip
 import re
-import subprocess
-from collections import deque
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
 from app.schemas.pipeline import PopulationType, QCPipelineConfig
-
-_LOG_TAIL_SIZE = 50
 
 # Batas mutlak integer bertanda 32-bit (2^31 - 1 = 2.147.483.647 bp)
 MAX_32BIT_RAW_POS = 2_147_483_647
@@ -116,14 +112,6 @@ def filter_vcf_32bit_overflow(
         "overflow_removed": overflow_removed,
         "max_pos": max_pos,
     }
-
-
-class PlinkExecutionError(RuntimeError):
-    """Dilempar jika proses PLINK keluar dengan return code bukan 0."""
-
-    def __init__(self, message: str, log_tail: str):
-        super().__init__(message)
-        self.log_tail = log_tail
 
 
 def resolve_pheno_flags(
@@ -988,50 +976,3 @@ def run_python_fallback_qc(
                 lf.write(f"WARNING: {warning_msg}\n")
 
     return comparison
-
-
-def run_subprocess_with_logging(
-    cmd: list[str],
-    log_file_path: Path,
-    timeout_seconds: int,
-    on_line: Callable[[str], None] | None = None,
-) -> str:
-    """Menjalankan `cmd` sebagai subprocess, streaming stdout+stderr langsung ke file log."""
-    log_file_path.parent.mkdir(parents=True, exist_ok=True)
-    log_tail: deque[str] = deque(maxlen=_LOG_TAIL_SIZE)
-
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-
-    try:
-        with open(log_file_path, "a", encoding="utf-8") as log_file:
-            for line in process.stdout:
-                log_file.write(line)
-                log_file.flush()
-                log_tail.append(line.rstrip("\n"))
-                if on_line is not None:
-                    on_line(line.rstrip("\n"))
-
-            try:
-                return_code = process.wait(timeout=timeout_seconds)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-                raise
-
-    finally:
-        if process.stdout:
-            process.stdout.close()
-
-    tail_text = "\n".join(log_tail)
-    if return_code != 0:
-        raise PlinkExecutionError(
-            f"PLINK keluar dengan return code {return_code}", log_tail=tail_text
-        )
-
-    return tail_text

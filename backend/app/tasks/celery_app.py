@@ -153,7 +153,6 @@ celery_app = Celery(
         "app.tasks.postgwas_tasks",
         "app.tasks.visualization_tasks",
         "app.tasks.annotation_tasks",
-        "app.tasks.cleanup_tasks",
         "app.tasks.retention_tasks",
     ],
 )
