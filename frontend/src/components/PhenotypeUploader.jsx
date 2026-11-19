@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { formatApiError } from "../api/formatApiError";
 import { uploadPhenotype, deletePhenotype, fetchInspection } from "../api/jobsApi";
 
 const EMPTY_ARRAY = [];
@@ -77,7 +78,7 @@ export function PhenotypeUploader({
         }
       } catch (err) {
         if (!isCancelled) {
-          setError(err.response?.data?.detail || err.message || "Gagal melakukan inspeksi data fenotipe.");
+          setError(formatApiError(err, "Gagal melakukan inspeksi data fenotipe."));
         }
       } finally {
         if (!isCancelled) setIsInspecting(false);
@@ -111,7 +112,7 @@ export function PhenotypeUploader({
       const autoTrait = res.numeric_columns?.[0] || (res.columns.length >= 3 ? res.columns[2] : "");
       setSelectedTrait(autoTrait);
     } catch (err) {
-      setError(err.response?.data?.detail || err.message || "Gagal mengunggah file fenotipe.");
+      setError(formatApiError(err, "Gagal mengunggah file fenotipe."));
     } finally {
       setIsUploading(false);
     }
@@ -130,7 +131,7 @@ export function PhenotypeUploader({
       setSelectedTrait("");
       if (onPhenotypeCleared) onPhenotypeCleared();
     } catch (err) {
-      setError(err.response?.data?.detail || err.message || "Gagal menghapus file fenotipe.");
+      setError(formatApiError(err, "Gagal menghapus file fenotipe."));
     }
   };
 

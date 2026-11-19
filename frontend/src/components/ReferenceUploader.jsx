@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { formatApiError } from "../api/formatApiError";
 import { deleteReference } from "../api/jobsApi";
 import { UPLOAD_STAGE, useChunkUpload } from "../hooks/useChunkUpload";
 import { UploadProgressBar } from "./UploadProgressBar";
@@ -78,7 +79,7 @@ export function ReferenceUploader({
     try {
       await startUpload(file);
     } catch (err) {
-      setLocalError(err?.response?.data?.detail || err?.message || "Gagal mengunggah FASTA referensi.");
+      setLocalError(formatApiError(err, "Gagal mengunggah FASTA referensi."));
     }
   }
 
@@ -94,7 +95,7 @@ export function ReferenceUploader({
       setMeta(null);
       onChangedRef.current?.(null);
     } catch (err) {
-      setLocalError(err?.response?.data?.detail || err?.message || "Gagal menghapus FASTA referensi.");
+      setLocalError(formatApiError(err, "Gagal menghapus FASTA referensi."));
     } finally {
       setDeleting(false);
     }

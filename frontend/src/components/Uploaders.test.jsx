@@ -7,7 +7,13 @@ import { PhenotypeUploader } from "./PhenotypeUploader";
 import { ReferenceUploader } from "./ReferenceUploader";
 import { VcfUploader } from "./VcfUploader";
 import { httpClient } from "../api/httpClient";
-import { fetchInspection, uploadAnnotation, uploadGoAnnotation, uploadPhenotype } from "../api/jobsApi";
+import {
+  deleteReference,
+  fetchInspection,
+  uploadAnnotation,
+  uploadGoAnnotation,
+  uploadPhenotype,
+} from "../api/jobsApi";
 
 jest.mock("../api/httpClient", () => ({
   httpClient: {
@@ -204,6 +210,43 @@ describe("Uploaders persist uploaded state across parent re-renders (A11)", () =
     await waitFor(() => {
       expect(screen.getByText("go_map.tsv")).toBeInTheDocument();
       expect(screen.getByText(/42 gen/i)).toBeInTheDocument();
+    });
+  });
+
+  test("Uploaders format 422 validation array detail safely via formatApiError (A35b)", async () => {
+    const err422 = {
+      response: {
+        status: 422,
+        data: { detail: [{ loc: ["body", "file"], msg: "Tipe file ditolak" }] },
+      },
+    };
+    uploadAnnotation.mockRejectedValueOnce(err422);
+    uploadGoAnnotation.mockRejectedValueOnce(err422);
+    deleteReference.mockRejectedValueOnce(err422);
+
+    const { container } = render(
+      <div>
+        <AnnotationUploader datasetId="ds-1" />
+        <GoMappingUploader datasetId="ds-1" />
+        <ReferenceUploader datasetId="ds-1" initialReferenceFilename="ref.fa" />
+      </div>
+    );
+
+    const gffInput = container.querySelector("#gff-file-input");
+    fireEvent.change(gffInput, {
+      target: { files: [new File(["bad"], "bad.gff3", { type: "text/plain" })] },
+    });
+
+    const goInput = screen.getByLabelText(/File Pemetaan GO/i);
+    fireEvent.change(goInput, {
+      target: { files: [new File(["bad"], "bad.gaf", { type: "text/plain" })] },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Hapus$/i }));
+
+    await waitFor(() => {
+      const matches = screen.getAllByText(/file: Tipe file ditolak/i);
+      expect(matches).toHaveLength(3);
     });
   });
 });

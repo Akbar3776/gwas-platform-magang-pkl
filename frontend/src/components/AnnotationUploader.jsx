@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { formatApiError } from "../api/formatApiError";
 import { uploadAnnotation, deleteAnnotation } from "../api/jobsApi";
 
 export function AnnotationUploader({
@@ -42,7 +43,7 @@ export function AnnotationUploader({
       setSeqids(res.seqids || []);
       if (onAnnotationChanged) onAnnotationChanged(res);
     } catch (err) {
-      setError(err.response?.data?.detail || err.message || "Gagal mengunggah file anotasi GFF3.");
+      setError(formatApiError(err, "Gagal mengunggah file anotasi GFF3."));
     } finally {
       setIsUploading(false);
     }
@@ -59,7 +60,7 @@ export function AnnotationUploader({
       setSeqids([]);
       if (onAnnotationChanged) onAnnotationChanged(null);
     } catch (err) {
-      setError(err.response?.data?.detail || err.message || "Gagal menghapus file anotasi.");
+      setError(formatApiError(err, "Gagal menghapus file anotasi."));
     }
   };
 

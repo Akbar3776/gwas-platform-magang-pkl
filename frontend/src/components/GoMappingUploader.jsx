@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { formatApiError } from "../api/formatApiError";
 import { deleteGoAnnotation, uploadGoAnnotation } from "../api/jobsApi";
 import { UploadProgressBar } from "./UploadProgressBar";
 
@@ -58,7 +59,7 @@ export function GoMappingUploader({
       setMeta(nextMeta);
       onChangedRef.current?.(nextMeta);
     } catch (err) {
-      setErrorMessage(err?.response?.data?.detail || err?.message || "Gagal mengunggah file pemetaan GO.");
+      setErrorMessage(formatApiError(err, "Gagal mengunggah file pemetaan GO."));
     } finally {
       setBusy(false);
     }
@@ -75,7 +76,7 @@ export function GoMappingUploader({
       setMeta(null);
       onChangedRef.current?.(null);
     } catch (err) {
-      setErrorMessage(err?.response?.data?.detail || err?.message || "Gagal menghapus file pemetaan GO.");
+      setErrorMessage(formatApiError(err, "Gagal menghapus file pemetaan GO."));
     } finally {
       setBusy(false);
     }
