@@ -109,3 +109,7 @@ Kami memutuskan untuk mengadopsi arsitektur **Adaptive REST Polling** yang dipad
 2. **Akumulasi Permintaan Polling pada Banyak Job Paralel**:
    - Jika satu pengguna memantau banyak job sekaligus, terjadi beberapa request per 2.5 detik.
    - *Mitigasi*: Endpoint `GET /status` sangat ringan (hanya membaca kolom status job dengan index primary key di memori database); backend FastAPI berbasis `async` dapat melayani ribuan request status per detik dengan konsumsi CPU $< 2\%$.
+
+## Status / Amandemen 2026-11
+- **Interval polling aktual:** Polling status job utama melalui hook `useJobPolling` (`frontend/src/hooks/useJobPolling.js`) dan daftar artefak `JobFilesPanel.jsx` menggunakan interval default **3.000 ms** (3 detik) dan berhenti otomatis segera setelah status mencapai `COMPLETED`, `FAILED`, atau `CANCELLED`. `WorkspaceExplorer.jsx` menyegarkan data setiap **3.500 ms**, sedangkan polling pemrosesan upload chunk pada `useChunkUpload.js` berjalan setiap **2.000 ms**.
+- **Guard respons usang & pesan error terstruktur:** Pemanggilan polling dilengkapi *cancellation token / stale-response guard* agar pemindahan job tidak menimpa state UI dengan respons request sebelumnya, dan error validasi HTTP 422 diformat konsisten lewat `formatApiError`.

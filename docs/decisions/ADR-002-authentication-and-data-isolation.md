@@ -60,3 +60,7 @@ Kami mengimplementasikan arsitektur autentikasi **Split-Token JWT**:
 - **Negatif / Mitigasi**:
   - Siklus hidup sesi di frontend memerlukan penanganan silent refresh di balik layar (interceptor HTTP) saat tab browser dibuka kembali atau access token kadaluwarsa. Diimplementasikan secara mulus pada `AuthContext.jsx`.
   - Pada lingkungan pengembangan lokal tanpa HTTPS, flag cookie `secure` dinonaktifkan secara otomatis (`secure = env != "development"`) agar pengembang lokal tidak mengalami masalah cookie yang ditolak oleh browser `localhost`.
+
+## Status / Amandemen 2026-11
+- **Flag cookie & validasi konfigurasi produksi:** `set_refresh_token_cookie` di `backend/app/core/security.py` tetap menyetel cookie `gwas_refresh_token` dengan `httponly=True`, `samesite="lax"`, dan `secure=(ENV != "development")`, sementara konfigurasi `SECRET_KEY` / `JWT_SECRET_KEY` divalidasi agar kunci default atau lemah ditolak di luar mode development.
+- **Perilaku tautan merek & validasi formulir UI auth:** Tautan merek pada bilah navigasi mengarah ke `/login` saat pengguna belum terautentikasi (dan ke `/upload` setelah masuk), dengan validasi form login/registrasi berbahasa Indonesia.

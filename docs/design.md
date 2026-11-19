@@ -1,9 +1,9 @@
 # 📐 System Design Document: Automated End-to-End GWAS Web Platform (10-Phase Pipeline)
 
 **Dokumen Spesifikasi Teknis & Desain Arsitektur Sistem**
-- **Status**: Production-Ready / Fully Implemented (Milestones M0–M10 Completed)
+- **Status**: Implementasi Aktif — Seluruh Milestone M0–M10 Tersedia (Sebagian Tahap Opsional Memerlukan Alat Eksternal / Runtime Container)
 - **Prinsip Utama**: *"Inspect $\rightarrow$ Validate $\rightarrow$ Run"*
-- **Cakupan**: Arsitektur Sistem, Rasional Pemilihan Tech Stack, Orkestrasi Pipeline Bioinformatika 10 Tahap, Kalkulasi Statistik GEMMA & PLINK 2, Struktur Populasi & LD Decay, Post-GWAS & Clumping, Anotasi Gen Kandidat GFF3, Optimasi Visualisasi Data Besar, Skema Penyimpanan, Keamanan, dan Spesifikasi API.
+- **Cakupan**: Arsitektur Sistem, Rasional Pemilihan Tech Stack, Orkestrasi Pipeline Bioinformatika 10 Tahap, Kalkulasi Statistik GEMMA (`-lm 1` / `-lmm 4`), Multi-Locus GAPIT3 (`FarmCPU`/`BLINK`/`MLMM`), Struktur Populasi & LD Decay, Post-GWAS & Clumping, Anotasi GFF3 + GO & Primer3, Optimasi Visualisasi Data Besar, Skema Penyimpanan, Keamanan, dan Spesifikasi API.
 
 ---
 
@@ -20,8 +20,8 @@ Platform ini mengintegrasikan seluruh metodologi dari panduan standar `Pipeline_
    - Menyediakan akses *real-time* ke log eksekusi setiap tahap (`inspection.log`, `bcftools.log`, `plink_qc.log`, `beagle.log`, `structure.log`, `gemma.log`, `multilocus.log`, `postgwas.log`, `visualization.log`, `annotation.log`).
    - Penjelajah file kerja job (*Job File Browser & Inline Preview*) untuk memantau artefak di setiap tahapan.
    - Status `[SKIPPED]` yang jujur dan transparan jika tahapan opsional dilewati (mis. imputasi Beagle atau multi-locus R jika runtime tidak tersedia).
-3. **Dual-Mode Execution (Docker & Windows Standalone Native)**:
-   - Berjalan secara terdistribusi penuh menggunakan **Docker Compose** (PostgreSQL + Redis + Celery Worker) atau berjalan **secara lokal langsung di Windows/Linux** tanpa Docker berkat *automatic fallback* ke **SQLite** dan *pure-Python/NumPy statistical fallback engines*.
+3. **Dual-Mode Deployment (Docker Compose Produksi & Pengembangan Lokal)**:
+   - Berjalan terdistribusi penuh menggunakan **Docker Compose** (PostgreSQL + Redis + Celery Worker dengan biner CLI lengkap & R/GAPIT3) maupun secara lokal untuk inspeksi & API ringan; fallback ke **SQLite** kini bersifat *opt-in* (`ALLOW_SQLITE_FALLBACK=true`), sedangkan tahap CLI bioinformatika utama (`bcftools`, `plink`/`plink2`, `gemma`) bersifat *fail-fast* saat biner tidak tersedia.
 4. **Ketahanan & Keselamatan Memori (*Memory Safety*)**:
    - Melindungi *host server* dari kegagalan *Out-Of-Memory (OOM)* saat menjalankan Beagle 5.4 atau mem-parsing jutaan SNP melalui pembatas memori tingkat OS (`RLIMIT_AS`), batas *heap* JVM (`-Xmx`), pembacaan bertahap (*chunked streaming*), dan pembuatan arsip ZIP secara *on-the-fly*.
 5. **Visualisasi Anti-Crash untuk Data Genomik Besar**:
@@ -40,7 +40,7 @@ flowchart TB
     end
 
     subgraph Edge["🌐 Reverse Proxy (Produksi)"]
-        NGINX["Nginx 1.25 Alpine\n- Static Asset Serving\n- Proxy /api/v1/* (Chunk 100MB)"]
+        NGINX["Nginx 1.27 Alpine\n- Static Asset Serving\n- Proxy /api/v1/* (Chunk 100MB)"]
     end
 
     subgraph APILayer["⚙️ FastAPI Application Layer"]
@@ -54,15 +54,15 @@ flowchart TB
 
     subgraph WorkerLayer["🚀 Celery Asynchronous Workers (10 Tahap)"]
         T1["Fase 1: Inspeksi Fenotipe & ID\n(phenotype_service)"]
-        T2["Fase 1B: Normalisasi VCF\n(bcftools / fallback)"]
+        T2["Fase 1B: Normalisasi VCF\n(bcftools norm/sort/index, fail-fast)"]
         T3["Fase 2: Quality Control\n(PLINK 2 / 1.9: Inbred vs Outcross)"]
         T4["Fase Imputasi: Beagle 5.4\n(None / Ref / Ref-Free)"]
         T5["Fase 3+4D: Struktur & LD Decay\n(PCA, Kinship K, KING, LD curve)"]
         T6["Fase 4A/4B: Asosiasi GWAS\n(GEMMA LMM/GLM + Covariates)"]
-        T7["Fase 4C: Multi-Locus GWAS\n(FarmCPU / BLINK / Skipped)"]
+        T7["Fase 4C: Multi-Locus GWAS\n(GAPIT3 FarmCPU/BLINK/MLMM + Python Engine)"]
         T8["Fase 4E/4F: Pasca-GWAS & Clumping\n(Lambda GC, Dynamic Thresh, Lead SNPs)"]
         T9["Fase 4G: Visualisasi & Parquet Cache\n(Parquet Engine + Lead Annotation)"]
-        T10["Fase 5: Anotasi Gen Kandidat GFF3\n(Genik/Near-gen/Intergenik + GO List)"]
+        T10["Fase 5: Anotasi GFF3, GO Enrichment & Primer3\n(Genik/Near-gen/Intergenik + GO + FASTA Primer3)"]
     end
 
     subgraph DataLayer["💾 Persistence Layer"]
@@ -84,8 +84,8 @@ flowchart TB
 | Komponen | Pilihan Teknologi | Alternatif yang Dipertimbangkan | Alasan Teknis Pemilihan (*Rationale*) |
 | :--- | :--- | :--- | :--- |
 | **API Framework** | **FastAPI (Python)** | Django REST, Flask | Mendukung *async/await* native untuk unggahan *chunk* dan *StreamingResponse*, validasi skema otomatis berbasis Pydantic v2 (inti Rust), serta integrasi langsung dengan ekosistem ilmiah Python (NumPy, SciPy, Pandas, PyArrow). |
-| **Database ORM & Engine** | **SQLAlchemy 2.0 + PostgreSQL 15 (Fallback SQLite)** | MongoDB, Raw SQL | Menjamin konsistensi transaksional ACID (relasi `users` $\rightarrow$ `datasets` $\rightarrow$ `jobs` $\rightarrow$ `results`) sekaligus fleksibilitas parameter dinamis (`JSONB`). Melalui `TypeDecorator` kustom pada [`database.py`](../backend/app/db/engine/database.py), sistem berjalan otomatis di atas SQLite untuk lingkungan pengujian dan pengembangan lokal. |
-| **Task Queue & Broker** | **Celery 5.4 + Redis 7 (Fallback Synchronous)** | RabbitMQ, RQ, Cron | Mendukung *task chaining* 10 tahap (`chain(t1, t2, ..., t10)`), penyampaian *piped context* antar-tahap, pemisahan antrean (`normalization`, `qc`, `imputation`, `structure`, `gwas`), serta pencabutan tugas (`control.revoke`) saat pengguna menghentikan job. |
+| **Database ORM & Engine** | **SQLAlchemy 2.0 + PostgreSQL 15 (Fallback SQLite Opt-in)** | MongoDB, Raw SQL | Menjamin konsistensi transaksional ACID (relasi `users` $\rightarrow$ `datasets` $\rightarrow$ `jobs` $\rightarrow$ `results`) sekaligus fleksibilitas parameter dinamis (`JSONB`). Melalui `TypeDecorator` kustom pada [`database.py`](../backend/app/db/engine/database.py), pengembang dapat mengaktifkan fallback SQLite secara *opt-in* lewat `ALLOW_SQLITE_FALLBACK=true` (default `"false"` agar produksi gagal cepat saat DB down). |
+| **Task Queue & Broker** | **Celery 5.4 + Redis 7 (Fallback Synchronous)** | RabbitMQ, RQ, Cron | Mendukung *task chaining* multi-tahap (`chain(...)`), penyampaian *piped context* antar-tahap, pemisahan antrean (`celery`, `normalization`, `qc`, `imputation`, `gwas`), serta pencabutan tugas (`control.revoke`) saat pengguna menghentikan job. |
 | **Cache Visualisasi** | **Apache Parquet (PyArrow + Snappy)** | CSV, JSON, SQLite | Format kolumnar Parquet memangkas ukuran file hingga $>85\%$ dan memuat puluhan ribu koordinat CHR/BP/P-value ke DataFrame dalam hitungan milidetik tanpa membebani memori browser. |
 | **Engine Visualisasi Frontend** | **HTML5 2D `<canvas>` + Pixel Deduplication** | D3.js SVG, Recharts, Plotly SVG | Pustaka berbasis SVG membuat node DOM untuk setiap SNP, menyebabkan *browser freeze* pada $>20.000$ titik. HTML5 `<canvas>` menggambar ratusan ribu titik pada satu bitmap dalam $<5\text{ ms}$. |
 | **Generator Laporan Ilmiah** | **Jinja2 + WeasyPrint (+ Pure-Python PDF Fallback)** | ReportLab murni, LaTeX | Merender laporan eksekutif ilmiah berstandar publikasi dalam format PDF 1.4 menggunakan template HTML/CSS, lengkap dengan generator PDF murni Python jika pustaka C GTK/Pango tidak terpasang di host Windows. |
@@ -114,7 +114,7 @@ flowchart TB
   bcftools norm -f <fasta> -Oz -o normalized.vcf.gz sorted.vcf.gz  # jika FASTA tersedia
   bcftools index -t normalized.vcf.gz
   ```
-- **Fallback**: Validasi header VCF murni Python dan kompresi gzip jika `bcftools` tidak terinstal.
+- **Fail-fast**: Tahap normalisasi wajib memakai biner `bcftools` (`normalization_tasks.py`); bila tidak ditemukan atau gagal memvalidasi/mengurutkan/mengindeks VCF, proses langsung gagal cepat (*fail-fast*) tanpa fallback Python diam-diam.
 
 ### Fase 2: Quality Control / QC ([`qc_tasks.py`](../backend/app/tasks/qc_tasks.py) & [`qc_service.py`](../backend/app/services/qc_service.py))
 - **Tujuan**: Mengeliminasi artefak genotipe dan varian langka dengan membedakan mode organisme.
@@ -138,7 +138,7 @@ flowchart TB
   1. `none`: Dilewati secara sadar dengan pencatatan status `[SKIPPED]`.
   2. `reference`: Imputasi terpandu menggunakan panel referensi populasi (1000 Genomes).
   3. `reference_free`: Phasing dan imputasi mandiri tanpa panel luar.
-- **Batas Memori**: JVM `-Xmx` dialokasikan maksimal 80% dari kuota worker dengan proteksi `-XX:+ExitOnOutOfMemoryError`. Jika Java atau panel tidak tersedia, task menghasilkan status `[SKIPPED]` yang bersih dan melanjutkan analisis menggunakan genotipe hasil QC.
+- **Batas Memori & Pra-Filter Contig**: JVM `-Xmx` dialokasikan maksimal 75% dari kuota memori container (`HEAP_FRACTION_OF_CONTAINER_LIMIT = 0.75`, ditambah headroom `RLIMIT_AS` +30% di Unix atau override `BEAGLE_MAX_MEMORY`) dengan proteksi `-XX:+ExitOnOutOfMemoryError`, serta penyaringan streaming `_prepare_beagle_safe_vcf` terhadap contig melampaui `BEAGLE_WINDOW_BUFFER` / tanpa SNP pembanding. Jika Java atau panel tidak tersedia, task menghasilkan status `[SKIPPED]` yang bersih dan melanjutkan analisis menggunakan genotipe hasil QC.
 
 ### Fase 3 + 4D: Struktur Populasi, Kinship & LD Decay ([`structure_tasks.py`](../backend/app/tasks/structure_tasks.py) & [`structure_service.py`](../backend/app/services/structure_service.py))
 - **Tujuan**: Mengukur stratifikasi populasi, kekerabatan antar-sampel, dan laju peluruhan LD untuk rekomendasi model statistik.
@@ -159,14 +159,16 @@ flowchart TB
 - **Penanganan Kovariat**:
   - Menggunakan kovariat PC hasil PCA (`-c covariates.txt`).
   - Nilai fenotipe disinkronkan secara ketat berdasarkan IID ke kolom ke-6 file `.fam`.
+- **Eksekusi GEMMA Nyata (*Fail-Fast*)**:
+  - GLM dijalankan via `gemma -lm 1`, sedangkan LMM dijalankan via `gemma -lmm 4 -k <kinship>`. Biner `gemma` bersifat wajib pada tahap ini (gagal cepat bila tidak tersedia).
 - **Normalisasi Hasil Asosiasi**:
   - `assoc_normalizer.py` memetakan output PLINK2 (`--glm`) atau GEMMA (`.assoc.txt`) ke dalam format kanonikal 10 kolom:
     `chr`, `pos`, `rs`, `a1`, `a0`, `af`, `beta`, `se`, `p`, `n`.
   - Disimpan sebagai `gwas_results.normalized.tsv`.
 
 ### Fase 4C: Multi-Locus GWAS ([`multilocus_tasks.py`](../backend/app/tasks/multilocus_tasks.py))
-- **Tujuan**: Mencegah *false positives* dan mendeteksi lokus independen menggunakan model multi-lokus iteratif (**FarmCPU** dan **BLINK**).
-- **Eksekusi**: Memanggil skrip R `gapit_runner.R` jika lingkungan R tersedia. Jika tidak diaktifkan atau R tidak terinstal, tahap ini dicatat sebagai `[SKIPPED]` secara elegan tanpa menggagalkan pipeline.
+- **Tujuan**: Mencegah *false positives* dan mendeteksi lokus independen menggunakan model multi-lokus iteratif (**FarmCPU**, **BLINK**, dan **MLMM**).
+- **Eksekusi**: Memanggil skrip R **GAPIT3** (`gapit_runner.R`) saat runtime `Rscript` tersedia. Bila `Rscript` tidak tersedia dan `ALLOW_PYTHON_MULTILOCUS=true`, tugas beralih ke *Python Native Engine* (NumPy/SciPy) dan mencatat sumber engine pada hasil; bila Multi-Locus tidak diaktifkan di konfigurasi job, tahap dicatat bersih sebagai `[SKIPPED]`.
 
 ### Fase 4E/4F: Pasca-GWAS, Lambda GC, Dynamic Thresholds & Clumping ([`postgwas_tasks.py`](../backend/app/tasks/postgwas_tasks.py) & [`postgwas_service.py`](../backend/app/services/postgwas_service.py))
 - **Kalkulasi Faktor Inflasi Genomik ($\lambda_{GC}$)**:
@@ -186,26 +188,27 @@ flowchart TB
 - **Metadata Tersemat**: Menyematkan seluruh nilai ambang batas dinamis, jumlah Lead SNPs, dan parameter visualisasi ke dalam metadata file Parquet.
 
 ### Fase 4H: Perbandingan Puncak GWAS ([`multilocus_tasks.py`](../backend/app/tasks/multilocus_tasks.py))
-- **Tujuan**: Membandingkan konsistensi lokus puncak antara Single-Locus (GEMMA) dan Multi-Locus (FarmCPU/BLINK).
+- **Tujuan**: Membandingkan konsistensi lokus puncak antara Single-Locus (GEMMA GLM/LMM) dan Multi-Locus (FarmCPU, BLINK, MLMM).
 - **Output**: Menghasilkan `Ringkasan_Puncak_GWAS.csv` dan `peak_comparison.json` yang mengelompokkan puncak menjadi *Consistent*, *Single-Only*, dan *Multi-Only*.
 
-### Fase 5: Anotasi Gen Kandidat GFF3 ([`annotation_tasks.py`](../backend/app/tasks/annotation_tasks.py) & [`annotation_service.py`](../backend/app/services/annotation_service.py))
-- **Tujuan**: Menghubungkan varian signifikan secara statistik ke fungsi genetik biologis.
-- **Logika Pemetaan**:
+### Fase 5: Anotasi Gen Kandidat GFF3, GO Enrichment & Primer3 ([`annotation_tasks.py`](../backend/app/tasks/annotation_tasks.py), [`annotation_service.py`](../backend/app/services/annotation_service.py), [`go_enrichment_service.py`](../backend/app/services/go_enrichment_service.py), [`primer_service.py`](../backend/app/services/primer_service.py))
+- **Tujuan**: Menghubungkan varian signifikan secara statistik ke fungsi genetik biologis, pengayaan jalur fungsional (*Gene Ontology*), dan rancangan primer validasi basah (PCR).
+- **Logika Pemetaan & Desain Primer**:
   1. Parser streaming GFF3 dengan normalisasi penamaan kromosom (`Chr1`, `chr01`, `1`, `NC_...`).
   2. Pemetaan Lead SNPs ke fitur gen dalam jendela LD decay ($\pm \text{window\_bp}$).
   3. Klasifikasi biologis varian:
      - **Genik**: Varian berada persis di dalam badan gen ($\text{start} \le \text{pos} \le \text{end}$).
      - **Near-gen**: Varian berada di luar gen tetapi masih dalam jarak $\le \text{window\_bp}$ (daerah promotor/regulatori).
      - **Intergenik**: Jarak varian ke gen terdekat $> \text{window\_bp}$.
-  4. Ekspor daftar gen kandidat unik ke `Daftar_Gen_Untuk_GO.txt` yang siap digunakan langsung untuk analisis pengayaan *Gene Ontology* (GO).
+  4. Ekspor daftar gen kandidat unik ke `Daftar_Gen_Untuk_GO.txt` serta analisis GO Enrichment nyata dari atribut `Ontology_term` pada GFF3 atau berkas pemetaan GO eksternal (TSV/GAF).
+  5. Ekstraksi sekuens flanking 201 bp melalui indeks FASTA (`.fai`) secara *streaming* ($O(1)$ memori) dan desain pasangan primer PCR oleh `primer3-py`; mode sintetis tidak dijalankan kecuali diizinkan eksplisit dengan `ALLOW_SYNTHETIC_ANNOTATION=true`.
 
 ---
 
 ## 4. Arsitektur Antarmuka & Visualisasi Frontend
 
 ### 4.1 Tab Panel Hasil Analisis Komprehensif ([`GwasResultsPanel.jsx`](../frontend/src/components/GwasResultsPanel.jsx))
-Antarmuka hasil menyajikan 6 tab navigasi interaktif:
+Antarmuka hasil menyajikan 7 tab navigasi interaktif:
 1. **📊 Manhattan & QQ Plot**:
    - Manhattan Plot & QQ Plot berbasis HTML5 2D Canvas dengan kecepatan render $< 5\text{ ms}$.
    - Bilah pengatur ambang batas dinamis (Bonferroni, Suggestive, FDR, LOD) yang mengubah garis ambang secara *real-time*.
@@ -221,10 +224,12 @@ Antarmuka hasil menyajikan 6 tab navigasi interaktif:
    - Panel inspeksi fenotipe dengan histogram Freedman-Diaconis, boxplot outlier, dan metrik rekonsiliasi sampel.
    - Panel perbandingan QC sebelum vs sesudah filter varian dan sampel.
 5. **🔬 Multi-Locus GWAS**:
-   - Tabel perbandingan lokus puncak asosiasi antara Single-Locus vs Multi-Locus (FarmCPU & BLINK).
-6. **🌿 Anotasi Gen GFF3**:
-   - Tabel pemetaan Lead SNPs ke fitur gen terdekat dengan badge kategori biologis (Genik, Near-gen, Intergenik).
+   - Tabel perbandingan lokus puncak asosiasi antara Single-Locus vs Multi-Locus (FarmCPU, BLINK, dan MLMM) lengkap dengan label engine.
+6. **🌿 Anotasi Gen GFF3 & GO**:
+   - Tabel pemetaan Lead SNPs ke fitur gen terdekat dengan badge kategori biologis (Genik, Near-gen, Intergenik) serta hasil analisis **Gene Ontology (GO) Enrichment**.
    - Tombol unduh satu klik untuk file `Daftar_Gen_Untuk_GO.txt`.
+7. **🧪 Flanking & Primer3**:
+   - Pratinjau sekuens DNA flanking 201 bp di sekitar varian Lead SNP serta tabel pasangan primer PCR (`LEFT`/`RIGHT` primer, Tm, GC%, ukuran produk amplicon).
 
 ---
 
@@ -232,12 +237,17 @@ Antarmuka hasil menyajikan 6 tab navigasi interaktif:
 
 | Metode | Endpoint | Deskripsi |
 | :--- | :--- | :--- |
-| `POST` | `/api/v1/pipeline/{dataset_id}/start` | Memicu eksekusi 10 tahap pipeline GWAS secara asinkron. |
+| `POST` | `/api/v1/auth/register` / `login` / `refresh` / `logout` / `GET /me` | Siklus autentikasi JWT access token & cookie HttpOnly `gwas_refresh_token`. |
+| `GET` | `/api/v1/pipeline/capabilities` | Status ketersediaan biner/runtime (`bcftools`, `plink`, `gemma`, `beagle`, `rscript`, `gapit`) & mode execution. |
+| `POST` | `/api/v1/pipeline/{dataset_id}/start` | Memicu eksekusi pipeline GWAS secara asinkron. |
+| `POST` | `/api/v1/upload/init` / `chunk` / `finalize` | Sesi unggah bertahap VCF (chunk 10 MiB) serta endpoint unggah terpisah untuk fenotipe, anotasi GFF3, anotasi GO (TSV/GAF), dan FASTA referensi. |
+| `GET` | `/api/v1/reference-panels` | Daftar panel referensi imputasi terkurasi yang tersedia. |
 | `GET` | `/api/v1/jobs/{job_id}/status` | Mengambil status keseluruhan, tahap aktif, waktu berjalan, dan log per tahap. |
 | `GET` | `/api/v1/jobs/{job_id}/logs` | Mengambil teks log eksekusi lengkap dari seluruh tahapan. |
 | `GET` | `/api/v1/jobs/{job_id}/files` | Daftar seluruh file input, intermediate, dan output dari sebuah job. |
-| `GET` | `/api/v1/jobs/{job_id}/files/content` | Pratinjau teks (150 baris pertama) atau unduhan file fisik dari job. |
+| `GET` | `/api/v1/jobs/{job_id}/files/content` | Pratinjau teks atau unduhan file fisik dari job. |
 | `POST` | `/api/v1/jobs/{job_id}/cancel` | Membatalkan job aktif dan mencabut task Celery terkait. |
+| `POST` | `/api/v1/jobs/{job_id}/retry` | Mengulangi eksekusi job dari konfigurasi dataset/parameter sebelumnya. |
 | `DELETE` | `/api/v1/jobs/{job_id}` | Menghapus riwayat job dan membersihkan direktori kerjanya di disk. |
 | `GET` | `/api/v1/results/{job_id}/manhattan-data` | Data terkompresi CHR, BP, SNP, $-\log_{10}(p)$ untuk Manhattan & QQ Plot. |
 | `GET` | `/api/v1/results/{job_id}/inspection` | Data hasil inspeksi fenotipe, histogram, dan boxplot (Fase 1). |
@@ -249,6 +259,9 @@ Antarmuka hasil menyajikan 6 tab navigasi interaktif:
 | `GET` | `/api/v1/results/{job_id}/thresholds` | Ambang signifikansi dinamis Bonferroni, FDR, LOD, Suggestive (Fase 4E). |
 | `GET` | `/api/v1/results/{job_id}/lead-snps` | Daftar varian Lead SNPs independen hasil clumping (Fase 4F). |
 | `GET` | `/api/v1/results/{job_id}/peak-comparison` | Perbandingan puncak Single-Locus vs Multi-Locus GWAS (Fase 4H). |
-| `GET` | `/api/v1/results/{job_id}/candidate-genes` | Pemetaan Lead SNPs ke fitur gen GFF3 dan daftar GO enrichment (Fase 5). |
+| `GET` | `/api/v1/results/{job_id}/multilocus-results` | Hasil detail analisis Multi-Locus GWAS (FarmCPU, BLINK, MLMM) beserta label engine (R GAPIT3 / Python Engine). |
+| `GET` | `/api/v1/results/{job_id}/candidate-genes` | Pemetaan Lead SNPs ke fitur gen GFF3 dan daftar gen untuk GO enrichment (Fase 5). |
+| `GET` | `/api/v1/results/{job_id}/go-enrichment` | Hasil analisis Gene Ontology (GO) Enrichment berbasis GFF3 `Ontology_term` atau pemetaan TSV/GAF (Fase 5.3). |
+| `GET` | `/api/v1/results/{job_id}/primers` | Sekuens flanking 201 bp (via `.fai` streaming) & pasangan primer PCR Primer3 (`primer3-py`) (Fase 5.4). |
 | `GET` | `/api/v1/results/{job_id}/export` | Aliran *streaming* unduhan berkas arsip `.zip` seluruh artefak job. |
 | `GET` | `/api/v1/results/{job_id}/report` | Unduhan dokumen laporan ilmiah resmi berformat PDF. |

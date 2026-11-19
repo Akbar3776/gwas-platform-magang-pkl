@@ -44,3 +44,7 @@ Kami memutuskan untuk menggunakan **SQLAlchemy 2.0 ORM** dengan strategi **Dual-
 - **Negatif / Mitigasi**:
   - Diperlukan kedisiplinan pengujian pada kedua dialek: suite pengujian otomatis (`pytest`) dikonfigurasi untuk memvalidasi fungsi `JSONVariant` dan integritas skema di SQLite memori maupun PostgreSQL.
   - Perubahan kolom baru memerlukan registrasi di skrip migrasi Alembic sekaligus di helper `_ensure_sqlite_columns` agar pengembang SQLite lokal tidak mengalami kegagalan query.
+
+## Status / Amandemen 2026-11
+- **Fallback SQLite bersifat *opt-in* (`ALLOW_SQLITE_FALLBACK`):** Pada `backend/app/db/engine/database.py`, pengalihan otomatis dari PostgreSQL lokal ke SQLite hanya aktif jika `ALLOW_SQLITE_FALLBACK=true` (default `"false"`). Ketika dinonaktifkan, kegagalan koneksi PostgreSQL akan gagal cepat (*fail-fast*) sehingga environment produksi tidak pernah menulis ke SQLite lokal secara diam-diam.
+- **Migrasi skema Alembic & upgrade database lama:** Container produksi menjalankan `alembic upgrade head` saat startup untuk PostgreSQL; untuk database PostgreSQL yang awalnya dibuat via `Base.metadata.create_all` sebelum Alembic aktif, jalankan `alembic stamp head` satu kali sebelum upgrade berikutnya.

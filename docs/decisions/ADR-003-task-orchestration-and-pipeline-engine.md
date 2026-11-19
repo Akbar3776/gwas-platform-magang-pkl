@@ -124,3 +124,8 @@ Kami memutuskan untuk mengadopsi **Celery** dengan broker pesan dan result backe
    - *Mitigasi*: Sistem tidak mengandalkan Celery Result Backend sebagai *single source of truth*. Setiap task langsung memperbarui tabel `AnalysisJob` di database relasional melalui transaksi sesi SQLAlchemy yang aman, sehingga status di UI selalu konsisten meskipun Celery worker selesai lebih cepat daripada polling frontend.
 3. **Penyimpanan Berkas Sementara Lintas Mesin**:
    - *Mitigasi*: Dalam skenario kluster multi-node, direktori `STORAGE_ROOT` (`/data/workspaces`) harus dimount sebagai Shared Volume (NFS atau CephFS) agar berkas VCF dan output perantara dapat diakses secara transparan oleh semua worker.
+
+## Status / Amandemen 2026-11
+- **Topologi 5 antrean Celery aktual:** Task pipeline dirutekan pada 5 antrean (`celery`, `normalization`, `qc`, `imputation`, `gwas`); seluruh tahap analisis asosiasi dan pasca-GWAS (`structure_tasks`, `gemma_tasks`, `multilocus_tasks`, `postgwas_tasks`, `visualization_tasks`, `annotation_tasks`) diproses pada antrean `gwas` (tidak ada antrean terpisah bernama `structure`).
+- **Path `STORAGE_ROOT` standar:** Konfigurasi `backend/app/core/config.py` dan Compose memakai `/data/storage` sebagai path penyimpanan bersama di container Linux (atau `backend/data/storage` di Windows native), menggantikan penamaan lama `/data/workspaces`.
+- **Kontrol siklus hidup & pre-flight kapabilitas:** Orkestrator menyediakan pembatalan (`POST /api/v1/jobs/{job_id}/cancel`), percobaan ulang (`POST /api/v1/jobs/{job_id}/retry`), serta endpoint diagnostik `GET /api/v1/pipeline/capabilities` sebelum eksekusi pipeline.

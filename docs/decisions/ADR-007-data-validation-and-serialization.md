@@ -115,3 +115,7 @@ Kami memutuskan untuk menggunakan **Pydantic v2** dengan engine berbasis **Rust 
 2. **Aturan Migrasi Sintaks Validator**:
    - Pengembang harus memahami perbedaan sintaks v2 (`@model_validator` menggantikan `@root_validator`).
    - *Mitigasi*: Repositori telah menggunakan konvensi Pydantic v2 secara konsisten di seluruh modul `app/schemas`, didukung oleh linter ruff/biome.
+
+## Status / Amandemen 2026-11
+- **Linter & verifikasi repositori aktual:** Repositori memvalidasi backend menggunakan **Flake8** (`backend/requirements-test.txt`) dan **Pytest**, serta memvalidasi frontend menggunakan **ESLint** dan **Jest** (bukan `ruff`/`biome`).
+- **Konsistensi validator Pydantic v2:** Modul di `backend/app/schemas/` secara konsisten memakai `@model_validator` dan `@field_validator` Pydantic v2 bersama `pydantic-settings` di `backend/app/core/config.py`.
