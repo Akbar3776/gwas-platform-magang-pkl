@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate, Link } from 'react-router-dom'
+import { Routes, Route, Navigate, Link, useParams } from 'react-router-dom'
 import { useAuth, ProtectedRoute } from './context/AuthContext.jsx'
 
 import LoginPage from './pages/LoginPage.jsx'
@@ -6,6 +6,11 @@ import RegisterPage from './pages/RegisterPage.jsx'
 import { GwasUploadPage } from './pages/GwasUploadPage.jsx'
 import JobStatusPage from './pages/JobStatusPage.jsx'
 import ResultsPage from './pages/ResultsPage.jsx'
+
+function ResultsPageRoute() {
+  const { jobId } = useParams()
+  return <ResultsPage key={jobId} />
+}
 
 function AppLayout({ children }) {
   const { status, user, logout } = useAuth()
@@ -40,7 +45,7 @@ export default function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/upload" element={<GwasUploadPage />} />
           <Route path="/jobs/:jobId" element={<JobStatusPage />} />
-          <Route path="/jobs/:jobId/results" element={<ResultsPage />} />
+          <Route path="/jobs/:jobId/results" element={<ResultsPageRoute />} />
         </Route>
 
         {/* Default: arahkan ke halaman upload (ProtectedRoute akan redirect ke /login jika belum auth) */}

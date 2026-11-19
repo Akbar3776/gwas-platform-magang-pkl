@@ -18,26 +18,37 @@ export function useGwasResults(jobId) {
   const abortControllerRef = useRef(null);
 
   const load = useCallback(() => {
-    if (!jobId) return;
-
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
+
+    if (!jobId) {
+      setData(null);
+      setError(null);
+      setIsLoading(false);
+      return;
+    }
+
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
+    setData(null);
     setIsLoading(true);
     setError(null);
 
     fetchManhattanData(jobId, controller.signal)
       .then((result) => {
+        if (abortControllerRef.current !== controller) return;
         setData(result);
       })
       .catch((err) => {
+        if (abortControllerRef.current !== controller) return;
         if (err && err.name === "AbortError") return; // dibatalkan, bukan error nyata
         setError(err instanceof ApiError ? err.message : "Terjadi kesalahan tak terduga saat mengambil data.");
       })
       .finally(() => {
+        if (abortControllerRef.current !== controller) return;
         setIsLoading(false);
       });
   }, [jobId]);
@@ -45,7 +56,10 @@ export function useGwasResults(jobId) {
   useEffect(() => {
     load();
     return () => {
-      if (abortControllerRef.current) abortControllerRef.current.abort();
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
     };
   }, [load]);
 

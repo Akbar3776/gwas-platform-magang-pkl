@@ -27,21 +27,25 @@ export function useJobPolling(jobId, { intervalMs = 3000, pollTrigger = 0 } = {}
   const [pollError, setPollError] = useState(null);
 
   const timerRef = useRef(null);
+  const activeTokenRef = useRef(null);
 
   useEffect(() => {
+    setJobStatus(null);
+    setPollError(null);
+
     if (!jobId) {
-      setJobStatus(null);
       setIsPolling(false);
       return undefined;
     }
 
-    let isUnmounted = false;
+    const token = { cancelled: false };
+    activeTokenRef.current = token;
     setIsPolling(true);
 
     const poll = async () => {
       try {
         const data = await fetchJobStatus(jobId);
-        if (isUnmounted) return;
+        if (token.cancelled || activeTokenRef.current !== token) return;
 
         setJobStatus(data);
         setPollError(null);
@@ -53,7 +57,7 @@ export function useJobPolling(jobId, { intervalMs = 3000, pollTrigger = 0 } = {}
 
         timerRef.current = setTimeout(poll, intervalMs);
       } catch (err) {
-        if (isUnmounted) return;
+        if (token.cancelled || activeTokenRef.current !== token) return;
         // Error jaringan sementara TIDAK menghentikan tracker — tetap coba
         // lagi di interval berikutnya, supaya hiccup koneksi singkat tidak
         // membuat progress tracker "macet" secara permanen di mata user.
@@ -67,10 +71,14 @@ export function useJobPolling(jobId, { intervalMs = 3000, pollTrigger = 0 } = {}
     poll();
 
     return () => {
-      isUnmounted = true;
+      token.cancelled = true;
+      if (activeTokenRef.current === token) {
+        activeTokenRef.current = null;
+      }
       setIsPolling(false);
       if (timerRef.current) {
         clearTimeout(timerRef.current);
+        timerRef.current = null;
       }
     };
   }, [jobId, intervalMs, pollTrigger]);
