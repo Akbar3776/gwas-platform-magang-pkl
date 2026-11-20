@@ -4,8 +4,16 @@
 
 Imputasi genotipe dengan **Beagle 5.4 (JVM)** mengonsumsi RAM jauh lebih besar dibanding tahap normalisasi VCF atau QC PLINK. Di `infra/docker-compose.yml` dan `infra/docker-compose.prod.yml`, service `celery_worker` mendengarkan antrean `-Q celery,normalization,qc,imputation,gwas` dengan batas container `4G` dan konfigurasi default:
 
-- `IMPUTATION_CONTAINER_MEM_LIMIT_MB=4096` (lihat `.env.example` dan `app/core/resource_limits.py`).
-- `BEAGLE_MAX_MEMORY=` dikosongkan secara bawaan agar `app/core/resource_limits.py` menghitung `-Xmx` secara otomatis sebesar **75%** dari `IMPUTATION_CONTAINER_MEM_LIMIT_MB` (`-Xmx3072m` untuk container `4G`), ditambah pengaman `RLIMIT_AS` OS pada Linux dan flag JVM `-XX:+ExitOnOutOfMemoryError`.
+- `BEAGLE_MAX_MEMORY=` dikosongkan secara bawaan agar JVM memakai `-XX:MaxRAMPercentage=75.0` dan `-XX:InitialRAMPercentage=10.0`; JVM membaca limit cgroup container sendiri.
+- Override eksplisit `-XmxN` dipotong maksimal 75% limit cgroup yang terdeteksi, dengan peringatan di log. `RLIMIT_AS` sengaja tidak dipakai untuk Beagle karena membatasi virtual address space JVM, bukan RSS.
+
+Uji pada container 4G dengan input job nyata menunjukkan perbedaan berikut:
+
+| Kasus | Hasil |
+| --- | --- |
+| A: `-Xmx8192m` + RLIMIT_AS 10650 MB | Crash di Window 1 karena native malloc |
+| B: `-Xmx3072m` + RLIMIT_AS 3993 MB | JVM gagal inisialisasi |
+| C: `-Xmx3072m` tanpa RLIMIT_AS | Beagle berjalan normal melewati 29 window tanpa crash |
 
 Apabila menjalankan worker terdedikasi hanya untuk queue `imputation` dengan kapasitas container lebih besar (mis. `8G`), pastikan `--concurrency=1` agar seluruh jatah `-Xmx` aman dipakai satu proses Java tanpa rebutan antar-task di cgroup yang sama:
 
@@ -15,7 +23,7 @@ services:
     build: ./backend
     command: celery -A app.tasks.celery_app worker --loglevel=info -Q imputation --concurrency=1
     environment:
-      - IMPUTATION_CONTAINER_MEM_LIMIT_MB=8192
+      - BEAGLE_MAX_MEMORY=
       - BEAGLE_JAR_PATH=/opt/tools/beagle.jar
       - CELERY_BROKER_URL=redis://redis:6379/0
       - STORAGE_ROOT=/data/storage
