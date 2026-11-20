@@ -4,16 +4,11 @@ from __future__ import annotations
 
 import gzip
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.core.resource_limits import (
-    build_java_command,
-    make_memory_limited_preexec_fn,
-    resolve_rlimit_as_bytes,
-)
+from app.core.resource_limits import read_container_memory_limit_mb, resolve_beagle_memory_flags
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, ResultType
 from app.services.qc_service import MAX_32BIT_POS, _is_gzip_file
@@ -37,14 +32,6 @@ logger = get_task_logger(__name__)
 BEAGLE_JAR_PATH = which_tool("beagle_jar") or "/opt/tools/beagle.jar"
 IMPUTATION_TIMEOUT_SECONDS = int(os.getenv("IMPUTATION_TIMEOUT_SECONDS", str(6 * 60 * 60)))
 BEAGLE_MAX_MEMORY = os.getenv("BEAGLE_MAX_MEMORY", "")
-
-
-def _memory_to_mb(value: str) -> int:
-    match = re.fullmatch(r"-Xmx(\d+)([mMgG])", value.strip())
-    if not match:
-        raise ValueError("BEAGLE_MAX_MEMORY harus berbentuk -Xmx512m atau -Xmx8g")
-    amount = int(match.group(1))
-    return amount * (1024 if match.group(2).lower() == "g" else 1)
 
 
 def _prepare_beagle_safe_vcf(
@@ -154,30 +141,18 @@ def _beagle_command(
     reference_vcf_path: str | None,
     output_prefix: str,
     params: dict[str, Any],
-):
+    warning_sink: list[str] | None = None,
+) -> list[str]:
     nthreads = int(params.get("nthreads", 2))
     beagle_jar = which_tool("beagle_jar") or BEAGLE_JAR_PATH
     java_bin = which_tool("java") or "java"
-    memory_flag = str(params.get("beagle_max_memory") or BEAGLE_MAX_MEMORY).strip()
-    if memory_flag:
-        heap_mb = _memory_to_mb(memory_flag)
-        command = [
-            java_bin,
-            memory_flag,
-            f"-Xms{min(heap_mb, 1024)}m",
-            "-XX:+ExitOnOutOfMemoryError",
-            "-jar",
-            beagle_jar,
-        ]
-        rlimit = resolve_rlimit_as_bytes(heap_mb)
-    else:
-        command, rlimit = build_java_command(
-            beagle_jar,
-            [],
-            container_mem_limit_mb=params.get("container_mem_limit_mb"),
-        )
-        if command and command[0] == "java" and java_bin != "java":
-            command[0] = java_bin
+    flags, warning = resolve_beagle_memory_flags(
+        params.get("beagle_max_memory") or BEAGLE_MAX_MEMORY,
+        read_container_memory_limit_mb(),
+    )
+    if warning and warning_sink is not None:
+        warning_sink.append(warning)
+    command = [java_bin, *flags, "-jar", beagle_jar]
     command.extend([
         f"gt={qc_vcf_path}",
         f"out={output_prefix}",
@@ -193,7 +168,7 @@ def _beagle_command(
         command.append(f"window={params['window']}")
     if params.get("overlap") is not None:
         command.append(f"overlap={params['overlap']}")
-    return command, rlimit
+    return command
 
 
 @celery_app.task(
@@ -305,12 +280,17 @@ def run_imputation(
                 f"dan diabaikan dari imputasi agar Beagle memfasekan seluruh kromosom utama secara optimal.\n"
             )
 
-        command, rlimit_bytes = _beagle_command(
+        memory_warnings: list[str] = []
+        command = _beagle_command(
             effective_vcf_path,
             ref_vcf if mode == "reference" else None,
             str(output_prefix),
             imputation_cfg,
+            warning_sink=memory_warnings,
         )
+
+        for warning in memory_warnings:
+            append_log(log_file, f"{warning}\n")
 
         append_log(
             log_file,
@@ -332,7 +312,6 @@ def run_imputation(
                     cwd=workspace,
                     log_file=log_file,
                     timeout=IMPUTATION_TIMEOUT_SECONDS,
-                    preexec_fn=make_memory_limited_preexec_fn(rlimit_bytes) if os.name != "nt" else None,
                     cancel_check=_cancel_check,
                 )
             except (JobCancelledError, CLICancelledError):

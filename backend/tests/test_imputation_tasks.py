@@ -13,7 +13,7 @@ def test_beagle_command_resolution():
             "beagle_jar": "/custom/beagle.jar",
         }.get(t)
 
-        cmd, rlimit = _beagle_command(
+        cmd = _beagle_command(
             qc_vcf_path="/path/to/qc.vcf.gz",
             reference_vcf_path=None,
             output_prefix="/path/to/out",
@@ -21,7 +21,7 @@ def test_beagle_command_resolution():
         )
 
         assert cmd[0] == "/custom/bin/java"
-        assert cmd[1] == "-Xmx4g"
+        assert cmd[1] == "-Xmx4096m"
         assert "/custom/beagle.jar" in cmd
         assert "gt=/path/to/qc.vcf.gz" in cmd
         assert "out=/path/to/out" in cmd
@@ -80,7 +80,7 @@ def test_imputation_graceful_integer_overflow_fallback(tmp_path):
 
 def test_beagle_command_supports_window_and_overlap():
     with patch("app.tasks.imputation_tasks.which_tool", return_value="custom_tool"):
-        cmd, _ = _beagle_command(
+        cmd = _beagle_command(
             qc_vcf_path="/path/to/qc.vcf.gz",
             reference_vcf_path=None,
             output_prefix="/path/to/out",
