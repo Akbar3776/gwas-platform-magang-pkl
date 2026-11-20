@@ -129,3 +129,17 @@ def _patch_testclient_if_loopback_blocked(monkeypatch):
         for mod in list(sys.modules.values()):
             if getattr(mod, "TestClient", None) is not None:
                 monkeypatch.setattr(mod, "TestClient", _DirectTestClient)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_storage_root(tmp_path_factory, monkeypatch):
+    """Setiap test memakai STORAGE_ROOT sementara; tidak pernah menyentuh storage asli."""
+    from app.core.config import settings
+    from app.services import upload_service
+
+    root = tmp_path_factory.mktemp("storage_root")
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(root))
+    monkeypatch.setattr(upload_service, "_STORAGE_ROOT", root)
+    monkeypatch.setattr(upload_service, "_STAGING_ROOT", root / "staging")
+    monkeypatch.setattr(upload_service, "_DATASETS_ROOT", root / "datasets")
+    yield root
