@@ -29,6 +29,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------------------------
+# 1b. Opsional R + GAPIT3 untuk Multi-Locus GWAS (FarmCPU, BLINK, MLMM)
+#     Diletakkan sebelum biner CLI kecil agar perubahan versi PLINK/GEMMA
+#     tidak membatalkan cache layer kompilasi R + GAPIT3.
+# ------------------------------------------------------------------------------
+ARG WITH_GAPIT=true
+ARG GAPIT_REF=b7b985fe83835089e1379e85284ff594cfdec0c6
+RUN if [ "$WITH_GAPIT" = "true" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends \
+            r-base-core r-base-dev libcurl4-openssl-dev libssl-dev libxml2-dev \
+            libuv1-dev libnlopt-dev cmake r-bioc-snpstats \
+        && Rscript -e 'options(timeout = 900); install.packages("remotes", repos="https://cloud.r-project.org", Ncpus=parallel::detectCores())' \
+        && (Rscript -e "options(timeout = 900); remotes::install_github('jiabowang/GAPIT@${GAPIT_REF}', dependencies=NA, upgrade='never', Ncpus=parallel::detectCores())" \
+            || (sleep 20 && Rscript -e "options(timeout = 900); remotes::install_github('jiabowang/GAPIT@${GAPIT_REF}', dependencies=NA, upgrade='never', Ncpus=parallel::detectCores())") \
+            || (sleep 60 && Rscript -e "options(timeout = 900); remotes::install_github('jiabowang/GAPIT@${GAPIT_REF}', dependencies=NA, upgrade='never', Ncpus=parallel::detectCores())")) \
+        && Rscript -e 'library(GAPIT)' \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# ------------------------------------------------------------------------------
 # 2. Instalasi PLINK 1.9 (binary statis resmi)
 #    Diinstal ke /usr/local/bin agar tersedia sebagai command global `plink`
 #    Catatan: sesuaikan URL versi PLINK sesuai kebutuhan (PLINK 1.9 vs PLINK 2.0)
@@ -36,6 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG PLINK_VERSION=20260913
 RUN wget -q "https://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_${PLINK_VERSION}.zip" \
     -O /tmp/plink.zip \
+    && echo "cafa2752e2ea9a69d3a7668be4e2cdc6522095645121d2ac2787866f99a3147f  /tmp/plink.zip" | sha256sum -c - \
     && unzip -o /tmp/plink.zip -d /usr/local/bin \
     && chmod +x /usr/local/bin/plink \
     && rm -f /tmp/plink.zip /usr/local/bin/LICENSE /usr/local/bin/*.txt
@@ -47,6 +67,7 @@ RUN wget -q "https://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_${PLINK_V
 ARG GEMMA_VERSION=0.98.5
 RUN wget -q "https://github.com/genetics-statistics/GEMMA/releases/download/v${GEMMA_VERSION}/gemma-${GEMMA_VERSION}-linux-static-AMD64.gz" \
     -O /tmp/gemma.gz \
+    && echo "bd4abd32433a660f7dda929e703f7f5d4fcbfc7c9330b66e287fb53013feb59d  /tmp/gemma.gz" | sha256sum -c - \
     && gunzip -c /tmp/gemma.gz > /usr/local/bin/gemma \
     && chmod +x /usr/local/bin/gemma \
     && rm -f /tmp/gemma.gz
@@ -71,22 +92,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 libcairo2 \
     libffi-dev shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
-
-# ------------------------------------------------------------------------------
-# 4b. Opsional R + GAPIT3 untuk Multi-Locus GWAS (FarmCPU, BLINK, MLMM)
-# ------------------------------------------------------------------------------
-ARG WITH_GAPIT=true
-ARG GAPIT_REF=b7b985fe83835089e1379e85284ff594cfdec0c6
-RUN if [ "$WITH_GAPIT" = "true" ]; then \
-        apt-get update && apt-get install -y --no-install-recommends \
-            r-base-core r-base-dev libcurl4-openssl-dev libssl-dev libxml2-dev \
-            libuv1-dev libnlopt-dev cmake r-bioc-snpstats \
-        && Rscript -e 'install.packages("remotes", repos="https://cloud.r-project.org", Ncpus=parallel::detectCores())' \
-        && Rscript -e "remotes::install_github('jiabowang/GAPIT@${GAPIT_REF}', dependencies=NA, upgrade='never', Ncpus=parallel::detectCores())" \
-        && Rscript -e 'library(GAPIT)' \
-        && rm -rf /var/lib/apt/lists/*; \
-    fi
-
 
 # ------------------------------------------------------------------------------
 # 5. Setup direktori kerja & dependensi Python
