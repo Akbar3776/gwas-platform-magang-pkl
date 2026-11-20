@@ -101,7 +101,7 @@ backend/
 ├── scripts/
 │   └── prepare_reference_fasta.py     # CLI streaming persiapan FASTA NCBI (rename, merge 7_1+7_2, wrap, cek --vcf)
 ├── alembic/                           # Skrip & versi migrasi PostgreSQL
-├── tests/                             # 28 modul uji pytest (225 passed, 4 skipped di host Windows)
+├── tests/                             # 29 modul uji pytest (229 passed, 4 skipped di host Windows)
 ├── Dockerfile                         # Image Docker bioinformatika lengkap (PLINK 1.9/2, GEMMA, bcftools, Beagle, R/GAPIT3)
 ├── requirements.txt                   # Dependensi Python produksi ter-pin
 ├── requirements-test.txt              # Dependensi pengujian (pytest, flake8, pip-audit)
@@ -320,7 +320,7 @@ Model ORM didefinisikan di [`app/db/engine/models.py`](app/db/engine/models.py) 
 
 ## 🧪 9. Pengujian Otomatis (Unit & End-to-End Tests)
 
-Backend dilengkapi **28 modul uji `pytest`** (`225 passed, 4 skipped` pada host Windows dari `229` kasus uji; `0 failed` pada CI Linux & container Docker `gwas-backend-gapit`):
+Backend dilengkapi **29 modul uji `pytest`** (`229 passed, 4 skipped` pada host Windows dari `233` kasus uji; `233 passed, 0 skipped` pada reproduksi CI Linux non-root di container Docker `gwas-backend-gapit`):
 
 ```powershell
 cd backend

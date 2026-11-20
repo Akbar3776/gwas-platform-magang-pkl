@@ -146,7 +146,7 @@ Berikut adalah daftar perintah utama yang sering digunakan dalam pengembangan, p
 | **Docker** | `docker compose -f infra/docker-compose.yml logs -f backend` | Memantau log aplikasi FastAPI secara *real-time*. |
 | **Docker** | `docker compose -f infra/docker-compose.yml logs -f celery_worker` | Memantau log eksekusi tugas antrean Celery worker. |
 | **Backend** | `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload` | Menjalankan FastAPI development server dengan fitur *auto-reload*. |
-| **Backend** | `cd backend && python -m pytest tests -q` | Menjalankan seluruh rangkaian pengujian unit dan integrasi e2e backend (`225 passed, 4 skipped` pada host Windows; `228 passed, 1 skipped` pada CI Linux; `229 passed, 0 skipped` di dalam image Docker `gwas-backend-gapit` dengan R/GAPIT3). |
+| **Backend** | `cd backend && python -m pytest tests -q` | Menjalankan seluruh rangkaian pengujian unit dan integrasi e2e backend (`229 passed, 4 skipped` pada host Windows; `233 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`). |
 | **Backend** | `pytest backend/tests/test_qc_commands.py -v` | Menjalankan pengujian logika QC, filtering PLINK, dan histogram komparasi. |
 | **Backend** | `pytest backend/tests/test_normalization_indexing.py -v` | Menjalankan pengujian normalisasi VCF, penanganan overflow 32-bit, dan index Tabix. |
 | **Backend** | `alembic upgrade head` | Menjalankan migrasi skema database relasional ke versi terbaru (untuk DB lama tanpa `alembic_version`, jalankan `alembic stamp head` sekali sebelumnya). |
@@ -382,14 +382,14 @@ Seluruh endpoint backend berada di bawah prefix `/api/v1` (kecuali `/health`). D
 Platform memiliki cakupan pengujian otomatis pada lapisan backend dan frontend:
 
 ### A. Backend Unit & E2E Testing (`pytest`)
-Seluruh suite pengujian backend (`225 passed, 4 skipped` di host Python Windows; `228 passed, 1 skipped` di CI Linux `python:3.11-slim-trixie`; `229 passed, 0 skipped` di dalam image Docker `gwas-backend-gapit` karena `test_gapit_integration.py` ikut dieksekusi penuh bersama R/GAPIT3) berada di `backend/tests/`:
+Seluruh suite pengujian backend (`229 passed, 4 skipped` di host Python Windows; `233 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`) berada di `backend/tests/`:
 ```powershell
 cd backend
 python -m flake8 app scripts tests --ignore=E501,E402,W503 --max-line-length=120
 python -m pytest tests -q -p no:cacheprovider
 ```
 
-Cakupan pengujian backend meliputi 28 modul uji (`backend/tests/test_*.py`), antara lain:
+Cakupan pengujian backend meliputi 29 modul uji (`backend/tests/test_*.py`), antara lain:
 - `test_which_tool.py`, `test_security_config.py`, `test_access_control.py`, `test_database_engine.py`, `test_upload_security.py`: Isolasi biner tool, konfigurasi JWT produksi, IDOR/access control, opt-in SQLite fallback, sanitasi upload.
 - `test_qc_commands.py`, `test_normalization_indexing.py`, `test_imputation_tasks.py`, `test_structure_service.py`: Filter QC `inbred`/`outcross`, overflow $>2.10\text{ Gb}$ & fallback indeks `.csi`, limit heap Beagle, LD pruning, PCA/Kinship/KING.
 - `test_assoc_normalizer.py`, `test_gemma_tasks.py`, `test_multilocus_models.py`, `test_gapit_integration.py`, `test_postgwas_service.py`, `test_manhattan_chr.py`: Normalisasi kolom, streaming GEMMA, Multi-Locus GAPIT3/Python, clumping `p1`, dan cache Parquet.
