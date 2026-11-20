@@ -52,7 +52,7 @@ backend/
 │   ├── core/
 │   │   ├── config.py                  # Konfigurasi Pydantic Settings (.env)
 │   │   ├── logging_config.py          # Konfigurasi logging standar stdout
-│   │   ├── resource_limits.py         # Pembatas RLIMIT_AS OS & kalkulasi heap JVM Beagle (75% container limit)
+│   │   ├── resource_limits.py         # Heap JVM Beagle dari limit cgroup; override dipotong maksimal 75%
 │   │   └── security.py                # Hashing bcrypt, PyJWT, require_job_owner, require_admin, & resolve_jwt_secret
 │   ├── db/
 │   │   ├── base.py                    # DeclarativeBase SQLAlchemy 2.0
@@ -101,7 +101,7 @@ backend/
 ├── scripts/
 │   └── prepare_reference_fasta.py     # CLI streaming persiapan FASTA NCBI (rename, merge 7_1+7_2, wrap, cek --vcf)
 ├── alembic/                           # Skrip & versi migrasi PostgreSQL
-├── tests/                             # 30 modul uji pytest (230 passed, 5 skipped di host Windows)
+├── tests/                             # 31 modul uji pytest (242 passed, 5 skipped di host Windows)
 ├── Dockerfile                         # Image Docker bioinformatika lengkap (PLINK 1.9/2, GEMMA, bcftools, Beagle, R/GAPIT3)
 ├── requirements.txt                   # Dependensi Python produksi ter-pin
 ├── requirements-test.txt              # Dependensi pengujian (pytest, flake8, pip-audit)
@@ -252,7 +252,6 @@ BEAGLE_JAR_PATH=/opt/tools/beagle.jar
 R_BINARY_PATH=Rscript
 
 BEAGLE_MAX_MEMORY=
-IMPUTATION_CONTAINER_MEM_LIMIT_MB=4096
 ALLOW_PYTHON_MULTILOCUS=true
 ALLOW_SYNTHETIC_ANNOTATION=false
 ```
@@ -320,7 +319,7 @@ Model ORM didefinisikan di [`app/db/engine/models.py`](app/db/engine/models.py) 
 
 ## 🧪 9. Pengujian Otomatis (Unit & End-to-End Tests)
 
-Backend dilengkapi **30 modul uji `pytest`** (`230 passed, 5 skipped` pada host Windows dari `235` kasus uji; `235 passed, 0 skipped` pada reproduksi CI Linux non-root di container Docker `gwas-backend-gapit`):
+Backend dilengkapi **31 modul uji `pytest`** (`242 passed, 5 skipped` pada host Windows; `247 passed, 0 skipped` pada reproduksi CI Linux non-root di container Docker `gwas-backend-gapit`):
 
 ```powershell
 cd backend

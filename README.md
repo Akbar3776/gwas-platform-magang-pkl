@@ -147,7 +147,7 @@ Berikut adalah daftar perintah utama yang sering digunakan dalam pengembangan, p
 | **Docker** | `docker compose -f infra/docker-compose.yml logs -f backend` | Memantau log aplikasi FastAPI secara *real-time*. |
 | **Docker** | `docker compose -f infra/docker-compose.yml logs -f celery_worker` | Memantau log eksekusi tugas antrean Celery worker. |
 | **Backend** | `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload` | Menjalankan FastAPI development server dengan fitur *auto-reload*. |
-| **Backend** | `cd backend && python -m pytest tests -q` | Menjalankan seluruh rangkaian pengujian unit dan integrasi e2e backend (`230 passed, 5 skipped` pada host Windows; `235 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`). |
+| **Backend** | `cd backend && python -m pytest tests -q` | Menjalankan seluruh rangkaian pengujian unit dan integrasi e2e backend (`242 passed, 5 skipped` pada host Windows; `247 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`). |
 | **Backend** | `pytest backend/tests/test_qc_commands.py -v` | Menjalankan pengujian logika QC, filtering PLINK, dan histogram komparasi. |
 | **Backend** | `pytest backend/tests/test_normalization_indexing.py -v` | Menjalankan pengujian normalisasi VCF, penanganan overflow 32-bit, dan index Tabix. |
 | **Backend** | `alembic upgrade head` | Menjalankan migrasi skema database relasional ke versi terbaru (untuk DB lama tanpa `alembic_version`, jalankan `alembic stamp head` sekali sebelumnya). |
@@ -288,7 +288,7 @@ sequenceDiagram
 1. **Fase 1: Fenotipe & Inspeksi Data**: Rekonsiliasi ID sampel antara VCF vs Fenotipe, penanganan missing values, statistik deskriptif, histogram aturan **Freedman-Diaconis**, boxplot outlier Tukey, serta pembuatan `keep_ids.txt` dan `pheno_plink.txt`.
 2. **Fase 1B: Normalisasi VCF (`bcftools`)**: Validasi header `#CHROM POS ID REF ALT`, penyaringan posisi $> 2.10\text{ Gb}$ (`MAX_32BIT_POS = 2.100.000.000` untuk mencegah *integer overflow* 32-bit pada library C & Beagle sliding window), pengurutan koordinat (`sort`), *left-alignment* (`norm`), dan pembuatan indeks Tabix (`.tbi`, dengan fallback otomatis ke `.csi` untuk kromosom $> 512\text{ Mb}$).
 3. **Fase 2: Quality Control Lanjutan (`PLINK 2 / 1.9`)**: Dukungan mode organisme (`inbred` galur murni tanpa filter HWE vs `outcross` dengan filter HWE), `--snps-only just-acgt`, `--max-alleles 2`, penataan ID varian `@:#`, serta kalkulasi riil metrik komparasi before/after QC beserta histogram MAF & missingness.
-4. **Fase Imputasi Genotipe Opsional (`Beagle 5.4`)**: Mode `none` (bypass dengan status transparan `[SKIPPED]`), `reference` (menggunakan panel referensi), dan `reference_free` dengan penghitungan otomatis heap JVM 75% limit worker.
+4. **Fase Imputasi Genotipe Opsional (`Beagle 5.4`)**: Mode `none` (bypass dengan status transparan `[SKIPPED]`), `reference` (menggunakan panel referensi), dan `reference_free` dengan heap JVM berbasis limit cgroup (`MaxRAMPercentage=75%`); override `-XmxN` dipotong maksimal 75% dan `RLIMIT_AS` tidak dipakai.
 5. **Fase 3 + 4D: Struktur Populasi, Kinship & LD Decay**: LD pruning pairwise nyata (`plink`/`plink2 --indep-pairwise`), analisis PCA 10 komponen (dengan parameter UI `n_pc_covariates`) + PVE + k-means, Centered Kinship Matrix ($K = \frac{1}{p}WW^T$), tabel kekerabatan robust KING eksak, kurva peluruhan LD decay ($r^2$ vs jarak pasangan basa), serta rekomendasi otomatis GLM vs LMM.
 6. **Fase 4A/4B: Analisis Asosiasi GWAS (GEMMA LMM & GLM)**: Pengujian Linear Mixed Model (`gemma -lmm 4 -c covariates.txt`) dan General Linear Model (`gemma -lm 1`) langsung via biner GEMMA (*fail-fast*), sinkronisasi format baris WSL, dan normalisasi output ke format kanonikal TSV 10 kolom.
 7. **Fase 4C: Multi-Locus GWAS (`FarmCPU`, `BLINK`, & `MLMM`)**: Analisis multi-lokus iteratif menggunakan **GAPIT3** (`gapit_runner.R`) di R, atau fallback **Python Native Engine** (`ALLOW_PYTHON_MULTILOCUS=true`) bila R/GAPIT tidak terpasang, lengkap dengan label engine sumber, perhitungan `PVE(%)`, `H&B.P.Value`, serta Manhattan/QQ Plot per model.
@@ -383,14 +383,14 @@ Seluruh endpoint backend berada di bawah prefix `/api/v1` (kecuali `/health`). D
 Platform memiliki cakupan pengujian otomatis pada lapisan backend dan frontend:
 
 ### A. Backend Unit & E2E Testing (`pytest`)
-Seluruh suite pengujian backend (`230 passed, 5 skipped` di host Python Windows; `235 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`) berada di `backend/tests/`:
+Seluruh suite pengujian backend (`242 passed, 5 skipped` di host Python Windows; `247 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`) berada di `backend/tests/`:
 ```powershell
 cd backend
 python -m flake8 app scripts tests --ignore=E501,E402,W503 --max-line-length=120
 python -m pytest tests -q -p no:cacheprovider
 ```
 
-Cakupan pengujian backend meliputi 30 modul uji (`backend/tests/test_*.py`), antara lain:
+Cakupan pengujian backend meliputi 31 modul uji (`backend/tests/test_*.py`), antara lain:
 - `test_which_tool.py`, `test_security_config.py`, `test_access_control.py`, `test_database_engine.py`, `test_upload_security.py`: Isolasi biner tool, konfigurasi JWT produksi, IDOR/access control, opt-in SQLite fallback, sanitasi upload.
 - `test_qc_commands.py`, `test_normalization_indexing.py`, `test_imputation_tasks.py`, `test_structure_service.py`: Filter QC `inbred`/`outcross`, overflow $>2.10\text{ Gb}$ & fallback indeks `.csi`, limit heap Beagle, LD pruning, PCA/Kinship/KING.
 - `test_assoc_normalizer.py`, `test_gemma_tasks.py`, `test_multilocus_models.py`, `test_gapit_integration.py`, `test_postgwas_service.py`, `test_manhattan_chr.py`: Normalisasi kolom, streaming GEMMA, Multi-Locus GAPIT3/Python, clumping `p1`, dan cache Parquet.
