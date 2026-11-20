@@ -7,6 +7,8 @@ psycopg2-binary==2.9.9
 celery==5.4.0
 flower==2.2.0
 redis==5.0.8
+# kombu (transport Celery) di-pin: kombu>=5.7 mewajibkan redis-py>=6.1 dan membuat worker crash (VersionMismatch).
+kombu==5.4.2
 pydantic[email]==2.14.3
 email-validator==2.4.0
 pydantic-settings==2.5.2
