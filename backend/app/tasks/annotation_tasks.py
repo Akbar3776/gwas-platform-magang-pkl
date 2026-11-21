@@ -15,11 +15,15 @@ from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, 
 from app.schemas.pipeline import AnnotationConfig
 from app.services.annotation_service import (
     map_lead_snps_to_genes,
-    merge_annotation_input_snps,
     normalize_chr_name,
     parse_gff3_genes,
 )
-from app.services.chromosome_service import _is_gzip_file, load_split_map, restore_coord
+from app.services.chromosome_service import _is_gzip_file, load_split_map
+from app.services.flanking_service import (
+    attach_ref_alt_from_bim,
+    collect_significant_snps,
+    write_candidate_regions,
+)
 from app.services.go_enrichment_service import run_go_enrichment_analysis
 from app.services.primer_service import generate_flanking_and_primers
 from app.tasks._common import (
@@ -99,6 +103,23 @@ def _enrich_vcf_ref_alleles(
         pass
 
 
+def _resolve_bim_candidate(workspace: Path, ctx: dict[str, Any]) -> Path | None:
+    """Resolve authoritative .bim genotype file (post-imputation or QC)."""
+    imp_skipped = (workspace.parent / "imputation" / "skipped.json").is_file()
+    imp_bim = workspace.parent / "imputation" / "imputed.bim"
+    if imp_bim.is_file() and not imp_skipped:
+        return imp_bim
+    qc_bim = workspace.parent / "qc" / "plink_qc.bim"
+    if qc_bim.is_file():
+        return qc_bim
+    ctx_prefix = ctx.get("genotype_bfile_prefix")
+    if ctx_prefix:
+        cand = Path(f"{ctx_prefix}.bim")
+        if cand.is_file():
+            return cand
+    return None
+
+
 @celery_app.task(
     bind=True,
     name="app.tasks.annotation_tasks.run_annotation",
@@ -162,10 +183,17 @@ def run_annotation(
 
         # Gabungkan dengan SNP signifikan multi-locus (jika ada)
         ml_candidates: list[dict[str, Any]] = list(ctx.get("multilocus_lead_snps") or [])
+        ml_engines: dict[str, str] = {}
         ml_summary_f = workspace.parent / "multilocus" / "multilocus_summary.json"
         if ml_summary_f.is_file():
             try:
                 ml_data = json.loads(ml_summary_f.read_text(encoding="utf-8"))
+                raw_eng = ml_data.get("engines") or {}
+                if isinstance(raw_eng, dict):
+                    ml_engines.update({str(k).upper(): str(v) for k, v in raw_eng.items() if v})
+                for m_name, m_entry in (ml_data.get("results") or {}).items():
+                    if isinstance(m_entry, dict) and m_entry.get("engine"):
+                        ml_engines.setdefault(str(m_name).upper(), str(m_entry["engine"]))
                 if not ml_candidates:
                     ml_candidates.extend(ml_data.get("lead_snps") or [])
                 for m_entry in (ml_data.get("results") or {}).values():
@@ -184,33 +212,22 @@ def run_annotation(
             except Exception:
                 p_thresh = None
 
-        lead_snps = merge_annotation_input_snps(
-            gemma_snps=gemma_leads,
-            multilocus_snps=ml_candidates,
-            p_threshold=p_thresh,
-        )
-
         split_map = load_split_map(job_id)
-        for s in lead_snps:
-            pseudo_chr = str(s.get("pseudo_chr") or s.get("chr") or "").strip()
-            pseudo_pos = int(s.get("pseudo_pos") or s.get("pos") or 0)
-            if split_map is not None:
-                orig_chr, orig_pos = restore_coord(pseudo_chr, pseudo_pos, split_map)
-            elif s.get("orig_chr") and s.get("orig_pos"):
-                orig_chr = str(s["orig_chr"]).strip()
-                orig_pos = int(s["orig_pos"])
-            else:
-                orig_chr, orig_pos = pseudo_chr, pseudo_pos
-            s["pseudo_chr"] = pseudo_chr
-            s["pseudo_pos"] = pseudo_pos
-            s["orig_chr"] = orig_chr
-            s["orig_pos"] = orig_pos
-            s["chr"] = orig_chr
-            s["pos"] = orig_pos
+        lead_snps = collect_significant_snps(
+            lead_snps=gemma_leads,
+            multilocus_snps=ml_candidates,
+            engines_by_method=ml_engines,
+            p_threshold=p_thresh,
+            split_map=split_map,
+        )
 
         # Jendela LD decay (default kb * 1000 bp)
         window_kb = cfg.window_kb or ctx.get("ld_decay_kb") or (job.parameters or {}).get("chosen_ld_decay_kb") or 100
         window_bp = int(window_kb * 1000)
+
+        bim_candidate = _resolve_bim_candidate(workspace, ctx)
+        if lead_snps:
+            attach_ref_alt_from_bim(lead_snps, bim_candidate, split_map=split_map)
 
         mark_job(
             db,
@@ -249,14 +266,22 @@ def run_annotation(
                     fasta_candidate = ref_f
                     break
 
-        if fasta_candidate is not None and lead_snps:
+        if lead_snps and any(not s.get("ref") or not s.get("alt") for s in lead_snps):
             _enrich_vcf_ref_alleles(
-                lead_snps[:20],
+                lead_snps,
                 [
                     (workspace.parent / "qc" / "plink_qc.vcf.gz", True),
                     (workspace.parent / "normalization" / "normalized.vcf.gz", True),
                     (Path(dataset.storage_path) if dataset.storage_path else None, False),
                 ],
+            )
+
+        if lead_snps:
+            write_candidate_regions(
+                lead_snps,
+                window_bp,
+                workspace / "candidate_regions.csv",
+                workspace / "candidate_regions.bed",
             )
 
         primers_data: dict[str, Any] | None = None
@@ -336,7 +361,7 @@ def run_annotation(
             window_bp=window_bp,
         )
         for src_snp, mapped_row in zip(lead_snps, mapped_rows):
-            for coord_key in ("orig_chr", "orig_pos", "pseudo_chr", "pseudo_pos"):
+            for coord_key in ("orig_chr", "orig_pos", "pseudo_chr", "pseudo_pos", "engine"):
                 if coord_key in src_snp:
                     mapped_row[coord_key] = src_snp[coord_key]
             for allele_key in ("ref", "alt"):
