@@ -68,6 +68,7 @@ describe("QcComparisonPanel", () => {
     expect(screen.getByText("185")).toBeInTheDocument();
     expect(screen.getByText("Missing SNP (GENO)")).toBeInTheDocument();
     expect(screen.getByText("Missing Sampel (MIND)")).toBeInTheDocument();
+    expect(screen.queryByText("Scaffold dibuang (normalisasi)")).not.toBeInTheDocument();
   });
 
   it("renders Fase 0 split chromosome parts and INVALID_POS label for new pipeline payloads", () => {
@@ -105,5 +106,43 @@ describe("QcComparisonPanel", () => {
     expect(screen.getByText("INVALID_POS dibuang")).toBeInTheDocument();
     expect(screen.getByText("2")).toBeInTheDocument();
     expect(screen.queryByText("Overflow 32-bit (Fase 0)")).not.toBeInTheDocument();
+  });
+
+  it("renders excluded scaffold removal count card when present in payload (W49)", () => {
+    render(
+      <QcComparisonPanel
+        comparison={{
+          before: {
+            n_snps: 1863771,
+            n_samples: 233,
+            maf_hist: { edges: [0, 0.5], counts: [1863771] },
+          },
+          after: {
+            n_snps: 900000,
+            n_samples: 209,
+            maf_hist: { edges: [0, 0.5], counts: [900000] },
+          },
+          removed: {
+            overflow_32bit: 0,
+            invalid_pos: 0,
+            non_primary_variants: 172345,
+            non_primary_contigs: 10805,
+            maf: 400000,
+            geno: 500000,
+            mind: 14,
+            hwe: 0,
+            non_snp: 0,
+            multiallelic: 0,
+          },
+          split_chromosomes: ["chr7"],
+          split_chrom_parts: { chr7: 3 },
+          snp_loss_fraction: 0.517,
+        }}
+      />
+    );
+
+    expect(screen.getByText("Scaffold dibuang (normalisasi)")).toBeInTheDocument();
+    expect(screen.getByText("172.345")).toBeInTheDocument();
+    expect(screen.getByText("10.805 kontig")).toBeInTheDocument();
   });
 });

@@ -60,6 +60,8 @@ export function QcComparisonPanel({ comparison }) {
   const splitListText = formatSplitChromosomes(split_chromosomes, split_chrom_parts);
   const hasSplitChroms = Boolean(splitListText);
   const hasInvalidPos = removed.invalid_pos !== undefined && removed.invalid_pos !== null;
+  const hasNonPrimaryRemoved =
+    removed.non_primary_variants !== undefined && removed.non_primary_variants !== null;
   const hasLegacyOverflow = Number(removed.overflow_32bit || 0) > 0 && !hasSplitChroms;
   const useLegacyOverflowCard = hasLegacyOverflow || (!hasSplitChroms && !hasInvalidPos);
 
@@ -153,6 +155,19 @@ export function QcComparisonPanel({ comparison }) {
             <div style={{ padding: 8, background: "#f8fafc", borderRadius: 6, border: "1px solid #f1f5f9" }}>
               <span style={{ fontSize: 11, color: "#64748b" }}>INVALID_POS dibuang</span>
               <div style={{ fontSize: 15, fontWeight: 700, color: "#b91c1c" }}>{formatCount(removed.invalid_pos)}</div>
+            </div>
+          )}
+          {hasNonPrimaryRemoved && (
+            <div style={{ padding: 8, background: "#f8fafc", borderRadius: 6, border: "1px solid #f1f5f9" }}>
+              <span style={{ fontSize: 11, color: "#64748b" }}>Scaffold dibuang (normalisasi)</span>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#475569" }}>
+                {formatCount(removed.non_primary_variants)}
+              </div>
+              {removed.non_primary_contigs !== undefined && removed.non_primary_contigs !== null && (
+                <div style={{ fontSize: 11, color: "#64748b" }}>
+                  {formatCount(removed.non_primary_contigs)} kontig
+                </div>
+              )}
             </div>
           )}
           <div style={{ padding: 8, background: "#f8fafc", borderRadius: 6, border: "1px solid #f1f5f9" }}>

@@ -70,6 +70,24 @@ export function DataInspectionPanel({ report, fileId, jobId }) {
     Boolean(chromosome_summary.needs_split)
     || chromRows.some((c) => Boolean(c?.needs_split) || Number(c?.overflow_count || 0) > 0)
   );
+  const excludedContigs = hasChromosomeSummary && chromosome_summary.excluded_contigs && typeof chromosome_summary.excluded_contigs === "object"
+    ? chromosome_summary.excluded_contigs
+    : null;
+  const excludedContigsCount = excludedContigs ? Number(excludedContigs.contigs || 0) : 0;
+  const excludedVariantsCount = excludedContigs ? Number(excludedContigs.variants || 0) : 0;
+  const excludedExamples = excludedContigs && Array.isArray(excludedContigs.examples)
+    ? excludedContigs.examples.filter(Boolean)
+    : [];
+  const fallbackPrimaryVariants = chromRows.reduce((acc, row) => acc + Number(row?.total_snp || 0), 0);
+  const totalVariantsCount = hasChromosomeSummary
+    ? Number(chromosome_summary.total_variants ?? (fallbackPrimaryVariants + excludedVariantsCount))
+    : 0;
+  const excludedPctText = totalVariantsCount > 0
+    ? ((excludedVariantsCount / totalVariantsCount) * 100).toLocaleString("id-ID", {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      })
+    : "0,0";
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
@@ -401,6 +419,58 @@ export function DataInspectionPanel({ report, fileId, jobId }) {
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {excludedContigsCount > 0 && (
+            <div
+              role="note"
+              title={
+                excludedExamples.length > 0
+                  ? `Contoh kontig non-utama: ${excludedExamples.join(", ")}`
+                  : "Kontig non-utama dibuang otomatis pada tahap normalisasi"
+              }
+              style={{
+                padding: "9px 12px",
+                borderRadius: 6,
+                background: "#f8fafc",
+                border: "1px solid #cbd5e1",
+                color: "#334155",
+                fontSize: 12,
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 8,
+              }}
+            >
+              <div>
+                <strong>Scaffold/kontig non-utama:</strong>{" "}
+                {formatInt(excludedContigsCount)} kontig · {formatInt(excludedVariantsCount)} SNP ({excludedPctText}%) — dibuang di normalisasi
+                {excludedExamples.length > 0 && (
+                  <details style={{ marginTop: 4, color: "#475569", fontSize: 11.5 }}>
+                    <summary style={{ cursor: "pointer" }}>
+                      Contoh kontig ({excludedExamples.length})
+                    </summary>
+                    <span style={{ fontFamily: "monospace" }}>
+                      {excludedExamples.join(", ")}
+                    </span>
+                  </details>
+                )}
+              </div>
+              <span
+                style={{
+                  display: "inline-block",
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  background: "#e2e8f0",
+                  color: "#1e293b",
+                  fontSize: 11,
+                  fontWeight: 700,
+                }}
+              >
+                Dibuang di normalisasi
+              </span>
             </div>
           )}
         </div>
