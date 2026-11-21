@@ -810,12 +810,62 @@ def _run_python_multilocus_engine(
     }
 
 
+def _write_gapit_cv(
+    eigenvec_file: Path,
+    samples: list[str],
+    n_pcs: int,
+    cv_path: Path,
+) -> int:
+    """Build gapit_CV.txt aligned strictly to gapit_GD sample order from PCA eigenvec."""
+    eigenvec_by_iid: dict[str, list[str]] = {}
+    lines = [
+        ln.strip()
+        for ln in eigenvec_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        if ln.strip()
+    ]
+    for idx, line in enumerate(lines):
+        cols = line.split()
+        if not cols:
+            continue
+        if idx == 0 and (
+            cols[0].startswith("#")
+            or (len(cols) >= 2 and cols[0].upper() in {"FID", "#FID"} and cols[1].upper() == "IID")
+        ):
+            continue
+        if len(cols) < 3:
+            continue
+        iid = cols[1].strip()
+        if iid:
+            eigenvec_by_iid.setdefault(iid, cols[2:])
+
+    missing_samples = [sid for sid in samples if sid not in eigenvec_by_iid]
+    if missing_samples:
+        preview = ", ".join(missing_samples[:5])
+        suffix = "..." if len(missing_samples) > 5 else ""
+        raise ValueError(
+            f"Sampel pada gapit_GD tidak ditemukan di {eigenvec_file.name}: {preview}{suffix}"
+        )
+
+    min_avail_pcs = min(len(eigenvec_by_iid[sid]) for sid in samples)
+    k_pcs = min(int(n_pcs), min_avail_pcs)
+    if k_pcs < 1:
+        raise ValueError(f"Jumlah PC pada {eigenvec_file.name} kurang dari 1")
+
+    header = ["Taxa", *(f"PC{i}" for i in range(1, k_pcs + 1))]
+    cv_lines = ["\t".join(header)]
+    for sid in samples:
+        cv_lines.append("\t".join([sid, *eigenvec_by_iid[sid][:k_pcs]]))
+    cv_path.write_text("\n".join(cv_lines) + "\n", encoding="utf-8")
+    return k_pcs
+
+
 def _write_gapit_inputs(
     workspace: Path,
     log_file: Path,
     ctx: dict[str, Any] | None = None,
-) -> tuple[Path, Path, Path, dict[int, str]]:
-    """Generate GAPIT inputs from the shared genotype source and inspection phenotype."""
+    n_pcs: int = 3,
+) -> tuple[Path, Path, Path, Path | None, dict[int, str]]:
+    """Generate GAPIT inputs from the shared genotype source, phenotype, and PCA covariates."""
     from app.services.structure_service import read_plink_binary
 
     bfile_prefix = _resolve_genotype_bfile(workspace, ctx) or workspace.parent / "qc" / "plink_qc"
@@ -948,12 +998,28 @@ def _write_gapit_inputs(
         for s_idx, sample_id in enumerate(samples):
             gd_writer.writerow([sample_id, *g_kept[s_idx].tolist()])
 
+    cv_path: Path | None = None
+    ctx_eigenvec = (ctx or {}).get("eigenvec_path")
+    eigenvec_candidate = Path(ctx_eigenvec) if ctx_eigenvec and Path(ctx_eigenvec).is_file() else (
+        workspace.parent / "structure" / "pca_results.eigenvec"
+    )
+    if eigenvec_candidate.is_file() and int(n_pcs) > 0:
+        cv_target = workspace / "gapit_CV.txt"
+        k_used = _write_gapit_cv(eigenvec_candidate, samples, int(n_pcs), cv_target)
+        cv_path = cv_target
+        append_log(
+            log_file,
+            f"[7.1] Kovariat PCA CV dibuat: {cv_target.name} ({len(samples)} sampel, {k_used} PC dari {eigenvec_candidate.name}).",
+        )
+
     append_log(
         log_file,
         f"[7.1] Input GAPIT dibuat: {len(samples)} sampel, {len(snp_names)} SNP "
-        f"(Y={y_path.name}, GD={gd_path.name}, GM={gm_path.name}).",
+        f"(Y={y_path.name}, GD={gd_path.name}, GM={gm_path.name}"
+        + (f", CV={cv_path.name}" if cv_path is not None else "")
+        + ").",
     )
-    return y_path, gd_path, gm_path, chr_idx_to_label
+    return y_path, gd_path, gm_path, cv_path, chr_idx_to_label
 
 
 def _restore_gapit_chr_labels(tsv_path: Path, chr_idx_to_label: dict[int, str]) -> None:
@@ -1001,7 +1067,12 @@ def _run_gapit_models(
         if stale_tsv.is_file():
             stale_tsv.unlink(missing_ok=True)
 
-    y_path, gd_path, gm_path, chr_idx_to_label = _write_gapit_inputs(workspace, log_file, ctx=ctx)
+    y_path, gd_path, gm_path, cv_path, chr_idx_to_label = _write_gapit_inputs(
+        workspace,
+        log_file,
+        ctx=ctx,
+        n_pcs=n_pcs,
+    )
     cmd = [
         rscript,
         str(runner_script),
@@ -1009,9 +1080,22 @@ def _run_gapit_models(
         "--gd", str(gd_path),
         "--gm", str(gm_path),
         "--models", ",".join(methods),
-        "--pca", str(n_pcs),
-        "--out", str(workspace),
     ]
+    if cv_path is not None:
+        cmd.extend(["--cv", str(cv_path), "--pca", "0"])
+        append_log(
+            log_file,
+            "[7.1] GAPIT memakai CV dari pca_results.eigenvec (PCA.total=0); "
+            "SNP.MAF tidak ditambahkan karena QC sudah menerapkan --maf.",
+        )
+    else:
+        cmd.extend(["--pca", str(n_pcs)])
+        append_log(
+            log_file,
+            f"[7.1] File pca_results.eigenvec tidak ditemukan; GAPIT memakai PCA.total={n_pcs}. "
+            "SNP.MAF tidak ditambahkan karena QC sudah menerapkan --maf.",
+        )
+    cmd.extend(["--out", str(workspace)])
     run_cli_command(
         cmd,
         cwd=workspace,

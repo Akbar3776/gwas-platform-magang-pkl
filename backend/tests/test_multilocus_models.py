@@ -160,7 +160,8 @@ def test_write_gapit_inputs_formats_y_gd_gm_and_imputes_missing(tmp_path, monkey
         lambda prefix: (samples, variants, g_mat),
     )
 
-    y_path, gd_path, gm_path, chr_idx_to_label = multilocus_tasks._write_gapit_inputs(workspace, log_file)
+    y_path, gd_path, gm_path, cv_path, chr_idx_to_label = multilocus_tasks._write_gapit_inputs(workspace, log_file)
+    assert cv_path is None
 
     y_lines = y_path.read_text(encoding="utf-8").splitlines()
     assert y_lines[0] == "Taxa\tTRAIT"
@@ -467,3 +468,107 @@ def test_multilocus_extract_and_peak_comparison_preserve_orig_coords(tmp_path):
         rows = list(csv.DictReader(cf))
     assert rows[0]["Orig_Chr"] == "chr7"
     assert rows[0]["Orig_Pos"] == "5500"
+
+
+def test_run_gapit_models_aligns_cv_from_eigenvec_and_sets_pca_zero(tmp_path, monkeypatch):
+    job_dir = tmp_path / "jobs" / "gapit_cv_ok"
+    workspace = job_dir / "multilocus"
+    inspect_dir = job_dir / "inspection"
+    struct_dir = job_dir / "structure"
+    workspace.mkdir(parents=True)
+    inspect_dir.mkdir(parents=True)
+    struct_dir.mkdir(parents=True)
+    log_file = workspace / "multilocus.log"
+    runner_script = job_dir / "gapit_runner.R"
+    runner_script.write_text("# runner", encoding="utf-8")
+
+    (inspect_dir / "pheno_plink.txt").write_text(
+        "FID\tIID\tTRAIT\nS1\tS1\t1.0\nS2\tS2\t2.0\nS3\tS3\t3.0\n",
+        encoding="utf-8",
+    )
+    # Intentionally shuffled sample order + 4 available PCs; request k = 2
+    (struct_dir / "pca_results.eigenvec").write_text(
+        "S3\tS3\t0.31\t0.32\t0.33\t0.34\n"
+        "S1\tS1\t0.11\t0.12\t0.13\t0.14\n"
+        "S2\tS2\t0.21\t0.22\t0.23\t0.24\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "app.services.structure_service.read_plink_binary",
+        lambda prefix: (
+            ["S1", "S2", "S3"],
+            [{"chrom": "1", "rsid": "rs1", "pos": 100, "a1": "A", "a2": "G"}],
+            np.array([[0], [1], [2]], dtype=np.int8),
+        ),
+    )
+
+    seen_cmds = []
+
+    def fake_run_cli(cmd, **kwargs):
+        seen_cmds.append(list(cmd))
+        (workspace / "GAPIT.Association.GWAS_Results.BLINK.TRAIT(NYC).csv").write_text(
+            "SNP,Chr,Pos,P.value,MAF,effect,nobs,H&B.P.Value\nrs1,1,100,0.01,0.3,0.4,3,0.05\n",
+            encoding="utf-8",
+        )
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(multilocus_tasks, "run_cli_command", fake_run_cli)
+
+    results = multilocus_tasks._run_gapit_models(
+        rscript="/usr/bin/Rscript",
+        runner_script=runner_script,
+        methods=["BLINK"],
+        workspace=workspace,
+        log_file=log_file,
+        n_pcs=2,
+    )
+
+    assert set(results.keys()) == {"BLINK"}
+    assert len(seen_cmds) == 1
+    cmd = seen_cmds[0]
+    cv_file = workspace / "gapit_CV.txt"
+    assert "--cv" in cmd and cmd[cmd.index("--cv") + 1] == str(cv_file)
+    assert "--pca" in cmd and cmd[cmd.index("--pca") + 1] == "0"
+    assert "SNP.MAF" not in " ".join(cmd)
+
+    cv_lines = [ln.split("\t") for ln in cv_file.read_text(encoding="utf-8").splitlines()]
+    assert cv_lines[0] == ["Taxa", "PC1", "PC2"]
+    assert [row[0] for row in cv_lines[1:]] == ["S1", "S2", "S3"]
+    assert cv_lines[1] == ["S1", "0.11", "0.12"]
+    assert cv_lines[3] == ["S3", "0.31", "0.32"]
+    assert all(len(row) == 3 for row in cv_lines)
+
+    log_txt = log_file.read_text(encoding="utf-8")
+    assert "PCA.total=0" in log_txt
+    assert "SNP.MAF" in log_txt
+
+
+def test_write_gapit_inputs_raises_when_eigenvec_missing_gd_sample(tmp_path, monkeypatch):
+    job_dir = tmp_path / "jobs" / "gapit_cv_missing"
+    workspace = job_dir / "multilocus"
+    inspect_dir = job_dir / "inspection"
+    struct_dir = job_dir / "structure"
+    workspace.mkdir(parents=True)
+    inspect_dir.mkdir(parents=True)
+    struct_dir.mkdir(parents=True)
+    log_file = workspace / "multilocus.log"
+
+    (inspect_dir / "pheno_plink.txt").write_text(
+        "FID\tIID\tTRAIT\nS1\tS1\t1.0\nS2\tS2\t2.0\nS3\tS3\t3.0\n",
+        encoding="utf-8",
+    )
+    (struct_dir / "pca_results.eigenvec").write_text(
+        "S1\tS1\t0.1\t0.2\nS2\tS2\t0.3\t0.4\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "app.services.structure_service.read_plink_binary",
+        lambda prefix: (
+            ["S1", "S2", "S3"],
+            [{"chrom": "1", "rsid": "rs1", "pos": 100, "a1": "A", "a2": "G"}],
+            np.array([[0], [1], [2]], dtype=np.int8),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="S3"):
+        multilocus_tasks._write_gapit_inputs(workspace, log_file, n_pcs=2)

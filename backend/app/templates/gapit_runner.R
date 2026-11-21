@@ -73,6 +73,7 @@ myGM <- data.table::fread(opt$gm, data.table = FALSE, check.names = FALSE)
 myCV <- NULL
 if (!is.null(opt$cv) && file.exists(opt$cv)) {
   myCV <- read.table(opt$cv, header = TRUE, sep = "\t", check.names = FALSE, stringsAsFactors = FALSE)
+  cat(sprintf("Kovariat CV    : %s (%d sampel, %d PC, PCA.total=%d)\n", opt$cv, nrow(myCV), ncol(myCV) - 1, as.integer(opt$pca)))
 }
 
 models_to_run <- unlist(strsplit(opt$models, ","))

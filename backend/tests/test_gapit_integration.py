@@ -48,9 +48,11 @@ def test_gapit_runs_all_multilocus_models_end_to_end(tmp_path, monkeypatch):
     job_dir = tmp_path / "job"
     qc_dir = job_dir / "qc"
     inspect_dir = job_dir / "inspection"
+    struct_dir = job_dir / "structure"
     workspace = job_dir / "multilocus"
     qc_dir.mkdir(parents=True)
     inspect_dir.mkdir(parents=True)
+    struct_dir.mkdir(parents=True)
     workspace.mkdir(parents=True)
     log_file = workspace / "multilocus.log"
 
@@ -58,6 +60,16 @@ def test_gapit_runs_all_multilocus_models_end_to_end(tmp_path, monkeypatch):
     for sid, y_val in zip(samples, y_vals):
         pheno_lines.append(f"{sid}\t{sid}\t{y_val:.6f}")
     (inspect_dir / "pheno_plink.txt").write_text("\n".join(pheno_lines) + "\n", encoding="utf-8")
+
+    # Shuffled PCA eigenvec order -> gapit_CV.txt must reorder cleanly to match gapit_GD.txt
+    pc_matrix = rng.normal(0.0, 1.0, size=(n_samples, 3))
+    shuffled_indices = rng.permutation(n_samples)
+    eigen_lines = []
+    for idx in shuffled_indices:
+        sid = samples[int(idx)]
+        pcs_txt = "\t".join(f"{float(v):.6f}" for v in pc_matrix[int(idx)])
+        eigen_lines.append(f"{sid}\t{sid}\t{pcs_txt}")
+    (struct_dir / "pca_results.eigenvec").write_text("\n".join(eigen_lines) + "\n", encoding="utf-8")
 
     monkeypatch.setattr(
         "app.services.structure_service.read_plink_binary",
@@ -75,7 +87,13 @@ def test_gapit_runs_all_multilocus_models_end_to_end(tmp_path, monkeypatch):
         methods=["FarmCPU", "BLINK", "MLMM"],
         workspace=workspace,
         log_file=log_file,
+        n_pcs=3,
     )
+
+    cv_lines = [ln.split("\t") for ln in (workspace / "gapit_CV.txt").read_text(encoding="utf-8").splitlines()]
+    gd_lines = [ln.split("\t") for ln in (workspace / "gapit_GD.txt").read_text(encoding="utf-8").splitlines()]
+    assert cv_lines[0] == ["Taxa", "PC1", "PC2", "PC3"]
+    assert [row[0] for row in cv_lines[1:]] == [row[0] for row in gd_lines[1:]]
 
     expected_chr_by_snp = {v["rsid"]: v["chrom"] for v in variants}
     assert set(results.keys()) == {"FARMCPU", "BLINK", "MLMM"}
