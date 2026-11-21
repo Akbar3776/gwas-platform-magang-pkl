@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-import json
-import os
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 from typing import Any, Callable
 
 from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep
-from app.services.qc_service import MAX_32BIT_POS, filter_vcf_32bit_overflow
+from app.services.chromosome_service import (
+    load_chromosome_summary,
+    save_split_map,
+    split_map_path,
+    split_overflow_chromosomes,
+    summarize_chromosomes,
+)
 from app.tasks._common import (
     JobCancelledError,
     ensure_not_cancelled,
@@ -19,6 +24,8 @@ from app.tasks._common import (
     is_job_cancelled,
     mark_job,
     which_tool,
+    write_json,
+    write_stage_summary,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
 from app.utils.process import CLICancelledError, CLIExecutionError, run_cli_command
@@ -159,14 +166,18 @@ def run_vcf_normalization(
                 log.write("[ERROR] Tools bcftools tidak ditemukan; proses normalisasi dihentikan.\n")
             raise RuntimeError("Tools bcftools tidak ditemukan; proses normalisasi dihentikan.")
 
-        clean_vcf_path = workspace / "clean.vcf"
+        split_vcf_path = workspace / "split_input.vcf"
         sorted_path = workspace / "sorted.vcf.gz"
         norm_tmp_path = workspace / "normalized.vcf.gz.tmp"
-        overflow_stats = {
+        map_file = split_map_path(job_id)
+        overflow_stats: dict[str, Any] = {
             "total_variants": 0,
             "kept_variants": 0,
             "overflow_removed": 0,
-            "max_pos": MAX_32BIT_POS,
+            "invalid_pos_removed": 0,
+            "split_applied": False,
+            "overflow_chromosomes": [],
+            "max_pos": int(settings.CHROM_SPLIT_THRESHOLD_BP),
         }
 
         def _cancel_check() -> bool:
@@ -182,33 +193,52 @@ def run_vcf_normalization(
                 cancel_check=_cancel_check,
             )
 
-            # Fase 0. Additional (QC Overflowing):
-            # zcat namafile_vcf.gz | awk '/^#/ || $2 <= 2147483647' > clean.vcf
-            overflow_stats = filter_vcf_32bit_overflow(
-                input_vcf=input_path,
-                output_vcf=clean_vcf_path,
-                max_pos=MAX_32BIT_POS,
-                compress_output=False,
+            insp_summary_file = workspace.parent / "inspection" / "chromosome_characteristics_summary.txt"
+            insp_summary = load_chromosome_summary(insp_summary_file)
+            if insp_summary is None:
+                insp_summary = summarize_chromosomes(input_path)
+
+            split_result = split_overflow_chromosomes(
+                input_path,
+                split_vcf_path,
+                summary=insp_summary,
             )
-            with (workspace / "qc_overflow_stats.json").open("w", encoding="utf-8") as sf:
-                json.dump(overflow_stats, sf, indent=2)
+            overflow_stats = {
+                "total_variants": split_result["total_variants"],
+                "kept_variants": split_result["kept_variants"],
+                "overflow_removed": 0,
+                "invalid_pos_removed": split_result["invalid_pos_removed"],
+                "split_applied": split_result["split_applied"],
+                "overflow_chromosomes": split_result["overflow_chromosomes"],
+                "threshold_bp": split_result["threshold_bp"],
+                "unit_bp": split_result["unit_bp"],
+                "max_pos": split_result["threshold_bp"],
+            }
+            write_json(workspace / "qc_overflow_stats.json", overflow_stats)
+            split_desc = (
+                ", ".join(split_result["overflow_chromosomes"])
+                if split_result["overflow_chromosomes"]
+                else "tidak ada"
+            )
             with log_path.open("a", encoding="utf-8") as log:
                 log.write(
-                    f"[Fase 0 - QC Overflowing] zcat {input_path.name} | awk '/^#/ || $2 <= {MAX_32BIT_POS}' > clean.vcf\n"
-                    f"[Fase 0 - QC Overflowing] Selesai: total={overflow_stats['total_variants']} varian, "
-                    f"lolos={overflow_stats['kept_variants']} varian (POS <= {MAX_32BIT_POS}), "
-                    f"tereliminasi overflow 32-bit={overflow_stats['overflow_removed']} varian.\n"
+                    f"[Fase 0 - Pemecahan Kromosom] threshold={split_result['threshold_bp']:,} bp, "
+                    f"unit={split_result['unit_bp']:,} bp, dipecah={split_desc}\n"
+                    f"[Fase 0 - Pemecahan Kromosom] Selesai: total={split_result['total_variants']} varian, "
+                    f"dipertahankan={split_result['kept_variants']} varian, "
+                    f"invalid POS<=0 disaring={split_result['invalid_pos_removed']} varian, "
+                    f"overflow dibuang=0.\n"
                 )
 
             reference_fasta = params.get("reference_fasta")
             run_cli_command(
-                [bcftools_bin, "sort", "-Oz", "-o", str(sorted_path), str(clean_vcf_path)],
+                [bcftools_bin, "sort", "-Oz", "-o", str(sorted_path), str(split_vcf_path)],
                 cwd=workspace,
                 log_file=log_path,
                 timeout=NORMALIZATION_TIMEOUT_SECONDS,
                 cancel_check=_cancel_check,
             )
-            clean_vcf_path.unlink(missing_ok=True)
+            split_vcf_path.unlink(missing_ok=True)
 
             if reference_fasta:
                 run_cli_command(
@@ -231,17 +261,23 @@ def run_vcf_normalization(
                     log_path,
                     cancel_check=_cancel_check,
                 )
+            ensure_not_cancelled(job_id, run_id=run_id)
+            if not output_path.is_file():
+                raise RuntimeError("Normalisasi selesai tetapi file VCF hasil normalisasi tidak ditemukan")
+            saved_map_path = save_split_map(job_id, split_result["split_map"])
         except (JobCancelledError, CLICancelledError):
-            clean_vcf_path.unlink(missing_ok=True)
+            split_vcf_path.unlink(missing_ok=True)
             sorted_path.unlink(missing_ok=True)
             norm_tmp_path.unlink(missing_ok=True)
             output_path.unlink(missing_ok=True)
+            map_file.unlink(missing_ok=True)
             raise
         except Exception as cli_exc:
-            clean_vcf_path.unlink(missing_ok=True)
+            split_vcf_path.unlink(missing_ok=True)
             sorted_path.unlink(missing_ok=True)
             norm_tmp_path.unlink(missing_ok=True)
             output_path.unlink(missing_ok=True)
+            map_file.unlink(missing_ok=True)
             logger.error("bcftools gagal memproses VCF (%s); menghentikan pipeline.", cli_exc)
             with log_path.open("a", encoding="utf-8") as log:
                 log.write(
@@ -249,13 +285,19 @@ def run_vcf_normalization(
                 )
             raise
 
-        if not output_path.is_file():
-            raise RuntimeError("Normalisasi selesai tetapi file VCF hasil normalisasi tidak ditemukan")
-
         with log_path.open("a", encoding="utf-8") as log:
             log.write(
                 f"[SUCCESS] Normalisasi VCF selesai ({output_path.stat().st_size} bytes).\n"
             )
+
+        chrom_split_meta = {
+            "applied": bool(split_result["split_applied"]),
+            "overflow_chromosomes": list(split_result["overflow_chromosomes"]),
+            "invalid_pos_removed": int(split_result["invalid_pos_removed"]),
+            "threshold_bp": int(split_result["threshold_bp"]),
+            "unit_bp": int(split_result["unit_bp"]),
+            "split_map_path": str(saved_map_path),
+        }
 
         # Keep job status as RUNNING_QC so the frontend polling hook knows the pipeline is still active.
         mark_job(
@@ -273,9 +315,11 @@ def run_vcf_normalization(
             if job is not None:
                 job.parameters = {
                     **(job.parameters or {}),
-                    "qc_overflow_removed": overflow_stats["overflow_removed"],
+                    "qc_overflow_removed": 0,
                     "qc_overflow_stats": overflow_stats,
+                    "chrom_split": chrom_split_meta,
                 }
+            write_stage_summary(job_id, "normalization", chrom_split_meta, db=db)
             db.commit()
         finally:
             db.close()
@@ -284,7 +328,9 @@ def run_vcf_normalization(
             "job_id": job_id,
             "dataset_id": dataset_id,
             "normalized_vcf_path": str(output_path),
-            "qc_overflow_removed": overflow_stats["overflow_removed"],
+            "split_map_path": str(saved_map_path),
+            "chrom_split": chrom_split_meta,
+            "qc_overflow_removed": 0,
             "qc_overflow_stats": overflow_stats,
             "log_file": str(log_path),
         }

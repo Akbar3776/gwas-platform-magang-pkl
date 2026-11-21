@@ -12,12 +12,12 @@ from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, ResultType
 from app.schemas.pipeline import QCPipelineConfig
+from app.services.chromosome_service import load_split_map, save_split_map, split_overflow_chromosomes
 from app.services.qc_service import (
     MAX_32BIT_POS,
     build_plink19_qc_commands,
     build_plink2_qc_commands,
     build_qc_comparison_from_plink_outputs,
-    filter_vcf_32bit_overflow,
 )
 from app.services.report_generator import parse_qc_summary_from_log
 from app.tasks._common import (
@@ -149,24 +149,40 @@ def run_qc_pipeline(
             or (job.parameters or {}).get("qc_overflow_removed")
             or 0
         )
+        chrom_split_ctx = ctx.get("chrom_split") or (job.parameters or {}).get("chrom_split") or {}
+        invalid_pos_removed = int(chrom_split_ctx.get("invalid_pos_removed") or 0)
+        split_chromosomes: list[str] = list(chrom_split_ctx.get("overflow_chromosomes") or [])
+
         norm_stats_file = workspace.parent / "normalization" / "qc_overflow_stats.json"
-        if overflow_removed == 0 and norm_stats_file.is_file():
+        if norm_stats_file.is_file():
             try:
                 norm_stats = json.loads(norm_stats_file.read_text(encoding="utf-8"))
-                overflow_removed = int(norm_stats.get("overflow_removed", 0))
+                if overflow_removed == 0:
+                    overflow_removed = int(norm_stats.get("overflow_removed", 0))
+                if invalid_pos_removed == 0:
+                    invalid_pos_removed = int(norm_stats.get("invalid_pos_removed", 0))
+                if not split_chromosomes:
+                    split_chromosomes = list(norm_stats.get("overflow_chromosomes") or [])
             except Exception:
                 pass
 
+        if not split_chromosomes:
+            existing_map = load_split_map(job_id)
+            if existing_map and isinstance(existing_map.get("split_chroms"), dict):
+                split_chromosomes = sorted(existing_map["split_chroms"].keys())
+
         standalone_clean_vcf: Path | None = None
         if not ctx.get("normalized_vcf_path") and Path(input_vcf_path).is_file():
-            standalone_clean_vcf = workspace / "clean.vcf"
-            overflow_stats = filter_vcf_32bit_overflow(
+            standalone_clean_vcf = workspace / "split_input.vcf"
+            split_stats = split_overflow_chromosomes(
                 input_vcf=input_vcf_path,
                 output_vcf=standalone_clean_vcf,
-                max_pos=MAX_32BIT_POS,
-                compress_output=False,
             )
-            overflow_removed = int(overflow_stats["overflow_removed"])
+            if split_stats["split_applied"]:
+                save_split_map(job_id, split_stats["split_map"])
+            overflow_removed = int(split_stats["overflow_removed"])
+            invalid_pos_removed = int(split_stats["invalid_pos_removed"])
+            split_chromosomes = list(split_stats["overflow_chromosomes"])
             input_vcf_path = str(standalone_clean_vcf)
 
         plink2_bin = which_tool("plink2")
@@ -175,12 +191,13 @@ def run_qc_pipeline(
         has_plink = bool(plink_bin)
 
         tool_name = "PLINK 2" if has_plink2 else ("PLINK 1.9" if has_plink else "Tidak tersedia")
+        split_label = ", ".join(split_chromosomes) if split_chromosomes else "tidak ada"
         append_log(
             log_file,
             f"=== TAHAP 3: QUALITY CONTROL ({tool_name}) ===\n"
             f"Waktu mulai      : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
             f"Input VCF        : {input_vcf_path}\n"
-            f"Fase 0 Overflow  : {overflow_removed} varian tereliminasi (POS > {MAX_32BIT_POS} / 32-bit overflow)\n"
+            f"Fase 0 Split Chr : {split_label} (invalid_pos={invalid_pos_removed}, overflow_removed={overflow_removed}, batas {MAX_32BIT_POS})\n"
             f"Populasi         : {cfg.population_type.value} (HWE: {'Nonaktif' if cfg.population_type.value == 'inbred' else cfg.hwe})\n"
             f"Parameter        : MAF={cfg.maf}, GENO={'Nonaktif' if cfg.geno is None else cfg.geno}, MIND={cfg.mind}\n"
             f"SNP-only/Bi-all  : {cfg.snps_only} / max-alleles={cfg.max_alleles}\n"
@@ -307,6 +324,10 @@ def run_qc_pipeline(
                 "snp_loss_fraction": 0.0,
                 "warning": None,
             }
+
+        comparison_data.setdefault("removed", {})["overflow_32bit"] = overflow_removed
+        comparison_data["removed"]["invalid_pos"] = invalid_pos_removed
+        comparison_data["split_chromosomes"] = split_chromosomes
 
         write_json(comparison_file, comparison_data)
 

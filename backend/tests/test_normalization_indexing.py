@@ -197,26 +197,32 @@ def test_qc_halts_immediately_on_plink_failure_without_python_fallback(monkeypat
     assert "[ERROR] PLINK2 gagal dieksekusi" in log_path.read_text(encoding="utf-8")
 
 
-def test_normalization_executes_fase0_qc_overflowing_before_bcftools_sort(monkeypatch, tmp_path: Path):
-    """run_vcf_normalization harus menjalankan Fase 0 (POS <= MAX_32BIT_POS) sebelum bcftools sort."""
+def test_normalization_splits_overflow_chromosomes_before_bcftools_sort_and_saves_map(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """run_vcf_normalization harus memecah kromosom overflow sebelum bcftools sort dan menyimpan split map."""
+    import json
     import uuid
     from app.core.config import settings
     from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, UploadStatus
-    from app.services.qc_service import MAX_32BIT_POS
-    from app.tasks import normalization_tasks
+    from app.services.chromosome_service import SIGNED_32BIT_MAX, load_split_map, restore_coord
+    from app.tasks import _common as task_common, normalization_tasks
     from tests.test_pipeline_e2e import InMemoryDB
 
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
     db = InMemoryDB()
     monkeypatch.setattr(normalization_tasks, "SessionLocal", lambda: db)
+    monkeypatch.setattr(task_common, "SessionLocal", lambda: db)
 
     vcf_file = tmp_path / "garlic.vcf"
     vcf_file.write_text(
         "##fileformat=VCFv4.2\n"
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        "Chr1\t0\trs_invalid\tA\tG\t.\tPASS\t.\tGT\t0/0\n"
         "Chr1\t1000\trs_ok\tA\tG\t.\tPASS\t.\tGT\t0/1\n"
-        f"Chr1\t{MAX_32BIT_POS}\trs_limit\tC\tT\t.\tPASS\t.\tGT\t0/0\n"
-        f"Chr1\t{MAX_32BIT_POS + 1}\trs_overflow\tG\tA\t.\tPASS\t.\tGT\t1/1\n",
+        f"Chr1\t{SIGNED_32BIT_MAX}\trs_limit\tC\tT\t.\tPASS\t.\tGT\t0/0\n"
+        f"Chr1\t{SIGNED_32BIT_MAX + 1}\trs_overflow\tG\tA\t.\tPASS\t.\tGT\t1/1\n",
         encoding="utf-8",
     )
 
@@ -241,13 +247,13 @@ def test_normalization_executes_fase0_qc_overflowing_before_bcftools_sort(monkey
     )
     db.add(job)
 
-    captured_clean_content = []
+    captured_split_content = []
 
     def mock_run_cli(cmd, **kwargs):
         if "sort" in cmd:
-            clean_arg = Path(cmd[-1])
-            assert clean_arg.name == "clean.vcf"
-            captured_clean_content.append(clean_arg.read_text(encoding="utf-8"))
+            split_arg = Path(cmd[-1])
+            assert split_arg.name == "split_input.vcf"
+            captured_split_content.append(split_arg.read_text(encoding="utf-8"))
             out_idx = cmd.index("-o") + 1
             Path(cmd[out_idx]).write_bytes(b"sorted_gz")
         return MagicMock(returncode=0)
@@ -257,10 +263,85 @@ def test_normalization_executes_fase0_qc_overflowing_before_bcftools_sort(monkey
 
     res = normalization_tasks.run_vcf_normalization(job_id=str(job.id), dataset_id=str(ds.id))
 
-    assert len(captured_clean_content) == 1
-    assert "rs_ok" in captured_clean_content[0]
-    assert "rs_limit" in captured_clean_content[0]
-    assert "rs_overflow" not in captured_clean_content[0]
-    assert res["qc_overflow_removed"] == 1
-    assert job.parameters["qc_overflow_removed"] == 1
-    assert not (tmp_path / "jobs" / str(job.id) / "normalization" / "clean.vcf").exists()
+    assert len(captured_split_content) == 1
+    assert "rs_invalid" not in captured_split_content[0]
+    assert "rs_ok" in captured_split_content[0]
+    assert "rs_limit" in captured_split_content[0]
+    assert "rs_overflow" in captured_split_content[0]
+    expected_pseudo_pos = (SIGNED_32BIT_MAX + 1) - (2 * 1_000_000_000)
+    assert f"Chr1_p2\t{expected_pseudo_pos}\trs_overflow" in captured_split_content[0]
+
+    assert res["qc_overflow_removed"] == 0
+    assert res["chrom_split"]["applied"] is True
+    assert res["chrom_split"]["overflow_chromosomes"] == ["Chr1"]
+    assert res["chrom_split"]["invalid_pos_removed"] == 1
+    assert job.parameters["qc_overflow_removed"] == 0
+    assert job.parameters["chrom_split"]["applied"] is True
+    assert not (tmp_path / "jobs" / str(job.id) / "normalization" / "split_input.vcf").exists()
+
+    loaded_map = load_split_map(str(job.id))
+    assert loaded_map is not None
+    assert restore_coord("Chr1_p2", expected_pseudo_pos, loaded_map) == ("Chr1", SIGNED_32BIT_MAX + 1)
+
+    stage_summary_file = tmp_path / "jobs" / str(job.id) / "normalization" / "stage_summary.json"
+    assert stage_summary_file.is_file()
+    stage_payload = json.loads(stage_summary_file.read_text(encoding="utf-8"))
+    assert stage_payload["overflow_chromosomes"] == ["Chr1"]
+
+
+def test_normalization_real_bcftools_on_overflow_dataset(
+    monkeypatch,
+    tmp_path: Path,
+    overflow_dataset: dict,
+):
+    from app.tasks._common import which_tool
+
+    if which_tool("bcftools") is None:
+        pytest.skip("bcftools tidak tersedia di host")
+
+    import gzip
+    import uuid
+    from app.core.config import settings
+    from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, UploadStatus
+    from app.services.chromosome_service import load_split_map
+    from app.tasks import _common as task_common, normalization_tasks
+    from tests.test_pipeline_e2e import InMemoryDB
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    db = InMemoryDB()
+    monkeypatch.setattr(normalization_tasks, "SessionLocal", lambda: db)
+    monkeypatch.setattr(task_common, "SessionLocal", lambda: db)
+
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=uuid.uuid4(),
+        original_filename="overflow.vcf.gz",
+        storage_path=str(overflow_dataset["vcf_path"]),
+        file_size_bytes=overflow_dataset["vcf_path"].stat().st_size,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    db.add(ds)
+
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=ds.id,
+        triggered_by=ds.owner_id,
+        pipeline_type="full_pipeline",
+        current_step=PipelineStep.NORMALIZATION,
+        overall_status=JobStatus.RUNNING_NORMALIZATION,
+        parameters={},
+    )
+    db.add(job)
+
+    res = normalization_tasks.run_vcf_normalization(job_id=str(job.id), dataset_id=str(ds.id))
+    norm_gz = Path(res["normalized_vcf_path"])
+    assert norm_gz.is_file()
+    assert Path(str(norm_gz) + ".tbi").is_file() or Path(str(norm_gz) + ".csi").is_file()
+    assert res["chrom_split"]["overflow_chromosomes"] == ["chr7"]
+    assert res["chrom_split"]["invalid_pos_removed"] == 1
+    assert load_split_map(str(job.id)) is not None
+
+    with gzip.open(norm_gz, "rt", encoding="utf-8") as fh:
+        data_lines = [ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")]
+    assert len(data_lines) == 17
+    assert any(ln.startswith("chr7_p2\t1500\t") for ln in data_lines)
