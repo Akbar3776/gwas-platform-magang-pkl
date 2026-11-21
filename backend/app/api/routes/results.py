@@ -21,6 +21,7 @@ from app.core.security import require_job_owner
 from app.db.engine.database import get_db
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, Result, ResultType
 from app.schemas.results import ManhattanDataResponse
+from app.services.chromosome_service import load_split_map
 from app.services.manhattan_parser import (
     generate_manhattan_cache,
     load_manhattan_cache,
@@ -122,6 +123,7 @@ def _resolve_multilocus_manhattan_cache(job_id: uuid.UUID, model_key: str) -> st
         summary = generate_manhattan_cache(
             assoc_file_path=str(tsv_path),
             output_cache_path=str(model_cache),
+            split_map=load_split_map(job_id),
         )
         return str(summary["output_path"])
     return str(model_cache)
@@ -182,6 +184,7 @@ def get_manhattan_data(
                 cache_summary = generate_manhattan_cache(
                     assoc_file_path=str(assoc_path),
                     output_cache_path=str(fallback_cache),
+                    split_map=load_split_map(job.id),
                 )
                 cache_path = cache_summary["output_path"]
                 job.parameters = {**params, "manhattan_cache_path": cache_path}
@@ -197,6 +200,7 @@ def get_manhattan_data(
                 generate_manhattan_cache(
                     assoc_file_path=str(assoc_path),
                     output_cache_path=str(cache_path),
+                    split_map=load_split_map(job.id),
                 )
 
     try:
@@ -212,8 +216,8 @@ def get_manhattan_data(
     return ManhattanDataResponse(
         job_id=str(job_id),
         total_points=len(df),
-        chr=[int(float(v)) if pd.notna(v) and str(v).replace(".", "", 1).isdigit() else 0 for v in df["CHR"].tolist()],
-        bp=[int(float(v)) if pd.notna(v) and str(v).replace(".", "", 1).isdigit() else 0 for v in df["BP"].tolist()],
+        chr=[int(v) if isinstance(v, int) and not isinstance(v, bool) else (int(float(v)) if pd.notna(v) and str(v).replace(".", "", 1).isdigit() else 0) for v in df["CHR"].tolist()],
+        bp=[int(v) if isinstance(v, int) and not isinstance(v, bool) else (int(float(v)) if pd.notna(v) and str(v).replace(".", "", 1).isdigit() else 0) for v in df["BP"].tolist()],
         snp=[str(v) for v in df["SNP"].tolist()],
         log10_p=[round(float(v), 4) if pd.notna(v) else 0.0 for v in df["LOG10_P"].tolist()],
         chr_labels=chr_labels,
@@ -388,7 +392,6 @@ def get_peak_comparison_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -
         multi_leads = ml_data.get("lead_snps", []) if isinstance(ml_data, dict) else []
 
         if single_leads or multi_leads:
-            from app.services.chromosome_service import load_split_map
             from app.tasks.multilocus_tasks import _single_model_label, generate_peak_comparison
             job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
             job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
@@ -417,7 +420,6 @@ def get_multilocus_results_data(job_id: uuid.UUID, db: Session = Depends(get_db)
         if needs_enrichment:
             job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "multilocus"
             if job_root.is_dir():
-                from app.services.chromosome_service import load_split_map
                 from app.tasks.multilocus_tasks import (
                     METHOD_DISPLAY_NAMES,
                     extract_multilocus_leads_from_tsv,

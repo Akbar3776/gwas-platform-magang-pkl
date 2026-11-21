@@ -318,3 +318,79 @@ def test_get_manhattan_data_supports_multilocus_models_and_per_model_cache(tmp_p
     with pytest.raises(HTTPException) as missing_exc:
         results_routes.get_manhattan_data(job_id=job_id, model="MLMM", db=db)
     assert missing_exc.value.status_code == 404
+
+
+def test_manhattan_merges_split_chromosomes_and_preserves_int64_bp(tmp_path, monkeypatch):
+    from app.core.config import settings
+    from app.services.chromosome_service import load_split_map, save_split_map
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = uuid.uuid4()
+    job_root = tmp_path / "jobs" / str(job_id)
+    vis_dir = job_root / "visualization"
+    vis_dir.mkdir(parents=True)
+
+    save_split_map(
+        job_id,
+        {
+            "threshold_bp": 2_147_483_647,
+            "unit_bp": 1_000_000_000,
+            "split_chroms": {"chr7": {"max_orig_pos": 2_160_284_371, "num_parts": 3, "parts": ["chr7_p0", "chr7_p1", "chr7_p2"]}},
+            "parts": {
+                "chr7_p0": {"orig_chr": "chr7", "part": 0, "offset_bp": 0},
+                "chr7_p1": {"orig_chr": "chr7", "part": 1, "offset_bp": 1_000_000_000},
+                "chr7_p2": {"orig_chr": "chr7", "part": 2, "offset_bp": 2_000_000_000},
+            },
+        },
+    )
+
+    assoc_file = job_root / "gwas.assoc.txt"
+    assoc_file.write_text(
+        "chr\trs\tps\tp_wald\n"
+        "chr7_p0\tchr7:500\t500\t0.25\n"
+        "chr7_p2\tchr7:2160284371\t160284371\t1e-9\n",
+        encoding="utf-8",
+    )
+
+    cache_path = vis_dir / "manhattan_cache.parquet"
+    split_map = load_split_map(job_id)
+    manhattan_parser.generate_manhattan_cache(
+        str(assoc_file),
+        str(cache_path),
+        split_map=split_map,
+    )
+
+    cached_df = manhattan_parser.load_manhattan_cache(str(cache_path))
+    assert str(cached_df["BP"].dtype) == "int64"
+    assert cached_df["CHR"].tolist() == [7, 7]
+    assert cached_df["BP"].tolist() == [500, 2_160_284_371]
+    assert manhattan_parser.load_manhattan_chr_labels(str(cache_path)) is None
+
+    job = AnalysisJob(
+        id=job_id,
+        dataset_id=uuid.uuid4(),
+        triggered_by=uuid.uuid4(),
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.COMPLETED,
+        assoc_output_path=str(assoc_file),
+        parameters={"manhattan_cache_path": str(cache_path)},
+    )
+
+    class _FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return job
+
+    class _FakeDB:
+        def query(self, model):
+            return _FakeQuery()
+
+        def commit(self):
+            pass
+
+    resp = results_routes.get_manhattan_data(job_id=job_id, db=_FakeDB())
+    assert resp.chr == [7, 7]
+    assert resp.bp == [500, 2_160_284_371]
+    assert resp.chr_labels is None

@@ -51,4 +51,19 @@ describe("buildManhattanLayout", () => {
     expect(formatChromosomeLabel(4, labels)).toBe("4");
     expect(formatChromosomeLabel(23, null)).toBe("23");
   });
+
+  it("preserves exact >2^31 integer BP positions and monotonic cumulative coordinates", () => {
+    const layout = buildManhattanLayout({
+      chr: [7, 7, 8, 8],
+      bp: [500, 2160284371, 1000, 500000],
+      snp: ["chr7:500", "chr7:2160284371", "chr8:1000", "chr8:500000"],
+      log10_p: [1.5, 9.2, 2.0, 3.5],
+    });
+
+    expect(layout.chromosomeTicks.map((t) => t.chr)).toEqual([7, 8]);
+    expect(layout.points[1].bp).toBe(2160284371);
+    expect(layout.points[0].x).toBeLessThan(layout.points[1].x);
+    expect(layout.points[1].x).toBeLessThan(layout.points[2].x);
+    expect(layout.points[2].x).toBeLessThan(layout.points[3].x);
+  });
 });

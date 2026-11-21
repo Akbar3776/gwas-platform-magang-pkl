@@ -8,6 +8,7 @@ from typing import Any
 
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, ResultType
+from app.services.chromosome_service import load_split_map
 from app.services.manhattan_parser import compute_assoc_summary_stats, generate_manhattan_cache
 from app.tasks._common import (
     JobCancelledError,
@@ -85,9 +86,11 @@ def run_visualization(
 
         # 1. Bangun Parquet cache
         manhattan_cache_path = workspace / "manhattan_cache.parquet"
+        split_map = load_split_map(job_id)
         cache_summary = generate_manhattan_cache(
             assoc_file_path=str(assoc_path),
             output_cache_path=str(manhattan_cache_path),
+            split_map=split_map,
         )
 
         # 2. Hitung statistik ringkasan GWAS

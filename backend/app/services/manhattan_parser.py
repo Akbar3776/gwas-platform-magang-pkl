@@ -21,9 +21,12 @@ import json
 import logging
 from pathlib import Path
 import re
+from typing import Any
 
 import numpy as np
 import pandas as pd
+
+from app.services.chromosome_service import restore_coord
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +239,7 @@ def generate_manhattan_cache(
     max_points: int = DEFAULT_MAX_PLOT_POINTS,
     chunksize: int = 200_000,
     random_seed: int = 42,
+    split_map: dict[str, Any] | None = None,
 ) -> dict:
     """
     Membaca file `.assoc.txt` hasil GEMMA secara chunked, memfilter dan
@@ -284,16 +288,25 @@ def generate_manhattan_cache(
             continue
 
         kept_raw_chr = chunk[chr_col].iloc[keep_mask].fillna("").astype(str).str.strip().to_numpy()
+        bp_vals = pd.to_numeric(chunk[ps_col], errors="coerce").fillna(0).astype("int64").to_numpy()
+        kept_bp = bp_vals[keep_mask]
+        if split_map and split_map.get("parts"):
+            restored_pairs = [
+                restore_coord(str(tok), int(pos_val), split_map)
+                for tok, pos_val in zip(kept_raw_chr, kept_bp)
+            ]
+            kept_raw_chr = np.array([pair[0] for pair in restored_pairs], dtype=object)
+            kept_bp = np.array([pair[1] for pair in restored_pairs], dtype=np.int64)
+
         observed_chr_tokens.update(tok for tok in kept_raw_chr if tok)
 
-        bp_vals = pd.to_numeric(chunk[ps_col], errors="coerce").fillna(0).astype("uint32").to_numpy()
         snp_vals = chunk[rs_col].astype(str).to_numpy()
 
         kept_chunks.append(
             pd.DataFrame(
                 {
                     "CHR_RAW": kept_raw_chr,
-                    "BP": bp_vals[keep_mask],
+                    "BP": kept_bp,
                     "SNP": snp_vals[keep_mask],
                     "LOG10_P": log10p[keep_mask].astype("float32"),
                 }
