@@ -158,7 +158,7 @@ def get_manhattan_data(
     if clean_model is not None and clean_model not in {"GEMMA", "GLM", "LMM"}:
         if clean_model not in _MULTILOCUS_MODEL_FILES:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Model '{clean_model}' tidak didukung. Gunakan FARMCPU, BLINK, atau MLMM.",
             )
         cache_path = _resolve_multilocus_manhattan_cache(job.id, clean_model)

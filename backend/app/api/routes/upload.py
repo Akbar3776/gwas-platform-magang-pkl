@@ -111,7 +111,7 @@ def init_upload(
 ) -> InitUploadResponse:
     if settings.MAX_UPLOAD_SIZE_BYTES > 0 and payload.total_size_bytes > settings.MAX_UPLOAD_SIZE_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Ukuran total berkas melebihi batas maksimal yang diizinkan.",
         )
 
@@ -162,14 +162,14 @@ def upload_chunk(
     except upload_service.InvalidFileIdError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="file_id tidak valid") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)) from exc
 
     staging_dir = upload_service.get_staging_dir(str(file_id))
     total_staged_bytes = sum(p.stat().st_size for p in staging_dir.glob("chunk_*.part"))
     if total_staged_bytes > (dataset.file_size_bytes or 0) + settings.MAX_CHUNK_SIZE_BYTES:
         saved_path.unlink(missing_ok=True)
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Total ukuran chunk yang diterima melebihi batas ukuran berkas.",
         )
 
@@ -189,7 +189,7 @@ def _normalize_optional_sha256(expected_sha256: str | None) -> str | None:
     normalized = expected_sha256.strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", normalized):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Format expected_sha256 tidak valid (harus 64 karakter heksadesimal).",
         )
     return normalized
@@ -370,7 +370,7 @@ def upload_phenotype_file(
     content = file.file.read(50 * 1024 * 1024 + 1)
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Ukuran file fenotipe melebihi batas 50 MB.",
         )
     target_path.write_bytes(content)
@@ -486,7 +486,7 @@ def upload_annotation_file(
     content = file.file.read(95 * 1024 * 1024 + 1)
     if len(content) > 95 * 1024 * 1024:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Ukuran file GFF3 melebihi batas 95 MB.",
         )
     target_path.write_bytes(content)
@@ -585,7 +585,7 @@ def upload_go_annotation_file(
     content = file.file.read(_MAX_GO_MAPPING_BYTES + 1)
     if len(content) > _MAX_GO_MAPPING_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Ukuran file pemetaan GO melebihi batas 50 MB.",
         )
     target_path.write_bytes(content)
@@ -673,7 +673,7 @@ def init_reference_upload(
         )
     if settings.MAX_UPLOAD_SIZE_BYTES > 0 and payload.total_size_bytes > settings.MAX_UPLOAD_SIZE_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Ukuran berkas FASTA melebihi batas maksimal yang diizinkan.",
         )
 
@@ -729,14 +729,14 @@ def upload_reference_chunk(
     except upload_service.InvalidFileIdError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="file_id tidak valid") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)) from exc
 
     staging_dir = upload_service.get_staging_dir(staging_id)
     total_staged_bytes = sum(p.stat().st_size for p in staging_dir.glob("chunk_*.part"))
     if total_staged_bytes > expected_bytes + settings.MAX_CHUNK_SIZE_BYTES:
         saved_path.unlink(missing_ok=True)
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Total ukuran chunk FASTA yang diterima melebihi batas ukuran berkas.",
         )
 
