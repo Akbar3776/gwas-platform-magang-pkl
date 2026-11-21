@@ -90,6 +90,9 @@ _PREVIEWABLE_SUFFIXES = (
     ".txt",
     ".bim",
     ".fam",
+    ".bed",
+    ".fa",
+    ".fasta",
     ".tsv",
     ".csv",
     ".json",
@@ -647,6 +650,16 @@ def get_job_file_content(
         raise HTTPException(status_code=404, detail="File fisik tidak ditemukan di storage.")
 
     if preview:
+        if target_path.suffix.lower() == ".bed":
+            try:
+                with target_path.open("rb") as bf:
+                    if bf.read(3) == b"\x6c\x1b\x01":
+                        raise HTTPException(
+                            status_code=400,
+                            detail="File .bed biner PLINK tidak dapat dipratinjau sebagai teks.",
+                        )
+            except OSError as exc:
+                raise HTTPException(status_code=400, detail=f"File tidak dapat dibaca: {exc}") from exc
         open_fn = gzip.open if target_path.name.endswith(".gz") else open
         lines = []
         try:

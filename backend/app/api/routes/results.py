@@ -777,15 +777,49 @@ def get_go_enrichment_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> 
     return {"status": "not_available", "job_id": str(job_id), "go_table": [], "enrichment_terms": []}
 
 
-@router.get("/{job_id}/primers", summary="Sekuens Flanking 201 bp & Desain Primer PCR Primer3 (Fase 5.4 / 6–8)")
+def _sanitize_primers_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize primers payload paths to relative filenames and ensure nearby_variants shape."""
+    out = dict(payload)
+    if isinstance(out.get("candidate_regions"), dict):
+        cr = dict(out["candidate_regions"])
+        for key in ("csv", "bed", "fasta"):
+            val = cr.get(key)
+            if isinstance(val, str) and val.strip():
+                cr[key] = Path(val).name
+        out["candidate_regions"] = cr
+
+    if isinstance(out.get("markers"), list):
+        sanitized_markers: list[Any] = []
+        for marker in out["markers"]:
+            if not isinstance(marker, dict):
+                sanitized_markers.append(marker)
+                continue
+            item = dict(marker)
+            raw_nv = item.get("nearby_variants")
+            nearby_list = list(raw_nv) if isinstance(raw_nv, list) else []
+            item["nearby_variants"] = nearby_list
+            if "nearby_variants_count" not in item or item["nearby_variants_count"] is None:
+                item["nearby_variants_count"] = len(nearby_list)
+            else:
+                item["nearby_variants_count"] = int(item["nearby_variants_count"])
+            sanitized_markers.append(item)
+        out["markers"] = sanitized_markers
+
+    return out
+
+
+@router.get("/{job_id}/primers", summary="Sekuens Flanking & Desain Primer PCR Primer3 / KASP (Fase 5.4 / 6–8)")
 def get_primers_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
     anno_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "annotation"
     primers_file = anno_dir / "primers.json"
     if primers_file.is_file():
         try:
             loaded = json.loads(primers_file.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict) and loaded.get("markers"):
-                return loaded
+            if isinstance(loaded, dict) and (
+                loaded.get("markers")
+                or loaded.get("status") in {"completed", "no_reference", "no_reference_for_chr", "skipped"}
+            ):
+                return _sanitize_primers_payload(loaded)
         except Exception:
             pass
 
@@ -807,16 +841,19 @@ def get_primers_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[s
                 (((job.parameters if job else None) or {}).get("phenotype") or {}).get("trait")
                 or "trait"
             )
+            bim_file = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "qc" / "plink_qc.bim"
             payload = generate_flanking_and_primers(
                 lead_snps=source_snps,
                 trait_name=trait_label,
                 max_snps=20,
                 fasta_path=_resolve_dataset_fasta_path(db, job),
                 output_dir=anno_dir,
+                bim_path=bim_file if bim_file.is_file() else None,
+                split_map=load_split_map(job_id),
             )
             anno_dir.mkdir(parents=True, exist_ok=True)
             primers_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            return payload
+            return _sanitize_primers_payload(payload)
         except Exception:
             pass
 

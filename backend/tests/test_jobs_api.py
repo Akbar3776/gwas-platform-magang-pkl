@@ -597,3 +597,194 @@ def test_build_job_steps_reflects_skipped_stages_and_glm_model(tmp_path):
         for s in steps
     )
     assert by_name["Visualisasi & Cache Plot"]["status"] == "NOT_RUN"
+
+
+def test_get_primers_data_forwards_regions_and_nearby_variants(tmp_path, monkeypatch):
+    import json
+    from app.api.routes import results
+    from app.core.security import get_current_user
+    from app.db.engine.database import get_db
+
+    monkeypatch.setattr(results.settings, "STORAGE_ROOT", str(tmp_path))
+    owner = User(
+        id=uuid.uuid4(),
+        email="owner@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    other_user = User(
+        id=uuid.uuid4(),
+        email="other@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=owner.id,
+        original_filename="cohort.vcf.gz",
+        storage_path=str(tmp_path / "cohort.vcf.gz"),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=owner.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.COMPLETED,
+        current_step=PipelineStep.ANNOTATION,
+    )
+    anno_dir = tmp_path / "jobs" / str(job.id) / "annotation"
+    anno_dir.mkdir(parents=True)
+    (anno_dir / "primers.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "flank_bp": 100,
+                "regions_status": "completed",
+                "candidate_regions": {
+                    "csv": "/abs/path/candidate_regions.csv",
+                    "bed": "candidate_regions.bed",
+                    "fasta": "/abs/candidate_regions.fa",
+                    "n_regions": 2,
+                    "written_regions": 2,
+                    "total_bp": 400002,
+                    "max_total_bp": 50000000,
+                    "window_bp": 200000,
+                },
+                "total_markers": 1,
+                "markers_with_primers": 1,
+                "markers": [
+                    {
+                        "rank": 1,
+                        "marker_id": "trait_1_1000",
+                        "snp": "rs1",
+                        "chr": "1",
+                        "pos": 1000,
+                        "nearby_variants": [{"pos": 1050, "ref": "A", "alt": "G", "offset": 50}],
+                        "nearby_variants_count": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    session = FakeSession(dataset, job=job)
+    active_user = {"user": owner}
+    app = FastAPI()
+    app.include_router(results.router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_current_user] = lambda: active_user["user"]
+
+    client = TestClient(app)
+    resp = client.get(f"/api/v1/results/{job.id}/primers")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["regions_status"] == "completed"
+    assert body["candidate_regions"]["csv"] == "candidate_regions.csv"
+    assert body["candidate_regions"]["bed"] == "candidate_regions.bed"
+    assert body["candidate_regions"]["fasta"] == "candidate_regions.fa"
+    assert body["markers"][0]["nearby_variants"] == [{"pos": 1050, "ref": "A", "alt": "G", "offset": 50}]
+    assert body["markers"][0]["nearby_variants_count"] == 1
+
+    active_user["user"] = other_user
+    denied = client.get(f"/api/v1/results/{job.id}/primers")
+    assert denied.status_code == 404
+
+
+def test_preview_bed_and_fasta_files_capped_at_150_lines(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs.settings, "STORAGE_ROOT", str(tmp_path))
+    owner = User(
+        id=uuid.uuid4(),
+        email="owner@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    other_user = User(
+        id=uuid.uuid4(),
+        email="other@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=owner.id,
+        original_filename="cohort.vcf.gz",
+        storage_path=str(tmp_path / "missing.vcf.gz"),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=owner.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.COMPLETED,
+        current_step=PipelineStep.ANNOTATION,
+    )
+    anno_dir = tmp_path / "jobs" / str(job.id) / "annotation"
+    qc_dir = tmp_path / "jobs" / str(job.id) / "qc"
+    anno_dir.mkdir(parents=True)
+    qc_dir.mkdir(parents=True)
+
+    bed_lines = [f"chr1\t100\t200\tSNP_{i}" for i in range(200)]
+    (anno_dir / "candidate_regions.bed").write_text("\n".join(bed_lines) + "\n", encoding="utf-8")
+    (anno_dir / "candidate_regions.fa").write_text(">SNP_0::chr1:100-200\nACGTACGT\n", encoding="utf-8")
+    (anno_dir / "kasp_primers_no_tail.fa").write_text(">SNP_0_X\nACGT\n", encoding="utf-8")
+    (anno_dir / "extra.fasta").write_text(">chr1\nACGT\n", encoding="utf-8")
+    (qc_dir / "plink_qc.bed").write_bytes(b"\x6c\x1b\x01\x00\xff")
+
+    session = FakeSession(dataset, job=job)
+    listed = jobs.list_job_files(job_id=job.id, db=session, user=owner)
+    by_key = {item["file_key"]: item for item in listed["files"]}
+    for key in (
+        "job:annotation/candidate_regions.bed",
+        "job:annotation/candidate_regions.fa",
+        "job:annotation/kasp_primers_no_tail.fa",
+        "job:annotation/extra.fasta",
+    ):
+        assert by_key[key]["previewable"] is True
+
+    bed_resp = jobs.get_job_file_content(
+        job_id=job.id,
+        file_key="job:annotation/candidate_regions.bed",
+        preview=True,
+        db=session,
+        user=owner,
+    )
+    assert bed_resp.status_code == 200
+    preview_lines = bed_resp.body.decode("utf-8").splitlines()
+    assert len(preview_lines) == 150
+    assert preview_lines[0] == "chr1\t100\t200\tSNP_0"
+    assert preview_lines[-1] == "chr1\t100\t200\tSNP_149"
+
+    fa_resp = jobs.get_job_file_content(
+        job_id=job.id,
+        file_key="job:annotation/candidate_regions.fa",
+        preview=True,
+        db=session,
+        user=owner,
+    )
+    assert fa_resp.status_code == 200
+    assert ">SNP_0::chr1:100-200" in fa_resp.body.decode("utf-8")
+
+    with pytest.raises(HTTPException) as bin_exc:
+        jobs.get_job_file_content(
+            job_id=job.id,
+            file_key="job:qc/plink_qc.bed",
+            preview=True,
+            db=session,
+            user=owner,
+        )
+    assert bin_exc.value.status_code == 400
+
+    with pytest.raises(HTTPException) as denied_exc:
+        jobs.get_job_file_content(
+            job_id=job.id,
+            file_key="job:annotation/candidate_regions.bed",
+            preview=True,
+            db=session,
+            user=other_user,
+        )
+    assert denied_exc.value.status_code == 404
