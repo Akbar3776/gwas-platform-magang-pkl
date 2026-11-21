@@ -827,6 +827,18 @@ def _sanitize_primers_payload(payload: dict[str, Any]) -> dict[str, Any]:
             sanitized_markers.append(item)
         out["markers"] = sanitized_markers
 
+    if isinstance(out.get("kasp"), dict):
+        kasp = dict(out["kasp"])
+        if isinstance(kasp.get("files"), dict):
+            kasp_files = dict(kasp["files"])
+            for fkey, fval in list(kasp_files.items()):
+                if isinstance(fval, str) and fval.strip():
+                    kasp_files[fkey] = Path(fval).name
+            kasp["files"] = kasp_files
+        if isinstance(kasp.get("markers"), list):
+            kasp["markers"] = list(kasp["markers"])
+        out["kasp"] = kasp
+
     return out
 
 

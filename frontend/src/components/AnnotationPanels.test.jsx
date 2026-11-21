@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { GoEnrichmentPanel } from "./GoEnrichmentPanel";
 import { PrimerDesignPanel } from "./PrimerDesignPanel";
@@ -297,5 +297,115 @@ describe("Annotation Synthetic Banner & Heuristic Labels", () => {
       expect(downloadJobFileByName).toHaveBeenCalledWith("job-1", "candidate_regions.bed", "annotation");
       expect(downloadJobFileByName).toHaveBeenCalledWith("job-1", "candidate_regions.fa", "annotation");
     });
+  });
+
+  test("PrimerDesignPanel KASP sub-tab renders golden SNP_74098 table, accessible FAM/HEX tail labels, QC badge, and 3 exports (W43)", async () => {
+    downloadJobFileByName.mockClear();
+
+    render(
+      <PrimerDesignPanel
+        jobId="job-1"
+        primersData={{
+          status: "completed",
+          synthetic: false,
+          flank_bp: 100,
+          total_markers: 1,
+          markers_with_primers: 1,
+          markers: [
+            {
+              rank: 1,
+              marker_id: "trait_7_5500",
+              snp: "SNP_74098",
+              chr: "chr7",
+              pos: 5500,
+              flanking_sequence: "ACGT[T/C]TGCA",
+              primer_pairs_count: 0,
+              primer_pairs: [],
+            },
+          ],
+          kasp: {
+            status: "completed",
+            total: 1,
+            designed: 1,
+            failed: 0,
+            success_rate: 100.0,
+            files: {
+              input_tsv: "kasp_input.tsv",
+              primers_tsv: "kasp_primers.tsv",
+              primers_no_tail_fa: "kasp_primers_no_tail.fa",
+            },
+            markers: [
+              {
+                snp_id: "SNP_74098",
+                allele_x: "T",
+                allele_y: "C",
+                primer_x: "GAAGGTGACCAAGTTCATGCTAATTGGGATGATTGTCTCAATAGGAAA",
+                primer_y: "GAAGGTCGGAGTCAACGGATTAATTGGGATGATTGTCTCAATAGGAAG",
+                primer_c: "AAATTCTGTATCATCCGTTCTGGACTTG",
+                direction: "reverse",
+                status: "OK",
+                oligo_qc: {
+                  analyzed: true,
+                  warn: true,
+                  warnings: ["Primer_X hairpin Tm 46.0C"],
+                },
+              },
+            ],
+          },
+        }}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: /KASP/i }));
+
+    const table = screen.getByRole("table", { name: /Desain Primer KASP/i });
+    const headers = within(table).getAllByRole("columnheader");
+    expect(headers).toHaveLength(8);
+    headers.forEach((th) => expect(th).toHaveAttribute("scope", "col"));
+
+    expect(within(table).getByText("SNP_74098")).toBeInTheDocument();
+    expect(within(table).getByText("T / C")).toBeInTheDocument();
+    expect(within(table).getByText("reverse")).toBeInTheDocument();
+    expect(within(table).getByText("OK")).toBeInTheDocument();
+    expect(within(table).getByText("FAM")).toBeInTheDocument();
+    expect(within(table).getByText("HEX")).toBeInTheDocument();
+    expect(within(table).getByText("AAATTCTGTATCATCCGTTCTGGACTTG")).toBeInTheDocument();
+    expect(within(table).getByText("Peringatan")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /kasp_input\.tsv/i }));
+    fireEvent.click(screen.getByRole("button", { name: /kasp_primers\.tsv/i }));
+    fireEvent.click(screen.getByRole("button", { name: /kasp_primers_no_tail\.fa/i }));
+
+    await waitFor(() => {
+      expect(downloadJobFileByName).toHaveBeenCalledWith("job-1", "kasp_input.tsv", "annotation");
+      expect(downloadJobFileByName).toHaveBeenCalledWith("job-1", "kasp_primers.tsv", "annotation");
+      expect(downloadJobFileByName).toHaveBeenCalledWith("job-1", "kasp_primers_no_tail.fa", "annotation");
+    });
+  });
+
+  test("PrimerDesignPanel KASP sub-tab handles legacy payload without kasp and skipped state cleanly (W43)", () => {
+    const { rerender } = render(
+      <PrimerDesignPanel
+        jobId="job-1"
+        primersData={{ status: "completed", total_markers: 0, markers: [] }}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: /^KASP$/i }));
+    expect(screen.getByText(/Belum tersedia/i)).toBeInTheDocument();
+
+    rerender(
+      <PrimerDesignPanel
+        jobId="job-1"
+        primersData={{
+          status: "no_reference",
+          total_markers: 0,
+          markers: [],
+          kasp: { status: "skipped", reason: "FASTA referensi tidak tersedia" },
+        }}
+      />
+    );
+    expect(screen.getByText(/Desain Primer KASP Dilewati/i)).toBeInTheDocument();
+    expect(screen.getByText(/FASTA referensi tidak tersedia/i)).toBeInTheDocument();
   });
 });

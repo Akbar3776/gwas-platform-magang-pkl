@@ -788,3 +788,90 @@ def test_preview_bed_and_fasta_files_capped_at_150_lines(tmp_path, monkeypatch):
             user=other_user,
         )
     assert denied_exc.value.status_code == 404
+
+
+def test_get_primers_data_forwards_kasp_block_with_relative_files(tmp_path, monkeypatch):
+    import json
+    from app.api.routes import results
+
+    monkeypatch.setattr(results.settings, "STORAGE_ROOT", str(tmp_path))
+    owner = User(
+        id=uuid.uuid4(),
+        email="owner@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=owner.id,
+        original_filename="cohort.vcf.gz",
+        storage_path=str(tmp_path / "cohort.vcf.gz"),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=owner.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.COMPLETED,
+        current_step=PipelineStep.ANNOTATION,
+    )
+    anno_dir = tmp_path / "jobs" / str(job.id) / "annotation"
+    anno_dir.mkdir(parents=True)
+    (anno_dir / "primers.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "flank_bp": 100,
+                "total_markers": 1,
+                "markers_with_primers": 1,
+                "markers": [
+                    {
+                        "rank": 1,
+                        "marker_id": "trait_7_5500",
+                        "snp": "SNP_74098",
+                        "chr": "chr7",
+                        "pos": 5500,
+                    }
+                ],
+                "kasp": {
+                    "status": "completed",
+                    "total": 1,
+                    "designed": 1,
+                    "failed": 0,
+                    "success_rate": 100.0,
+                    "markers": [
+                        {
+                            "snp_id": "SNP_74098",
+                            "allele_x": "T",
+                            "allele_y": "C",
+                            "primer_x": "GAAGGTGACCAAGTTCATGCTAATTGGGATGATTGTCTCAATAGGAAA",
+                            "primer_y": "GAAGGTCGGAGTCAACGGATTAATTGGGATGATTGTCTCAATAGGAAG",
+                            "primer_c": "AAATTCTGTATCATCCGTTCTGGACTTG",
+                            "direction": "reverse",
+                            "status": "OK",
+                            "oligo_qc": {"analyzed": True, "warn": True, "warnings": ["hairpin"]},
+                        }
+                    ],
+                    "files": {
+                        "input_tsv": "/abs/path/kasp_input.tsv",
+                        "primers_tsv": "kasp_primers.tsv",
+                        "primers_no_tail_fa": "/tmp/kasp_primers_no_tail.fa",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    session = FakeSession(dataset, job=job)
+    res = results.get_primers_data(job_id=job.id, db=session)
+    assert res["kasp"]["status"] == "completed"
+    assert res["kasp"]["designed"] == 1
+    assert res["kasp"]["markers"][0]["snp_id"] == "SNP_74098"
+    assert res["kasp"]["files"] == {
+        "input_tsv": "kasp_input.tsv",
+        "primers_tsv": "kasp_primers.tsv",
+        "primers_no_tail_fa": "kasp_primers_no_tail.fa",
+    }

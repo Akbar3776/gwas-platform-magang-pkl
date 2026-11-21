@@ -4,6 +4,87 @@ import { toCsv } from "../utils/csv";
 import { saveBlob } from "../utils/download";
 import { downloadJobFileByName } from "../utils/jobFiles";
 
+const FAM_TAIL = "GAAGGTGACCAAGTTCATGCT";
+const HEX_TAIL = "GAAGGTCGGAGTCAACGGATT";
+
+function renderKaspTailSequence(seq, tailSeq, tailLabel, colors) {
+  if (!seq) return "-";
+  const str = String(seq);
+  const hasTail = str.toUpperCase().startsWith(tailSeq);
+  if (!hasTail) {
+    return (
+      <span style={{ fontFamily: "monospace", wordBreak: "break-all", color: "#0f172a" }}>
+        {str}
+      </span>
+    );
+  }
+  return (
+    <span style={{ fontFamily: "monospace", wordBreak: "break-all" }}>
+      <span
+        style={{
+          display: "inline-block",
+          padding: "1px 5px",
+          marginRight: 5,
+          borderRadius: 4,
+          background: colors.badgeBg,
+          color: colors.badgeText,
+          fontSize: 10,
+          fontWeight: 700,
+          fontFamily: "sans-serif",
+        }}
+      >
+        {tailLabel}
+      </span>
+      <span style={{ color: colors.tailColor, fontWeight: 700 }}>{str.slice(0, tailSeq.length)}</span>
+      <span style={{ color: "#0f172a" }}>{str.slice(tailSeq.length)}</span>
+    </span>
+  );
+}
+
+function renderOligoQcBadge(oligoQc) {
+  if (!oligoQc || !oligoQc.analyzed) return "-";
+  const warnings = Array.isArray(oligoQc.warnings) ? oligoQc.warnings : [];
+  if (oligoQc.warn) {
+    return (
+      <div style={{ display: "grid", gap: 2 }}>
+        <span
+          title={warnings.join("; ") || "Peringatan struktur sekunder"}
+          style={{
+            display: "inline-block",
+            width: "fit-content",
+            padding: "2px 7px",
+            borderRadius: 999,
+            background: "#fef3c7",
+            color: "#92400e",
+            fontSize: 10.5,
+            fontWeight: 700,
+          }}
+        >
+          Peringatan
+        </span>
+        {warnings.length > 0 && (
+          <span style={{ fontSize: 10, color: "#92400e" }}>{warnings[0]}</span>
+        )}
+      </div>
+    );
+  }
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        padding: "2px 7px",
+        borderRadius: 999,
+        background: "#dcfce7",
+        color: "#166534",
+        fontSize: 10.5,
+        fontWeight: 700,
+      }}
+    >
+      Aman
+    </span>
+  );
+}
+
 function renderHighlightedFlanking(seqStr) {
   if (!seqStr) return "-";
   const match = seqStr.match(/^([A-Za-z]+)\[([A-Za-z/]+)\]([A-Za-z]+)$/);
@@ -46,6 +127,7 @@ function getMarkerRefAlt(item) {
 }
 
 export function PrimerDesignPanel({ primersData = null, jobId = null }) {
+  const [activeSubTab, setActiveSubTab] = useState("primer3"); // "primer3" | "kasp"
   const [searchText, setSearchText] = useState("");
   const [viewMode, setViewMode] = useState("both"); // "both" | "primer3" | "table"
   const [currentPage, setCurrentPage] = useState(1);
@@ -298,14 +380,13 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
     );
   };
 
-  if ((!primersData || !markers.length || isNoReference) && !isSynthetic) {
-    return (
-      <div style={{ display: "grid", gap: 12 }}>
-        {downloadError && (
-          <div role="alert" style={{ padding: 10, borderRadius: 6, background: "#fef2f2", color: "#b91c1c", fontSize: 12 }}>
-            {downloadError}
-          </div>
-        )}
+  const kaspData = primersData?.kasp || null;
+  const kaspMarkers = Array.isArray(kaspData?.markers) ? kaspData.markers : [];
+  const kaspFiles = kaspData?.files || {};
+
+  const renderKaspSection = () => {
+    if (!kaspData || kaspData.status === "not_available") {
+      return (
         <div
           style={{
             padding: 24,
@@ -316,118 +397,349 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
             color: "#64748b",
           }}
         >
-          <div style={{ fontSize: 24, marginBottom: 8 }}>🧪</div>
+          <div style={{ fontSize: 22, marginBottom: 6 }}>🧬</div>
           <div style={{ fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-            Sekuens Flanking &amp; Desain Primer3 Belum Tersedia
+            Desain Primer KASP Belum tersedia
           </div>
-          <p style={{ margin: 0, fontSize: 13, maxWidth: 540, marginInline: "auto" }}>
-            {isNoReference
-              ? "Referensi FASTA tidak tersedia; unggah berkas FASTA referensi untuk mengekstrak sekuens flanking dan desain primer Primer3."
-              : "Tidak ditemukan Lead SNP kandidat pada job ini untuk ekstraksi sekuens flanking dan desain primer Primer3."}
+          <p style={{ margin: 0, fontSize: 13, maxWidth: 520, marginInline: "auto" }}>
+            Data desain primer KASP (EasyKASP + analisis struktur sekunder oligo) tidak ditemukan pada hasil job ini.
           </p>
         </div>
-        {renderCandidateRegionsCard()}
-      </div>
-    );
-  }
+      );
+    }
 
-  return (
-    <div style={{ display: "grid", gap: 16 }}>
-      {isSynthetic && (
+    if (kaspData.status === "skipped") {
+      return (
         <div
-          role="note"
+          role="status"
           style={{
-            background: "#fffbeb",
-            border: "1px solid #f59e0b",
-            color: "#92400e",
+            padding: 20,
             borderRadius: 8,
-            padding: "10px 14px",
-            fontSize: 12.5,
-            fontWeight: 600,
+            background: "#f8fafc",
+            border: "1px solid #cbd5e1",
+            color: "#475569",
+            fontSize: 13,
           }}
         >
-          ⚠️ Data simulasi — bukan hasil analisis. Sekuens flanking dan desain primer di bawah berasal dari mode demo (`ALLOW_SYNTHETIC_ANNOTATION=true`).
+          <strong style={{ display: "block", color: "#334155", marginBottom: 4 }}>
+            Desain Primer KASP Dilewati
+          </strong>
+          <span>{kaspData.reason || "FASTA referensi tidak tersedia."}</span>
         </div>
-      )}
+      );
+    }
 
-      {downloadError && (
-        <div role="alert" style={{ padding: 10, borderRadius: 6, background: "#fef2f2", color: "#b91c1c", fontSize: 12 }}>
-          {downloadError}
+    if (kaspData.status === "error" || kaspData.status === "failed") {
+      return (
+        <div
+          role="alert"
+          style={{
+            padding: 16,
+            borderRadius: 8,
+            background: "#fef2f2",
+            border: "1px solid #fecaca",
+            color: "#991b1b",
+            fontSize: 13,
+          }}
+        >
+          <strong>Desain Primer KASP Gagal:</strong>{" "}
+          {kaspData.reason || "Terjadi kesalahan saat merancang primer KASP."}
         </div>
-      )}
+      );
+    }
 
-      {/* Header & Tombol Ekspor */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
-        <div>
-          <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#0f172a" }}>
-            Ekstraksi Sekuens Flanking ({totalFlankBp} bp) &amp; Desain Primer3 — Fase 5.4 / Fase 6–8
-          </h4>
-          <p style={{ margin: "3px 0 0", fontSize: 12, color: "#64748b" }}>
-            Sekuens {flankBp} bp upstream + `[Alel Target]` + {flankBp} bp downstream beserta pasangan `LEFT PRIMER` &amp; `RIGHT PRIMER`.
-          </p>
+    const inputTsvFile = kaspFiles.input_tsv || "kasp_input.tsv";
+    const primersTsvFile = kaspFiles.primers_tsv || "kasp_primers.tsv";
+    const noTailFaFile = kaspFiles.primers_no_tail_fa || "kasp_primers_no_tail.fa";
+
+    return (
+      <div style={{ display: "grid", gap: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+          <div>
+            <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#0f172a" }}>
+              Desain Primer KASP (EasyKASP + Struktur Sekunder Tail)
+            </h4>
+            <p style={{ margin: "3px 0 0", fontSize: 12, color: "#64748b" }}>
+              Primer alel X ber-tail FAM (biru) dan alel Y ber-tail HEX (merah), beserta evaluasi struktur sekunder oligo bertail.
+            </p>
+          </div>
+          {jobId && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => handleDownloadArtifact(inputTsvFile)}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  background: "#fff",
+                  color: "#1e293b",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                📥 kasp_input.tsv
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDownloadArtifact(primersTsvFile)}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  background: "#fff",
+                  color: "#1e293b",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                📥 kasp_primers.tsv
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDownloadArtifact(noTailFaFile)}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  background: "#fff",
+                  color: "#1e293b",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                📥 kasp_primers_no_tail.fa
+              </button>
+            </div>
+          )}
         </div>
 
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button
-            type="button"
-            onClick={handleDownloadPrimerTxt}
-            style={{
-              background: "#2563eb",
-              color: "#fff",
-              border: "none",
-              padding: "7px 14px",
-              borderRadius: 6,
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            📥 Unduh Laporan Desain Primer (.txt)
-          </button>
-          <button
-            type="button"
-            onClick={handleDownloadPrimerCsv}
-            style={{
-              background: "#059669",
-              color: "#fff",
-              border: "none",
-              padding: "7px 14px",
-              borderRadius: 6,
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            📥 Unduh Tabel Primer (.csv)
-          </button>
-        </div>
-      </div>
-
-      {/* KPI Cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
-        <div style={{ padding: "10px 14px", background: "#f8fafc", borderRadius: 6, border: "1px solid #e2e8f0" }}>
-          <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", fontWeight: 600 }}>Total Lokus Target</div>
-          <div style={{ fontSize: 18, fontWeight: 700, color: "#0f172a" }}>{primersData.total_markers || markers.length}</div>
-        </div>
-        <div style={{ padding: "10px 14px", background: "#f0fdf4", borderRadius: 6, border: "1px solid #bbf7d0" }}>
-          <div style={{ fontSize: 11, color: "#166534", textTransform: "uppercase", fontWeight: 600 }}>Primer Berhasil Didesain</div>
-          <div style={{ fontSize: 18, fontWeight: 700, color: "#15803d" }}>
-            {primersData.markers_with_primers ?? markers.filter((m) => m.primer_pairs_count > 0).length} Lokus
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
+          <div style={{ padding: "10px 14px", background: "#f8fafc", borderRadius: 6, border: "1px solid #e2e8f0" }}>
+            <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", fontWeight: 600 }}>Total SNP</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#0f172a" }}>{Number(kaspData.total ?? kaspMarkers.length)}</div>
+          </div>
+          <div style={{ padding: "10px 14px", background: "#f0fdf4", borderRadius: 6, border: "1px solid #bbf7d0" }}>
+            <div style={{ fontSize: 11, color: "#166534", textTransform: "uppercase", fontWeight: 600 }}>Berhasil Didesain</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#15803d" }}>{Number(kaspData.designed || 0)}</div>
+          </div>
+          <div style={{ padding: "10px 14px", background: "#fef2f2", borderRadius: 6, border: "1px solid #fecaca" }}>
+            <div style={{ fontSize: 11, color: "#991b1b", textTransform: "uppercase", fontWeight: 600 }}>Gagal</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#b91c1c" }}>{Number(kaspData.failed || 0)}</div>
+          </div>
+          <div style={{ padding: "10px 14px", background: "#eff6ff", borderRadius: 6, border: "1px solid #bfdbfe" }}>
+            <div style={{ fontSize: 11, color: "#1e40af", textTransform: "uppercase", fontWeight: 600 }}>Keberhasilan (%)</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#2563eb" }}>
+              {Number(kaspData.success_rate || 0).toFixed(1)}%
+            </div>
           </div>
         </div>
-        <div style={{ padding: "10px 14px", background: "#eff6ff", borderRadius: 6, border: "1px solid #bfdbfe" }}>
-          <div style={{ fontSize: 11, color: "#1e40af", textTransform: "uppercase", fontWeight: 600 }}>Ukuran Sekuens Flanking</div>
-          <div style={{ fontSize: 18, fontWeight: 700, color: "#2563eb" }}>
-            {totalFlankBp} bp (±{flankBp} bp)
+
+        {kaspMarkers.length > 0 ? (
+          <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: 6 }}>
+            <table
+              aria-label="Desain Primer KASP"
+              style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5, textAlign: "left" }}
+            >
+              <thead>
+                <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
+                  <th scope="col" style={{ padding: "8px 10px" }}>SNP ID</th>
+                  <th scope="col" style={{ padding: "8px 10px" }}>Allele X / Y</th>
+                  <th scope="col" style={{ padding: "8px 10px" }}>Primer_X (FAM)</th>
+                  <th scope="col" style={{ padding: "8px 10px" }}>Primer_Y (HEX)</th>
+                  <th scope="col" style={{ padding: "8px 10px" }}>Primer_C</th>
+                  <th scope="col" style={{ padding: "8px 10px" }}>Arah</th>
+                  <th scope="col" style={{ padding: "8px 10px" }}>Status</th>
+                  <th scope="col" style={{ padding: "8px 10px" }}>Struktur Sekunder</th>
+                </tr>
+              </thead>
+              <tbody>
+                {kaspMarkers.map((m, idx) => {
+                  const isOk = String(m.status || "").toUpperCase() === "OK";
+                  const notesText = Array.isArray(m.notes) ? m.notes.join("; ") : String(m.notes || "");
+                  return (
+                    <tr key={m.snp_id || idx} style={{ borderBottom: "1px solid #f1f5f9", verticalAlign: "top" }}>
+                      <th scope="row" style={{ padding: "8px 10px", fontWeight: 700, color: "#0f172a" }}>
+                        {m.snp_id}
+                      </th>
+                      <td style={{ padding: "8px 10px", fontFamily: "monospace", whiteSpace: "nowrap" }}>
+                        {m.allele_x || "-"} / {m.allele_y || "-"}
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>
+                        {renderKaspTailSequence(m.primer_x, FAM_TAIL, "FAM", {
+                          badgeBg: "#dbeafe",
+                          badgeText: "#1d4ed8",
+                          tailColor: "#1d4ed8",
+                        })}
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>
+                        {renderKaspTailSequence(m.primer_y, HEX_TAIL, "HEX", {
+                          badgeBg: "#fee2e2",
+                          badgeText: "#b91c1c",
+                          tailColor: "#dc2626",
+                        })}
+                      </td>
+                      <td style={{ padding: "8px 10px", fontFamily: "monospace", wordBreak: "break-all", color: "#0f172a" }}>
+                        {m.primer_c || "-"}
+                      </td>
+                      <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>{m.direction || "-"}</td>
+                      <td style={{ padding: "8px 10px" }}>
+                        <span
+                          style={{
+                            display: "inline-block",
+                            padding: "2px 7px",
+                            borderRadius: 4,
+                            background: isOk ? "#dcfce7" : "#fee2e2",
+                            color: isOk ? "#166534" : "#991b1b",
+                            fontWeight: 700,
+                            fontSize: 10.5,
+                          }}
+                        >
+                          {m.status || "-"}
+                        </span>
+                        {notesText && (
+                          <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 2 }}>{notesText}</div>
+                        )}
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>{renderOligoQcBadge(m.oligo_qc)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div style={{ padding: 14, borderRadius: 6, background: "#f8fafc", color: "#64748b", fontSize: 12.5 }}>
+            Tidak ada marker KASP untuk ditampilkan.
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderPrimer3Section = () => {
+    if ((!primersData || !markers.length || isNoReference) && !isSynthetic) {
+      return (
+        <div style={{ display: "grid", gap: 12 }}>
+          <div
+            style={{
+              padding: 24,
+              borderRadius: 8,
+              background: "#f8fafc",
+              border: "1px dashed #cbd5e1",
+              textAlign: "center",
+              color: "#64748b",
+            }}
+          >
+            <div style={{ fontSize: 24, marginBottom: 8 }}>🧪</div>
+            <div style={{ fontWeight: 600, color: "#334155", marginBottom: 4 }}>
+              Sekuens Flanking &amp; Desain Primer3 Belum Tersedia
+            </div>
+            <p style={{ margin: 0, fontSize: 13, maxWidth: 540, marginInline: "auto" }}>
+              {isNoReference
+                ? "Referensi FASTA tidak tersedia; unggah berkas FASTA referensi untuk mengekstrak sekuens flanking dan desain primer Primer3."
+                : "Tidak ditemukan Lead SNP kandidat pada job ini untuk ekstraksi sekuens flanking dan desain primer Primer3."}
+            </p>
+          </div>
+          {renderCandidateRegionsCard()}
+        </div>
+      );
+    }
+
+    return (
+      <div style={{ display: "grid", gap: 16 }}>
+        {isSynthetic && (
+          <div
+            role="note"
+            style={{
+              background: "#fffbeb",
+              border: "1px solid #f59e0b",
+              color: "#92400e",
+              borderRadius: 8,
+              padding: "10px 14px",
+              fontSize: 12.5,
+              fontWeight: 600,
+            }}
+          >
+            ⚠️ Data simulasi — bukan hasil analisis. Sekuens flanking dan desain primer di bawah berasal dari mode demo (`ALLOW_SYNTHETIC_ANNOTATION=true`).
+          </div>
+        )}
+
+        {/* Header & Tombol Ekspor */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#0f172a" }}>
+              Ekstraksi Sekuens Flanking ({totalFlankBp} bp) &amp; Desain Primer3 — Fase 5.4 / Fase 6–8
+            </h4>
+            <p style={{ margin: "3px 0 0", fontSize: 12, color: "#64748b" }}>
+              Sekuens {flankBp} bp upstream + `[Alel Target]` + {flankBp} bp downstream beserta pasangan `LEFT PRIMER` &amp; `RIGHT PRIMER`.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={handleDownloadPrimerTxt}
+              style={{
+                background: "#2563eb",
+                color: "#fff",
+                border: "none",
+                padding: "7px 14px",
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              📥 Unduh Laporan Desain Primer (.txt)
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadPrimerCsv}
+              style={{
+                background: "#059669",
+                color: "#fff",
+                border: "none",
+                padding: "7px 14px",
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              📥 Unduh Tabel Primer (.csv)
+            </button>
           </div>
         </div>
-        <div style={{ padding: "10px 14px", background: "#fffbeb", borderRadius: 6, border: "1px solid #fde68a" }}>
-          <div style={{ fontSize: 11, color: "#92400e", textTransform: "uppercase", fontWeight: 600 }}>Parameter GC% &amp; Tm</div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#b45309", marginTop: 2 }}>GC 35–50% · Tm ~54–56°C</div>
-        </div>
-      </div>
 
-      {renderCandidateRegionsCard()}
+        {/* KPI Cards */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+          <div style={{ padding: "10px 14px", background: "#f8fafc", borderRadius: 6, border: "1px solid #e2e8f0" }}>
+            <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", fontWeight: 600 }}>Total Lokus Target</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#0f172a" }}>{primersData.total_markers || markers.length}</div>
+          </div>
+          <div style={{ padding: "10px 14px", background: "#f0fdf4", borderRadius: 6, border: "1px solid #bbf7d0" }}>
+            <div style={{ fontSize: 11, color: "#166534", textTransform: "uppercase", fontWeight: 600 }}>Primer Berhasil Didesain</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#15803d" }}>
+              {primersData.markers_with_primers ?? markers.filter((m) => m.primer_pairs_count > 0).length} Lokus
+            </div>
+          </div>
+          <div style={{ padding: "10px 14px", background: "#eff6ff", borderRadius: 6, border: "1px solid #bfdbfe" }}>
+            <div style={{ fontSize: 11, color: "#1e40af", textTransform: "uppercase", fontWeight: 600 }}>Ukuran Sekuens Flanking</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#2563eb" }}>
+              {totalFlankBp} bp (±{flankBp} bp)
+            </div>
+          </div>
+          <div style={{ padding: "10px 14px", background: "#fffbeb", borderRadius: 6, border: "1px solid #fde68a" }}>
+            <div style={{ fontSize: 11, color: "#92400e", textTransform: "uppercase", fontWeight: 600 }}>Parameter GC% &amp; Tm</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#b45309", marginTop: 2 }}>GC 35–50% · Tm ~54–56°C</div>
+          </div>
+        </div>
+
+        {renderCandidateRegionsCard()}
 
       {/* Filter & Mode Tampilan */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
@@ -679,6 +991,67 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
         pageSizeOptions={[5, 10, 20, 50]}
         itemLabel="Lokus Target Marker"
       />
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <div
+        role="tablist"
+        aria-label="Jenis Desain Primer"
+        style={{ display: "flex", gap: 8, borderBottom: "1px solid #e2e8f0", paddingBottom: 8, flexWrap: "wrap" }}
+      >
+        <button
+          role="tab"
+          type="button"
+          aria-selected={activeSubTab === "primer3"}
+          onClick={() => setActiveSubTab("primer3")}
+          style={{
+            padding: "6px 14px",
+            borderRadius: 6,
+            border: "1px solid",
+            borderColor: activeSubTab === "primer3" ? "#2563eb" : "#cbd5e1",
+            background: activeSubTab === "primer3" ? "#2563eb" : "#fff",
+            color: activeSubTab === "primer3" ? "#fff" : "#334155",
+            fontSize: 12.5,
+            fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          PCR Konvensional
+        </button>
+        <button
+          role="tab"
+          type="button"
+          aria-selected={activeSubTab === "kasp"}
+          onClick={() => setActiveSubTab("kasp")}
+          style={{
+            padding: "6px 14px",
+            borderRadius: 6,
+            border: "1px solid",
+            borderColor: activeSubTab === "kasp" ? "#2563eb" : "#cbd5e1",
+            background: activeSubTab === "kasp" ? "#2563eb" : "#fff",
+            color: activeSubTab === "kasp" ? "#fff" : "#334155",
+            fontSize: 12.5,
+            fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          KASP
+          {kaspData?.status === "completed" ? ` (${Number(kaspData.designed || 0)}/${Number(kaspData.total || 0)})` : ""}
+        </button>
+      </div>
+
+      {downloadError && (
+        <div role="alert" style={{ padding: 10, borderRadius: 6, background: "#fef2f2", color: "#b91c1c", fontSize: 12 }}>
+          {downloadError}
+        </div>
+      )}
+
+      <div role="tabpanel">
+        {activeSubTab === "kasp" ? renderKaspSection() : renderPrimer3Section()}
+      </div>
     </div>
   );
 }
