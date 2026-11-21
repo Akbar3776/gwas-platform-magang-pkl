@@ -21,11 +21,13 @@ from app.services.annotation_service import (
 from app.services.chromosome_service import _is_gzip_file, load_split_map
 from app.services.flanking_service import (
     attach_ref_alt_from_bim,
+    build_kasp_input,
     collect_significant_snps,
     extract_regions_fasta,
     write_candidate_regions,
 )
 from app.services.go_enrichment_service import run_go_enrichment_analysis
+from app.services.kasp_service import analyze_kasp_oligos, design_kasp
 from app.services.primer_service import generate_flanking_and_primers
 from app.tasks._common import (
     JobCancelledError,
@@ -36,6 +38,7 @@ from app.tasks._common import (
     stage_dir,
     upsert_result,
     write_json,
+    write_stage_summary,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
 
@@ -121,18 +124,206 @@ def _resolve_bim_candidate(workspace: Path, ctx: dict[str, Any]) -> Path | None:
     return None
 
 
-def _attach_region_metadata(
+def _attach_primers_extras(
     primers_data: dict[str, Any] | None,
     regions_fa_info: dict[str, Any] | None,
     candidate_regions_meta: dict[str, Any] | None,
+    kasp_data: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Attach candidate region summary metadata onto primers.json payload."""
-    if primers_data is None or regions_fa_info is None:
-        return primers_data
-    primers_data["regions_status"] = regions_fa_info["status"]
+    """Attach candidate region and KASP summary blocks onto primers.json payload."""
+    if primers_data is None:
+        return None
+    if regions_fa_info is not None:
+        primers_data["regions_status"] = regions_fa_info["status"]
     if candidate_regions_meta is not None:
         primers_data["candidate_regions"] = candidate_regions_meta
+    if kasp_data is not None:
+        primers_data["kasp"] = kasp_data
     return primers_data
+
+
+def _max_thermo_tm(section: dict[str, Any]) -> str:
+    """Return max melting temperature (formatted string) across detected secondary structures."""
+    tms = [
+        float(val["tm"])
+        for val in section.values()
+        if isinstance(val, dict) and val.get("structure_found") and val.get("tm") is not None
+    ]
+    return f"{max(tms):.2f}" if tms else "0.00"
+
+
+def _run_kasp_pipeline(
+    lead_snps: list[dict[str, Any]],
+    *,
+    fasta_path: Path | None,
+    bim_path: Path | None,
+    split_map: dict[str, Any] | None,
+    workspace: Path,
+    log_file: Path,
+    max_snps: int = 20,
+) -> dict[str, Any]:
+    """Generate KASP inputs, design EasyKASP primers, score oligo structure, and write 3 TSV/FASTA exports."""
+    selected = list(lead_snps)[:max_snps]
+    if not selected:
+        return {
+            "status": "skipped",
+            "reason": "Tidak ada Lead SNP untuk desain KASP",
+            "total": 0,
+            "designed": 0,
+            "failed": 0,
+            "success_rate": 0.0,
+            "markers": [],
+            "files": {},
+        }
+    if fasta_path is None or not Path(fasta_path).is_file():
+        reason = "FASTA referensi tidak tersedia"
+        append_log(log_file, f"[5.4-KASP] skipped ({reason}).")
+        return {
+            "status": "skipped",
+            "reason": reason,
+            "total": 0,
+            "designed": 0,
+            "failed": 0,
+            "success_rate": 0.0,
+            "markers": [],
+            "files": {},
+        }
+
+    input_rows = build_kasp_input(
+        selected,
+        fasta_path,
+        bim_path=bim_path,
+        split_map=split_map,
+    )
+    input_tsv = workspace / "kasp_input.tsv"
+    input_tmp = workspace / "kasp_input.tsv.tmp"
+    with input_tmp.open("w", encoding="utf-8", newline="") as kf:
+        writer = csv.writer(kf, delimiter="\t")
+        writer.writerow(["SNP ID", "Allele 1", "Allele 2", "Flanking Sequence"])
+        for row in input_rows:
+            if row["status"] == "ok":
+                writer.writerow([row["snp_id"], row["allele_1"], row["allele_2"], row["flanking"]])
+    input_tmp.replace(input_tsv)
+
+    primers_tsv = workspace / "kasp_primers.tsv"
+    primers_tmp = workspace / "kasp_primers.tsv.tmp"
+    no_tail_fa = workspace / "kasp_primers_no_tail.fa"
+    no_tail_tmp = workspace / "kasp_primers_no_tail.fa.tmp"
+
+    markers: list[dict[str, Any]] = []
+    fa_lines: list[str] = []
+    designed_count = 0
+
+    with primers_tmp.open("w", encoding="utf-8", newline="") as pf:
+        pwriter = csv.writer(pf, delimiter="\t")
+        pwriter.writerow([
+            "SNP_ID",
+            "allele_X",
+            "allele_Y",
+            "primer_X",
+            "primer_Y",
+            "primer_C",
+            "direction",
+            "tm_x",
+            "tm_y",
+            "tm_c",
+            "status",
+            "notes",
+            "hairpin_max_tm",
+            "homodimer_max_tm",
+            "heterodimer_max_tm",
+            "oligo_warn",
+        ])
+        for in_row in input_rows:
+            if in_row["status"] != "ok":
+                notes = [in_row["reason"]] if in_row.get("reason") else []
+                entry: dict[str, Any] = {
+                    "snp_id": in_row["snp_id"],
+                    "allele_x": in_row["allele_1"],
+                    "allele_y": in_row["allele_2"],
+                    "primer_x": "",
+                    "primer_y": "",
+                    "primer_c": "",
+                    "primer_x_no_tail": "",
+                    "primer_y_no_tail": "",
+                    "direction": None,
+                    "tm_x": None,
+                    "tm_y": None,
+                    "tm_c": None,
+                    "status": "Failed",
+                    "input_status": in_row["status"],
+                    "notes": notes,
+                    "oligo_qc": analyze_kasp_oligos({"status": "Failed"}),
+                }
+            else:
+                design = design_kasp(
+                    in_row["snp_id"],
+                    in_row["allele_1"],
+                    in_row["allele_2"],
+                    in_row["flanking"],
+                )
+                oligo_qc = analyze_kasp_oligos(design)
+                entry = {
+                    **design,
+                    "input_status": "ok",
+                    "masked_neighbors": in_row["masked_neighbors"],
+                    "flanking_input": in_row["flanking"],
+                    "oligo_qc": oligo_qc,
+                }
+                if design["status"] == "OK":
+                    designed_count += 1
+                    fa_lines.extend([
+                        f">{design['snp_id']}_X",
+                        design["primer_x_no_tail"],
+                        f">{design['snp_id']}_Y",
+                        design["primer_y_no_tail"],
+                        f">{design['snp_id']}_C",
+                        design["primer_c"],
+                    ])
+
+            qc_block = entry["oligo_qc"]
+            pwriter.writerow([
+                entry["snp_id"],
+                entry["allele_x"],
+                entry["allele_y"],
+                entry["primer_x"],
+                entry["primer_y"],
+                entry["primer_c"],
+                entry["direction"] or "-",
+                entry["tm_x"] if entry["tm_x"] is not None else "",
+                entry["tm_y"] if entry["tm_y"] is not None else "",
+                entry["tm_c"] if entry["tm_c"] is not None else "",
+                entry["status"],
+                "; ".join(entry.get("notes") or []),
+                _max_thermo_tm(qc_block.get("hairpins") or {}),
+                _max_thermo_tm(qc_block.get("homodimers") or {}),
+                _max_thermo_tm(qc_block.get("heterodimers") or {}),
+                "WARN" if qc_block.get("warn") else "OK",
+            ])
+            markers.append(entry)
+
+    primers_tmp.replace(primers_tsv)
+    no_tail_tmp.write_text(("\n".join(fa_lines) + "\n") if fa_lines else "", encoding="utf-8")
+    no_tail_tmp.replace(no_tail_fa)
+
+    total_count = len(markers)
+    failed_count = total_count - designed_count
+    success_rate = round((designed_count / total_count) * 100.0, 2) if total_count else 0.0
+    append_log(log_file, f"[5.4-KASP] {designed_count}/{total_count} berhasil.")
+
+    return {
+        "status": "completed",
+        "total": total_count,
+        "designed": designed_count,
+        "failed": failed_count,
+        "success_rate": success_rate,
+        "markers": markers,
+        "files": {
+            "input_tsv": input_tsv.name,
+            "primers_tsv": primers_tsv.name,
+            "primers_no_tail_fa": no_tail_fa.name,
+        },
+    }
 
 
 @celery_app.task(
@@ -329,7 +520,20 @@ def run_annotation(
             }
 
         primers_data: dict[str, Any] | None = None
+        kasp_data: dict[str, Any] | None = None
         if len(lead_snps) > 0:
+            try:
+                kasp_data = _run_kasp_pipeline(
+                    lead_snps,
+                    fasta_path=fasta_candidate,
+                    bim_path=bim_candidate,
+                    split_map=split_map,
+                    workspace=workspace,
+                    log_file=log_file,
+                    max_snps=20,
+                )
+            except Exception as k_exc:
+                logger.warning("Gagal membangkitkan desain KASP di annotation_tasks: %s", k_exc)
             try:
                 primers_data = generate_flanking_and_primers(
                     lead_snps=lead_snps,
@@ -340,7 +544,7 @@ def run_annotation(
                     bim_path=bim_candidate,
                     split_map=split_map,
                 )
-                _attach_region_metadata(primers_data, regions_fa_info, candidate_regions_meta)
+                _attach_primers_extras(primers_data, regions_fa_info, candidate_regions_meta, kasp_data)
                 write_json(workspace / "primers.json", primers_data)
                 append_log(
                     log_file,
@@ -351,26 +555,40 @@ def run_annotation(
                 logger.warning("Gagal membangkitkan desain primer di annotation_tasks: %s", p_exc)
 
         # Cek kondisi skip untuk pemetaan GFF3
+        skip_reason: str | None = None
         if not cfg.enabled:
-            reason = "Anotasi gen dinonaktifkan oleh pengguna"
-            append_log(log_file, f"[SKIPPED] {reason}.\n")
-            write_json(workspace / "skipped.json", {"status": "skipped", "reason": reason})
-            mark_job(db, job, overall_status=JobStatus.COMPLETED, completed_at=datetime.now(timezone.utc))
-            return {**ctx, "status": "skipped", "annotation_skipped": True, "primers": primers_data, "log_file": str(log_file)}
+            skip_reason = "Anotasi gen dinonaktifkan oleh pengguna"
+        elif gff_candidate is None:
+            skip_reason = "File anotasi referensi GFF3 tidak diunggah pada dataset ini"
+        elif len(lead_snps) == 0:
+            skip_reason = "Tidak ada Lead SNP signifikan yang lolos threshold untuk dianotasi"
 
-        if gff_candidate is None:
-            reason = "File anotasi referensi GFF3 tidak diunggah pada dataset ini"
-            append_log(log_file, f"[SKIPPED] {reason}.\n")
-            write_json(workspace / "skipped.json", {"status": "skipped", "reason": reason})
+        if skip_reason is not None:
+            append_log(log_file, f"[SKIPPED] {skip_reason}.\n")
+            write_json(workspace / "skipped.json", {"status": "skipped", "reason": skip_reason})
+            write_stage_summary(
+                job_id,
+                "annotation",
+                {
+                    "status": "skipped",
+                    "reason": skip_reason,
+                    "regions_status": (regions_fa_info or {}).get("status"),
+                    "kasp_status": (kasp_data or {}).get("status"),
+                    "kasp_designed": int((kasp_data or {}).get("designed") or 0),
+                    "kasp_total": int((kasp_data or {}).get("total") or 0),
+                },
+                db=db,
+            )
             mark_job(db, job, overall_status=JobStatus.COMPLETED, completed_at=datetime.now(timezone.utc))
-            return {**ctx, "status": "skipped", "annotation_skipped": True, "primers": primers_data, "log_file": str(log_file)}
-
-        if len(lead_snps) == 0:
-            reason = "Tidak ada Lead SNP signifikan yang lolos threshold untuk dianotasi"
-            append_log(log_file, f"[SKIPPED] {reason}.\n")
-            write_json(workspace / "skipped.json", {"status": "skipped", "reason": reason})
-            mark_job(db, job, overall_status=JobStatus.COMPLETED, completed_at=datetime.now(timezone.utc))
-            return {**ctx, "status": "skipped", "annotation_skipped": True, "log_file": str(log_file)}
+            skip_ret: dict[str, Any] = {
+                **ctx,
+                "status": "skipped",
+                "annotation_skipped": True,
+                "log_file": str(log_file),
+            }
+            if not cfg.enabled or gff_candidate is None:
+                skip_ret["primers"] = primers_data
+            return skip_ret
 
         # 1. Parsing file GFF3
         append_log(log_file, f"Membaca fitur '{cfg.feature_type}' dari file GFF3: {gff_candidate.name}...")
@@ -459,7 +677,7 @@ def run_annotation(
                 bim_path=bim_candidate,
                 split_map=split_map,
             )
-            _attach_region_metadata(primers_data, regions_fa_info, candidate_regions_meta)
+            _attach_primers_extras(primers_data, regions_fa_info, candidate_regions_meta, kasp_data)
             write_json(workspace / "primers.json", primers_data)
 
         candidate_data = {
@@ -535,6 +753,21 @@ def run_annotation(
             "n_candidate_genes": len(unique_go_genes),
             "annotation_counts": category_counts,
         }
+        write_stage_summary(
+            job_id,
+            "annotation",
+            {
+                "status": "completed",
+                "total_lead_snps": len(mapped_rows),
+                "n_candidate_genes": len(unique_go_genes),
+                "counts": category_counts,
+                "regions_status": (regions_fa_info or {}).get("status"),
+                "kasp_status": (kasp_data or {}).get("status"),
+                "kasp_designed": int((kasp_data or {}).get("designed") or 0),
+                "kasp_total": int((kasp_data or {}).get("total") or 0),
+            },
+            db=db,
+        )
         mark_job(
             db,
             job,

@@ -894,3 +894,86 @@ def test_find_nearby_variants_and_primer3_excluded_region(overflow_dataset: dict
         r_right_start0 = r_right_end0 - pair["right"]["len"] + 1
         assert not (l_start0 <= polymorphic_0 <= l_end0)
         assert not (r_right_start0 <= polymorphic_0 <= r_right_end0)
+
+
+def test_run_annotation_writes_kasp_exports_and_skips_cleanly_without_fasta(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import csv
+    import json
+    from app.services.kasp_service import FAM_TAIL, HEX_TAIL, design_kasp
+    from app.tasks import annotation_tasks
+    from tests.test_annotation_service import _setup_annotation_job
+    from tests.test_kasp_service import SNP_74098_FLANK
+
+    # Strip [T/C] from golden SNP_74098_FLANK to build matching reference FASTA at chr7:5500
+    left_flank, rest = SNP_74098_FLANK.split("[T/C]")
+    ref_chr7 = f"{'N' * 5349}{left_flank}T{rest}{'N' * 200}".upper()
+    gff_text = "##gff-version 3\nchr7\tSimGWAS\tgene\t5400\t5700\t.\t+\t.\tID=GENE_CHR7;Name=GENE_CHR7\n"
+    job, dataset, job_root = _setup_annotation_job(tmp_path, monkeypatch, gff_text)
+    ds_dir = tmp_path / "datasets" / str(dataset.id)
+    (ds_dir / "reference.fa").write_text(f">chr7\n{ref_chr7}\n", encoding="utf-8")
+
+    qc_dir = job_root / "qc"
+    qc_dir.mkdir(parents=True, exist_ok=True)
+    (qc_dir / "plink_qc.bim").write_text("chr7\tSNP_74098\t0\t5500\tC\tT\n", encoding="utf-8")
+    (job_root / "postgwas").mkdir(parents=True, exist_ok=True)
+    (job_root / "postgwas" / "lead_snps.json").write_text(
+        json.dumps({"count": 1, "snps": [{"snp": "SNP_74098", "chr": "chr7", "pos": 5500, "p": 1e-9}]}),
+        encoding="utf-8",
+    )
+
+    annotation_tasks.run_annotation(prev_result={}, job_id=str(job.id), dataset_id=str(dataset.id))
+    anno_dir = job_root / "annotation"
+
+    input_tsv = anno_dir / "kasp_input.tsv"
+    primers_tsv = anno_dir / "kasp_primers.tsv"
+    no_tail_fa = anno_dir / "kasp_primers_no_tail.fa"
+    assert input_tsv.is_file()
+    assert primers_tsv.is_file()
+    assert no_tail_fa.is_file()
+
+    # Round-trip kasp_input.tsv into design_kasp matches primers.json['kasp'] and kasp_primers.tsv
+    with input_tsv.open("r", encoding="utf-8") as inf:
+        in_rows = list(csv.DictReader(inf, delimiter="\t"))
+    assert len(in_rows) == 1
+    assert in_rows[0]["SNP ID"] == "SNP_74098"
+    redesign = design_kasp(
+        in_rows[0]["SNP ID"],
+        in_rows[0]["Allele 1"],
+        in_rows[0]["Allele 2"],
+        in_rows[0]["Flanking Sequence"],
+    )
+    assert redesign["primer_x"] == f"{FAM_TAIL}AATTGGGATGATTGTCTCAATAGGAAA"
+
+    primers_json = json.loads((anno_dir / "primers.json").read_text(encoding="utf-8"))
+    kasp_block = primers_json["kasp"]
+    assert kasp_block["status"] == "completed"
+    assert kasp_block["designed"] == 1
+    assert kasp_block["markers"][0]["primer_x"] == redesign["primer_x"]
+    assert kasp_block["markers"][0]["oligo_qc"]["analyzed"] is True
+
+    # No-tail FASTA must strictly omit FAM/HEX adapter sequences
+    fa_txt = no_tail_fa.read_text(encoding="utf-8")
+    assert ">SNP_74098_X" in fa_txt and ">SNP_74098_Y" in fa_txt and ">SNP_74098_C" in fa_txt
+    assert FAM_TAIL not in fa_txt
+    assert HEX_TAIL not in fa_txt
+
+    anno_log = (anno_dir / "annotation.log").read_text(encoding="utf-8")
+    assert "[5.4-KASP] 1/1 berhasil" in anno_log
+    assert (anno_dir / "stage_summary.json").is_file()
+
+    # Missing FASTA case must skip KASP cleanly without raising
+    job2, ds2, job2_root = _setup_annotation_job(tmp_path, monkeypatch, gff_text)
+    (job2_root / "qc").mkdir(parents=True, exist_ok=True)
+    (job2_root / "qc" / "plink_qc.bim").write_text("chr7\tSNP_74098\t0\t5500\tC\tT\n", encoding="utf-8")
+    (job2_root / "postgwas").mkdir(parents=True, exist_ok=True)
+    (job2_root / "postgwas" / "lead_snps.json").write_text(
+        json.dumps({"count": 1, "snps": [{"snp": "SNP_74098", "chr": "chr7", "pos": 5500, "p": 1e-9}]}),
+        encoding="utf-8",
+    )
+    annotation_tasks.run_annotation(prev_result={}, job_id=str(job2.id), dataset_id=str(ds2.id))
+    primers2 = json.loads((job2_root / "annotation" / "primers.json").read_text(encoding="utf-8"))
+    assert primers2["kasp"]["status"] == "skipped"
+    assert not (job2_root / "annotation" / "kasp_input.tsv").exists()
