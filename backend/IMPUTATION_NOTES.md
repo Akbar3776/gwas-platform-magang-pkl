@@ -44,6 +44,6 @@ services:
 - Metaspace dan JIT code cache JVM.
 - Thread stack Java sesuai jumlah `nthreads`.
 - Buffer native I/O saat membaca/menulis VCF terkompresi BGZF.
-- Overhead proses pendamping seperti `plink2` saat konversi & QC ulang pasca-imputasi (`_prepare_beagle_safe_vcf` juga terlebih dahulu menyaring varian dengan `POS > 2.10 Gb` serta scaffold ber-marker tunggal `< 2` posisi).
+- Overhead proses pendamping seperti `plink2` saat konversi & QC ulang pasca-imputasi. (`_prepare_beagle_safe_vcf` terlebih dahulu menyaring varian dengan `POS > 2.10 Gb` serta kontig dengan `< 2` posisi marker; karena kontig non-utama/*scaffold* kini dibuang sejak tahap normalisasi sesuai ADR-011, penyaring *single-marker* ini bertindak sebagai **jaring pengaman generik** — `singles_removed = 0` teramati pada dataset bawang putih nyata — sekaligus pelindung untuk VCF khusus atau job lama yang di-resume.)
 
 Menyetel `-Xmx` sama dengan batas RAM container (`mem_limit`) dapat memicu **OOM-kill** kernel pada proses worker tanpa jejak exception Python yang jelas.

@@ -134,11 +134,12 @@ Backend dapat dijalankan dengan **SQLite lokal** tanpa perlu memasang PostgreSQL
      - **GAF 2.x** (`.gaf` atau `.gaf.gz`): kolom ke-2 = ID gen, kolom ke-5 = `GO:xxxxxxx`, kolom ke-9 = aspek (`P`/`F`/`C`).
    - Jika tidak ada `Ontology_term` di GFF3 maupun berkas pemetaan GO (dengan `ALLOW_SYNTHETIC_ANNOTATION=false`), GO Enrichment jujur melaporkan status `"unavailable"`.
 
-3. **Variabel Lingkungan Tambahan (Alur Kerja 2026-11-21 — `.env.example`)**:
+3. **Variabel Lingkungan Tambahan (Alur Kerja 2026-11-21/22 — `.env.example`)**:
    - `CHROM_SPLIT_THRESHOLD_BP=2147483647` — ambang panjang kromosom (`> 32-bit`) untuk memicu pemecahan kontig semu `<chrom>_p<k>` pada Fase 0/Normalisasi.
    - `CHROM_SPLIT_UNIT_BP=1000000000` — ukuran satuan pecahan pseudo-kromosom (default `1 Gb`, harus `> 0` dan `<= CHROM_SPLIT_THRESHOLD_BP`).
    - `CANDIDATE_REGION_MAX_TOTAL_BP=50000000` — batas total panjang FASTA region kandidat yang diekspor pada Fase 5.4 (`candidate_regions.fa`).
    - `KASP_FLANK_BP=150` — panjang sekuens flanking per sisi untuk masukan desain KASP (minimal `60` bp).
+   - `NON_PRIMARY_CONTIG_REGEX=(?i)^(scaffold|contig|ctg|unplaced|chrun)|_(random|unplaced|alt)$` — pola *blacklist* regex untuk menyaring *scaffold*/kontig non-utama beserta baris `##contig` saat normalisasi streaming; kosongkan (`""`) untuk menonaktifkan ([**ADR-011**](docs/decisions/ADR-011-drop-non-primary-scaffolds.md)).
 
 ---
 
@@ -153,12 +154,12 @@ Berikut adalah daftar perintah utama yang sering digunakan dalam pengembangan, p
 | **Docker** | `docker compose -f infra/docker-compose.yml logs -f backend` | Memantau log aplikasi FastAPI secara *real-time*. |
 | **Docker** | `docker compose -f infra/docker-compose.yml logs -f celery_worker` | Memantau log eksekusi tugas antrean Celery worker. |
 | **Backend** | `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload` | Menjalankan FastAPI development server dengan fitur *auto-reload*. |
-| **Backend** | `cd backend && python -m pytest tests -q` | Menjalankan seluruh rangkaian pengujian unit dan integrasi e2e backend (`310 passed, 6 skipped` pada host Windows; `316 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`). |
+| **Backend** | `cd backend && python -m pytest tests -q` | Menjalankan seluruh rangkaian pengujian unit dan integrasi e2e backend (`348 passed, 6 skipped` pada host Windows; `354 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`). |
 | **Backend** | `pytest backend/tests/test_qc_commands.py -v` | Menjalankan pengujian logika QC, filtering PLINK, dan histogram komparasi. |
-| **Backend** | `pytest backend/tests/test_normalization_indexing.py backend/tests/test_chromosome_service.py -v` | Menjalankan pengujian Fase 0 karakteristik kromosom, split kontig semu + `chrom_split_map.json`, dan index Tabix/CSI. |
+| **Backend** | `pytest backend/tests/test_normalization_indexing.py backend/tests/test_chromosome_service.py -v` | Menjalankan pengujian Fase 0 karakteristik kromosom, penyaringan kontig non-utama, split kontig semu + `chrom_split_map.json`, dan index Tabix/CSI. |
 | **Backend** | `alembic upgrade head` | Menjalankan migrasi skema database relasional ke versi terbaru (untuk DB lama tanpa `alembic_version`, jalankan `alembic stamp head` sekali sebelumnya). |
 | **Frontend** | `npm --prefix frontend run dev` | Menjalankan Vite development server frontend pada `http://localhost:5173`. |
-| **Frontend** | `npm --prefix frontend run test` | Menjalankan seluruh pengujian unit Jest frontend (`29 test suites, 98 passed` dengan `--runInBand`). |
+| **Frontend** | `npm --prefix frontend run test` | Menjalankan seluruh pengujian unit Jest frontend (`30 test suites, 102 passed` dengan `--runInBand`). |
 | **Frontend** | `npm --prefix frontend run lint` | Menjalankan pemeriksaan kualitas kode ESLint (0 errors, 0 warnings). |
 | **Frontend** | `npm --prefix frontend run build` | Melakukan kompilasi aset frontend siap produksi (*production bundle*). |
 | **Git** | `git status` | Memeriksa integritas dan status *working tree* git lokal. |
@@ -250,6 +251,7 @@ Seluruh keputusan teknis penting dan kompromi arsitektural (*trade-offs*) didoku
 | [ADR-008](docs/decisions/ADR-008-frontend-big-data-plotting-engine.md) | **Mesin Visualisasi Data Genomik Skala Besar (HTML5 2D Canvas)** | `Accepted` | Menggantikan DOM SVG berat (D3/Plotly) dengan canvas HTML5 2D berteknologi *pixel decimation* untuk visualisasi Manhattan & QQ plot anti-freeze. |
 | [ADR-009](docs/decisions/ADR-009-frontend-architecture-and-build-toolchain.md) | **Arsitektur Frontend & Perangkat Pembundel (Vite + React 18 SPA)** | `Accepted` | Membangun Single Page Application statis tanpa kebutuhan runtime Node.js di server produksi, dilayani langsung oleh Nginx reverse proxy. |
 | [ADR-010](docs/decisions/ADR-010-gwas-workflow-2026-11-21.md) | **Migrasi Alur Kerja GWAS 2026-11-21 (Split Kromosom, LD Decay, Region, & KASP)** | `Accepted` | Menjelaskan 9 keputusan migrasi alur kerja (split pseudo-kromosom + peta JSON, ambang 32-bit/Beagle, LD non-prune blok kontigu, GLM `-lm 1`, region tanpa bedtools, `--mind 0.1`, batas LD split, KASP EasyKASP + tunda BLAST, retensi `Pipeline_Gwas.md`). |
+| [ADR-011](docs/decisions/ADR-011-drop-non-primary-scaffolds.md) | **Pembuangan Kontig Non-Utama & Perbaikan `started_at` Stage Summary** | `Accepted` | Menjelaskan penyaringan *scaffold*/kontig non-utama lewat `NON_PRIMARY_CONTIG_REGEX` saat normalisasi streaming, ringkasan agregat Fase 0 JSON/UI vs audit TXT lengkap, retensi filter Beagle sebagai jaring pengaman, dan perbaikan waktu mulai 10 tahap. |
 
 ---
 
@@ -292,10 +294,10 @@ sequenceDiagram
 ```
 
 ### Rincian Fase Komputasi:
-1. **Fase 1 & Fase 0 (Karakteristik Kromosom & Fenotipe)**: Rekonsiliasi ID sampel VCF vs Fenotipe, statistik deskriptif, histogram **Freedman-Diaconis**, boxplot Tukey, ekspor `keep_ids.txt` dan `pheno_plink.txt`, serta pemindaian *streaming* $O(\text{kromosom})$ seluruh kromosom VCF ke `inspection/chromosome_characteristics_summary.txt` (mendeteksi varian `> CHROM_SPLIT_THRESHOLD_BP` dan peringatan `INVALID_POS <= 0`).
-2. **Fase 1B: Normalisasi VCF (`bcftools` + Split Kromosom >32-bit)**: Validasi header `#CHROM POS ID REF ALT`, pemecahan kromosom overflow ke kontig semu `<chrom>_p<k>` (`CHROM_SPLIT_UNIT_BP = 1.000.000.000`) dengan penyimpanan peta terbalik `normalization/chrom_split_map.json` agar **tidak ada varian berposisi valid (`POS > 0`) yang hilang** (hanya `INVALID_POS <= 0` yang disaring), pengurutan koordinat (`bcftools sort`), serta pengindeksan `.tbi` dengan fallback otomatis ke `.csi` untuk koordinat $> 512\text{ Mb}$ (tanpa `bcftools norm -f`; rujuk [**ADR-010**](docs/decisions/ADR-010-gwas-workflow-2026-11-21.md)).
-3. **Fase 2: Quality Control Lanjutan (`PLINK 2 / 1.9`)**: Dukungan mode organisme (`inbred` galur murni tanpa filter HWE vs `outcross` dengan filter HWE), `--snps-only just-acgt`, `--max-alleles 2`, penataan ID varian `@:#`, default `--mind 0.1`, serta kalkulasi riil metrik komparasi before/after QC (termasuk info kromosom terpecah) beserta histogram MAF & missingness.
-4. **Fase Imputasi Genotipe Opsional (`Beagle 5.4`)**: Mode `none` (bypass dengan status transparan `[SKIPPED]`), `reference` (panel referensi), dan `reference_free` dengan heap JVM berbasis limit cgroup (`MaxRAMPercentage=75%`); jaring pengaman `MAX_32BIT_POS = 2.100.000.000` menjaga kontig tak terpecah di rentang `2,10–2,147 Gb` dari kegagalan batas *window* Beagle 40 cM.
+1. **Fase 1 & Fase 0 (Karakteristik Kromosom & Fenotipe)**: Rekonsiliasi ID sampel VCF vs Fenotipe, statistik deskriptif, histogram **Freedman-Diaconis**, boxplot Tukey, ekspor `keep_ids.txt` dan `pheno_plink.txt`, serta pemindaian *streaming* seluruh kromosom VCF ke `inspection/chromosome_characteristics_summary.txt` (lengkap untuk jejak audit, mendeteksi varian `> CHROM_SPLIT_THRESHOLD_BP` dan `INVALID_POS <= 0`), sementara payload JSON/UI merangkum kontig non-utama dalam blok agregat `excluded_contigs`.
+2. **Fase 1B: Normalisasi VCF (`bcftools` + Split Kromosom >32-bit + Buang Kontig Non-Utama)**: Validasi header `#CHROM POS ID REF ALT`, penyaringan kontig non-utama (*scaffold* dll.) beserta baris `##contig` sesuai `NON_PRIMARY_CONTIG_REGEX` dalam pass *streaming* yang sama, pemecahan kromosom overflow ke kontig semu `<chrom>_p<k>` (`CHROM_SPLIT_UNIT_BP = 1.000.000.000`) dengan penyimpanan peta terbalik `normalization/chrom_split_map.json` agar **tidak ada varian kromosom utama berposisi valid (`POS > 0`) yang hilang**, pengurutan koordinat (`bcftools sort`), serta pengindeksan `.tbi` dengan fallback otomatis ke `.csi` untuk koordinat $> 512\text{ Mb}$ (tanpa `bcftools norm -f`; rujuk [**ADR-010**](docs/decisions/ADR-010-gwas-workflow-2026-11-21.md) dan [**ADR-011**](docs/decisions/ADR-011-drop-non-primary-scaffolds.md)).
+3. **Fase 2: Quality Control Lanjutan (`PLINK 2 / 1.9`)**: Dukungan mode organisme (`inbred` galur murni tanpa filter HWE vs `outcross` dengan filter HWE), `--snps-only just-acgt`, `--max-alleles 2`, penataan ID varian `@:#`, default `--mind 0.1`, serta kalkulasi riil metrik komparasi before/after QC (termasuk info kromosom terpecah & rincian kontig non-utama yang disaring di normalisasi) beserta histogram MAF & missingness.
+4. **Fase Imputasi Genotipe Opsional (`Beagle 5.4`)**: Mode `none` (bypass dengan status transparan `[SKIPPED]`), `reference` (panel referensi), dan `reference_free` dengan heap JVM berbasis limit cgroup (`MaxRAMPercentage=75%`); jaring pengaman `MAX_32BIT_POS = 2.100.000.000` dan filter *single-marker* menjaga kontig tepi/job legacy dari kegagalan estimasi batas *window* Beagle 40 cM.
 5. **Fase 3 + 4D: Struktur Populasi, Kinship & LD Decay Non-Prune**: LD pruning pairwise nyata (`plink`/`plink2 --indep-pairwise`), analisis PCA 10 komponen + PVE + k-means, Centered Kinship Matrix ($K = \frac{1}{p}WW^T$), tabel kekerabatan KING-robust eksak **tervektorisasi BLAS**, kurva peluruhan LD decay $r^2$ pada **blok kontigu non-prune** (maks 20.000 SNP dari bfile QC/imputasi, mencatat `method` & `source_bfile`), serta rekomendasi otomatis GLM vs LMM.
 6. **Fase 4A/4B: Analisis Asosiasi GWAS (GEMMA LMM & GLM)**: Pengujian Linear Mixed Model (`gemma -lmm 4 -c covariates.txt`) dan General Linear Model (`gemma -lm 1`) langsung via biner GEMMA (*fail-fast*), serta normalisasi output 10 kolom yang turut menyertakan koordinat asli (`orig_chr`, `orig_pos`) berbasis `chrom_split_map.json`.
 7. **Fase 4C: Multi-Locus GWAS (`FarmCPU`, `BLINK`, & `MLMM`)**: Analisis multi-lokus iteratif menggunakan **GAPIT3** (`gapit_runner.R`) di R, atau fallback **Python Native Engine** (`ALLOW_PYTHON_MULTILOCUS=true`) bila R/GAPIT tidak terpasang, lengkap dengan label engine sumber, perhitungan `PVE(%)`, `H&B.P.Value`, serta Manhattan/QQ Plot per model (masing-masing memulihkan koordinat asli lewat `chrom_split_map.json`).
@@ -323,8 +325,8 @@ Halaman visualisasi hasil ([`GwasResultsPanel.jsx`](frontend/src/components/Gwas
    - Plot sebaran PCA (PC1 vs PC2) dengan klaster k-means dan Scree Plot (PVE).
    - Heatmap matriks kekerabatan (Centered Kinship) dan kurva peluruhan LD decay dengan penanda garis *half-decay*.
 4. **🔍 Inspeksi & QC**:
-   - Panel inspeksi fenotipe dengan histogram Freedman-Diaconis, boxplot outlier Tukey, metrik rekonsiliasi sampel, serta tabel **Karakteristik Kromosom (Fase 0)**.
-   - Panel perbandingan QC sebelum vs sesudah filter varian dan sampel (termasuk ringkasan kromosom dipecah & `INVALID_POS`), histogram MAF, dan missingness.
+   - Panel inspeksi fenotipe dengan histogram Freedman-Diaconis, boxplot outlier Tukey, metrik rekonsiliasi sampel, tabel **Karakteristik Kromosom (Fase 0)**, serta baris agregat *scaffold*/kontig non-utama yang akan disaring di normalisasi.
+   - Panel perbandingan QC sebelum vs sesudah filter varian dan sampel (termasuk ringkasan kromosom dipecah, `INVALID_POS`, dan rincian *scaffold* dibuang di normalisasi), histogram MAF, dan missingness.
 5. **🔬 Multi-Locus GWAS**:
    - Tabel perbandingan lokus puncak asosiasi antara Single-Locus vs Multi-Locus (`FarmCPU`, `BLINK`, `MLMM`) beserta label engine (`GAPIT` atau `Python Native`), metrik `PVE(%)`, `H&B.P.Value`, serta Manhattan & QQ plot per model.
 6. **🌿 Anotasi Gen GFF3 & GO**:
@@ -393,26 +395,26 @@ Seluruh endpoint backend berada di bawah prefix `/api/v1` (kecuali `/health`). D
 Platform memiliki cakupan pengujian otomatis pada lapisan backend dan frontend:
 
 ### A. Backend Unit & E2E Testing (`pytest`)
-Seluruh suite pengujian backend (`310 passed, 6 skipped` di host Python Windows; `316 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`) berada di `backend/tests/`:
+Seluruh suite pengujian backend (`348 passed, 6 skipped` di host Python Windows; `354 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`) berada di `backend/tests/`:
 ```powershell
 cd backend
 python -m flake8 app scripts tests --ignore=E501,E402,W503 --max-line-length=120
 python -m pytest tests -q -p no:cacheprovider
 ```
 
-Cakupan pengujian backend meliputi 36 modul uji (`backend/tests/test_*.py`), antara lain:
+Cakupan pengujian backend meliputi 37 modul uji (`backend/tests/test_*.py`), antara lain:
 - `test_which_tool.py`, `test_security_config.py`, `test_access_control.py`, `test_database_engine.py`, `test_upload_security.py`, `test_dependency_pins.py`, `test_resource_limits.py`, `test_storage_isolation.py`: Isolasi biner tool, konfigurasi JWT produksi, IDOR/access control, opt-in SQLite fallback, sanitasi upload, serta pin dependensi & limit memori.
-- `test_chromosome_service.py`, `test_qc_commands.py`, `test_normalization_indexing.py`, `test_imputation_tasks.py`, `test_structure_service.py`: Fase 0 karakteristik kromosom, split kontig semu + `restore_coord`, filter QC `inbred`/`outcross`, fallback indeks `.csi`, limit heap Beagle, LD pruning, PCA/Kinship, KING-robust tervektorisasi, dan LD decay non-prune blok kontigu.
+- `test_chromosome_service.py`, `test_inspection_fase0.py`, `test_qc_commands.py`, `test_normalization_indexing.py`, `test_imputation_tasks.py`, `test_structure_service.py`: Fase 0 karakteristik kromosom, agregat & penyaringan kontig non-utama (`NON_PRIMARY_CONTIG_REGEX`), split kontig semu + `restore_coord`, filter QC `inbred`/`outcross`, fallback indeks `.csi`, limit heap Beagle, LD pruning, PCA/Kinship, KING-robust tervektorisasi, dan LD decay non-prune blok kontigu.
 - `test_assoc_normalizer.py`, `test_gemma_tasks.py`, `test_multilocus_models.py`, `test_multilocus_correctness.py`, `test_gapit_integration.py`, `test_postgwas_service.py`, `test_manhattan_chr.py`: Normalisasi kolom + pemulihan `orig_chr`/`orig_pos`, streaming GEMMA, Multi-Locus GAPIT3/Python, clumping `p1`, dan cache Parquet.
 - `test_annotation_service.py`, `test_flanking_service.py`, `test_kasp_service.py`, `test_go_and_primers.py`, `test_prepare_reference_fasta.py`: Streaming GFF3, region kandidat 5.4, masukan & desain KASP (*EasyKASP* golden `SNP_74098` + struktur sekunder bertail `primer3-py`), uji hipergeometrik GO, indeks `.fai`, serta `prepare_reference_fasta.py`.
-- `test_pipeline_e2e.py`, `test_pipeline_paths.py`, `test_stage_summaries.py`, `test_jobs_api.py`, `test_cancellation.py`, `test_celery_routing.py`, `test_job_storage_cleanup.py`: Alur 10 tahap e2e (`toy` & `overflow_dataset`), ringkasan `stage_summary.json`, Smart Retry/Resume, pembatalan di tengah split, routing antrean Celery, dan retensi storage.
+- `test_pipeline_e2e.py`, `test_pipeline_paths.py`, `test_stage_summaries.py`, `test_jobs_api.py`, `test_cancellation.py`, `test_celery_routing.py`, `test_job_storage_cleanup.py`: Alur 10 tahap e2e (`toy` & `overflow_dataset` lengkap dengan verifikasi 0 *scaffold* dan KASP), ringkasan & durasi `stage_summary.json`, Smart Retry/Resume sadar `contig_filter`, pembatalan di tengah split, routing antrean Celery, dan retensi storage.
 
 ### B. Frontend Unit Testing (`jest`)
-Seluruh pengujian unit frontend (**`29` test suites, `98 passed`**) berjalan dengan `--runInBand`:
+Seluruh pengujian unit frontend (**`30` test suites, `102 passed`**) berjalan dengan `--runInBand`:
 ```powershell
 npm --prefix frontend test
 ```
-Mencakup pengujian komponen UI & aksesibilitas (`App.test.jsx`, `AuthPages.test.jsx`, `GwasUploadPage.test.jsx`, `ErrorBoundary.test.jsx`, `Uploaders.test.jsx`, `JobStatusTracker.test.jsx`, `JobFilesPanel.test.jsx`, `WorkspaceExplorer.test.jsx`, `GwasResultsPanel.test.jsx`, `QcComparisonPanel.test.jsx`, `AnnotationPanels.test.jsx`, `CandidateGenesTable.test.jsx`, `Pagination.test.jsx`, `ChartsAccessibilityA.test.jsx`, `ChartsAccessibilityB.test.jsx`, `TablesAccessibility.test.jsx`, `ManhattanPlot.test.jsx`) serta API, hooks, dan utilitas (`apiClient.test.js`, `formatApiError.test.js`, `useChunkUpload.test.js`, `useJobPolling.test.js`, `useGwasResults.test.js`, `useResource.test.js`, `csv.test.js`, `download.test.js`, `jobFiles.test.js`, `manhattan.test.js`, `sha256.test.js`, `AuthContext.test.jsx`).
+Mencakup pengujian komponen UI & aksesibilitas (`App.test.jsx`, `AuthPages.test.jsx`, `GwasUploadPage.test.jsx`, `ErrorBoundary.test.jsx`, `Uploaders.test.jsx`, `JobStatusTracker.test.jsx`, `JobFilesPanel.test.jsx`, `WorkspaceExplorer.test.jsx`, `GwasResultsPanel.test.jsx`, `DataInspectionPanel.test.jsx`, `QcComparisonPanel.test.jsx`, `AnnotationPanels.test.jsx`, `CandidateGenesTable.test.jsx`, `Pagination.test.jsx`, `ChartsAccessibilityA.test.jsx`, `ChartsAccessibilityB.test.jsx`, `TablesAccessibility.test.jsx`, `ManhattanPlot.test.jsx`) serta API, hooks, dan utilitas (`apiClient.test.js`, `formatApiError.test.js`, `useChunkUpload.test.js`, `useJobPolling.test.js`, `useGwasResults.test.js`, `useResource.test.js`, `csv.test.js`, `download.test.js`, `jobFiles.test.js`, `manhattan.test.js`, `sha256.test.js`, `AuthContext.test.jsx`).
 
 ### C. Pemeriksaan Mutu Kode & Build
 ```powershell

@@ -33,7 +33,8 @@ gwas-platform/
 │       ├── ADR-007-data-validation-and-serialization.md          # Skema Validasi Pydantic v2 Rust Core
 │       ├── ADR-008-frontend-big-data-plotting-engine.md          # Visualisasi Big Data Manhattan Canvas 2D
 │       ├── ADR-009-frontend-architecture-and-build-toolchain.md  # Vite + React 18 SPA Toolchain
-│       └── ADR-010-gwas-workflow-2026-11-21.md                   # Migrasi Alur Kerja 2026-11-21 (Split, LD, Region, KASP)
+│       ├── ADR-010-gwas-workflow-2026-11-21.md                   # Migrasi Alur Kerja 2026-11-21 (Split, LD, Region, KASP)
+│       └── ADR-011-drop-non-primary-scaffolds.md                 # Pembuangan Scaffold / Kontig Non-Utama & `started_at` Stage Summary
 │
 ├── infra/                                  # Konfigurasi Infrastruktur & Orkestrasi Kontainer
 │   ├── docker-compose.yml                  # Compose Development (backend, db, redis, celery_worker, celery_beat, flower)
@@ -141,7 +142,7 @@ gwas-platform/
 │   │   └── utils/
 │   │       └── process.py                  # Eksekutor subprocess CLI aman (`shell=False`, process group kill, & log tail)
 │   │
-│   └── tests/                              # Suite Pengujian Otomatis Komprehensif (36 modul uji pytest)
+│   └── tests/                              # Suite Pengujian Otomatis Komprehensif (37 modul uji pytest)
 │       ├── conftest.py                     # Fixture pytest: DB lokal, DirectTestClient, `overflow_dataset`, & isolasi Env
 │       ├── fixtures/                       # Generator dataset (`make_fixtures.py`), `plink_fixture.py`, & contoh TSV GO
 │       ├── test_access_control.py          # Uji isolasi kepemilikan dataset/job (IDOR) & admin guard
@@ -157,6 +158,7 @@ gwas-platform/
 │       ├── test_gemma_tasks.py             # Uji fail-fast GEMMA CLI & pembacaan log streaming
 │       ├── test_go_and_primers.py          # Uji GO TSV/GAF/Ontology_term, indeks .fai streaming, KASP, & primer3-py
 │       ├── test_imputation_tasks.py        # Uji argumen Beagle, jaring pengaman MAX_32BIT_POS/single-marker, & heap JVM
+│       ├── test_inspection_fase0.py        # Uji agregat `excluded_contigs` JSON ringkas (<50 KB) & retensi TXT Fase 0 lengkap
 │       ├── test_job_storage_cleanup.py     # Uji guard retensi anti-wipe, staging sweep, & post-task cleanup
 │       ├── test_jobs_api.py                # Uji endpoint job, `stage_summaries`, `/results/{id}/primers`, & hapus job
 │       ├── test_kasp_service.py             # Uji port EasyKASP (golden SNP_74098) & struktur sekunder oligo bertail
@@ -239,7 +241,7 @@ gwas-platform/
         │   ├── BoxPlotChart.jsx            # Boxplot deteksi outlier Tukey (+ role="img" aria-label)
         │   ├── CandidateGenesTable.jsx     # Tabel pemetaan gen GFF3 berpaginasi & ekspor CSV aman injeksi
         │   ├── ChartsAccessibilityA.test.jsx & ChartsAccessibilityB.test.jsx # Uji teks alternatif 8 grafik canvas
-        │   ├── DataInspectionPanel.jsx     # Panel Fase 1 + Fase 0: Rekonsiliasi sampel, statistik fenotipe, & tabel kromosom
+        │   ├── DataInspectionPanel.jsx & DataInspectionPanel.test.jsx # Panel Fase 1 + Fase 0 (+ agregat scaffold)
         │   ├── ErrorBoundary.jsx           # Penangkap error render global dengan tombol muat ulang
         │   ├── ErrorBoundary.test.jsx      # Uji fallback ErrorBoundary & simulasi error 422 array
         │   ├── GoEnrichmentPanel.jsx       # Dotplot & tabel Gene Ontology nyata (atau pesan unavailable)
