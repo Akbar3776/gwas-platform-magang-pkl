@@ -371,3 +371,70 @@ def test_python_multilocus_and_structure_loops_call_ensure_not_cancelled(tmp_pat
         assert structure_service.compute_king_robust_table(np.zeros((2, 5), dtype=np.int8), ["A", "B"])
     finally:
         db.close()
+
+
+def test_cancel_mid_split_leaves_no_valid_split_map_or_vcf(tmp_path, monkeypatch, overflow_dataset):
+    import shutil
+    from app.core.config import settings
+    from app.services.chromosome_service import load_split_map
+    from app.tasks import normalization_tasks
+    from app.utils.process import CLICancelledError, CLIExecutionResult
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+
+    _, Session, db, job = _setup_sqlite_job(tmp_path, JobStatus.RUNNING_NORMALIZATION)
+    job_id_str = str(job.id)
+    dataset_id_str = str(job.dataset_id)
+    try:
+        copied_vcf = tmp_path / "cohort_overflow.vcf.gz"
+        shutil.copyfile(overflow_dataset["vcf_path"], copied_vcf)
+        dataset = db.get(Dataset, job.dataset_id)
+        dataset.storage_path = str(copied_vcf)
+        db.commit()
+    finally:
+        db.close()
+
+    norm_dir = tmp_path / "jobs" / job_id_str / "normalization"
+    norm_dir.mkdir(parents=True, exist_ok=True)
+    stale_map = norm_dir / "chrom_split_map.json"
+    stale_map.write_text('{"stale": true}', encoding="utf-8")
+    stale_norm = norm_dir / "normalized.vcf.gz"
+    stale_norm.write_bytes(b"stale")
+
+    seen_stages: list[str] = []
+
+    def fake_run_cli(cmd, **kwargs):
+        subcmd = cmd[1] if len(cmd) > 1 else ""
+        seen_stages.append(subcmd)
+        if subcmd == "view":
+            return CLIExecutionResult(command=tuple(cmd), returncode=0, log_file=kwargs.get("log_file"))
+        if subcmd == "sort":
+            split_input = norm_dir / "split_input.vcf"
+            assert split_input.is_file()
+            assert "chr7_p2" in split_input.read_text(encoding="utf-8")
+            out_path = cmd[cmd.index("-o") + 1]
+            with open(out_path, "wb") as fh:
+                fh.write(b"partial-sorted")
+            raise CLICancelledError(cmd, kwargs.get("log_file"), ())
+        return CLIExecutionResult(command=tuple(cmd), returncode=0, log_file=kwargs.get("log_file"))
+
+    monkeypatch.setattr(normalization_tasks, "SessionLocal", Session)
+    monkeypatch.setattr(_common, "SessionLocal", Session)
+    monkeypatch.setattr(normalization_tasks, "which_tool", lambda name: "/usr/bin/bcftools")
+    monkeypatch.setattr(normalization_tasks, "run_cli_command", fake_run_cli)
+
+    with pytest.raises(CLICancelledError):
+        normalization_tasks.run_vcf_normalization(
+            None,
+            job_id=job_id_str,
+            dataset_id=dataset_id_str,
+            params={},
+        )
+
+    assert seen_stages == ["view", "sort"]
+    assert not stale_map.exists()
+    assert load_split_map(job_id_str) is None
+    assert not stale_norm.exists()
+    assert not (norm_dir / "sorted.vcf.gz").exists()
+    assert not (norm_dir / "split_input.vcf").exists()

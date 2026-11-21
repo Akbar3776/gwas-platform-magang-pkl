@@ -353,3 +353,209 @@ def test_discover_resume_state_legacy_without_chrom_split_advances_past_normaliz
     )
     assert start_stage == "qc"
     assert "split_map_path" not in ctx
+
+
+def _patch_fake_retry_chain(monkeypatch, pipeline_orchestrator):
+    captured: dict[str, object] = {}
+
+    class _FakeNode:
+        id = "retry-chain-root"
+        parent = None
+
+    class _FakeChain:
+        def __init__(self, *sigs):
+            captured["sigs"] = list(sigs)
+
+        def apply_async(self):
+            return _FakeNode()
+
+    monkeypatch.setattr(pipeline_orchestrator, "chain", _FakeChain)
+    monkeypatch.setattr(pipeline_orchestrator, "_persist_chain_task_ids", lambda job_id, task_ids: None)
+    return captured
+
+
+def test_resume_after_structure_failure_preserves_and_reuses_split_map(tmp_path, monkeypatch):
+    from app.core.config import settings
+    from app.services.chromosome_service import load_split_map, restore_coord, save_split_map
+    from app.tasks import pipeline_orchestrator
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = "job-w26-resume"
+    dataset_id = "ds-w26-resume"
+    job_root = tmp_path / "jobs" / job_id
+
+    for rel in (
+        "inspection/pheno_plink.txt",
+        "inspection/keep_ids.txt",
+        "normalization/normalized.vcf.gz",
+        "qc/plink_qc.bed",
+        "qc/plink_qc.vcf.gz",
+        "imputation/skipped.json",
+        "structure/stale_partial.tmp",
+    ):
+        target = job_root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("stub", encoding="utf-8")
+
+    map_path = save_split_map(
+        job_id,
+        {
+            "version": 1,
+            "threshold_bp": 5000,
+            "unit_bp": 2000,
+            "parts": {
+                "chr7_p0": {"orig_chr": "chr7", "part": 0, "offset_bp": 0},
+                "chr7_p1": {"orig_chr": "chr7", "part": 1, "offset_bp": 2000},
+                "chr7_p2": {"orig_chr": "chr7", "part": 2, "offset_bp": 4000},
+            },
+        },
+    )
+    captured = _patch_fake_retry_chain(monkeypatch, pipeline_orchestrator)
+
+    task_id, start_idx, start_stage = pipeline_orchestrator.trigger_retry_pipeline(
+        job_id=job_id,
+        dataset_id=dataset_id,
+        job_parameters={"chrom_split": {"applied": True, "overflow_chromosomes": ["chr7"]}, "imputation": {"mode": "none"}},
+        failed_step="structure",
+        from_scratch=False,
+        run_id="resume-run",
+    )
+
+    assert task_id == "retry-chain-root"
+    assert start_idx == 4
+    assert start_stage == "structure"
+    sigs = captured["sigs"]
+    assert len(sigs) == 6
+    first_task_name = getattr(sigs[0], "task", None) or sigs[0].task_wrapper.name
+    assert first_task_name == "app.tasks.structure_tasks.run_structure_analysis"
+    initial_ctx = sigs[0].args[0]
+    assert initial_ctx["split_map_path"] == str(map_path.resolve())
+    assert map_path.is_file()
+    assert not (job_root / "structure" / "stale_partial.tmp").exists()
+    reloaded = load_split_map(job_id)
+    assert reloaded is not None
+    assert restore_coord("chr7_p2", 1500, reloaded) == ("chr7", 5500)
+
+
+def test_retry_from_scratch_deletes_stale_split_map_and_regenerates(tmp_path, monkeypatch, overflow_dataset):
+    from app.core.config import settings
+    from app.services.chromosome_service import (
+        load_split_map,
+        restore_coord,
+        save_split_map,
+        split_overflow_chromosomes,
+    )
+    from app.tasks import pipeline_orchestrator
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = "job-w26-scratch"
+    dataset_id = "ds-w26-scratch"
+    job_root = tmp_path / "jobs" / job_id
+
+    for rel in (
+        "inspection/stale.txt",
+        "normalization/normalized.vcf.gz",
+        "qc/stale.bed",
+    ):
+        target = job_root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("stale", encoding="utf-8")
+
+    stale_map_file = save_split_map(
+        job_id,
+        {
+            "version": 1,
+            "threshold_bp": 999,
+            "unit_bp": 999,
+            "parts": {"chr99_p0": {"orig_chr": "chr99", "part": 0, "offset_bp": 0}},
+        },
+    )
+    captured = _patch_fake_retry_chain(monkeypatch, pipeline_orchestrator)
+
+    _, start_idx, start_stage = pipeline_orchestrator.trigger_retry_pipeline(
+        job_id=job_id,
+        dataset_id=dataset_id,
+        job_parameters={},
+        from_scratch=True,
+        run_id="scratch-run",
+    )
+
+    assert start_idx == 0
+    assert start_stage == "inspection"
+    assert len(captured["sigs"]) == 10
+    assert not stale_map_file.exists()
+    assert not (job_root / "normalization" / "normalized.vcf.gz").exists()
+    assert not (job_root / "qc" / "stale.bed").exists()
+    assert not (job_root / "inspection" / "stale.txt").exists()
+    assert load_split_map(job_id) is None
+
+    split_out = split_overflow_chromosomes(
+        overflow_dataset["vcf_path"],
+        job_root / "normalization" / "split_input.vcf",
+        threshold_bp=overflow_dataset["split_threshold_bp"],
+        unit_bp=overflow_dataset["split_unit_bp"],
+    )
+    regen_map = save_split_map(job_id, split_out["split_map"])
+    assert regen_map.is_file()
+    reloaded = load_split_map(job_id)
+    assert reloaded is not None
+    assert "chr99_p0" not in (reloaded.get("parts") or {})
+    assert restore_coord("chr7_p2", 1500, reloaded) == ("chr7", 5500)
+
+
+def test_legacy_job_without_split_map_resumes_and_restores_identically(tmp_path, monkeypatch):
+    from app.core.config import settings
+    from app.services.chromosome_service import load_split_map, restore_coord
+    from app.services.flanking_service import collect_significant_snps
+    from app.tasks import multilocus_tasks, pipeline_orchestrator
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = "job-w26-legacy"
+    job_root = tmp_path / "jobs" / job_id
+
+    for rel in (
+        "inspection/pheno_plink.txt",
+        "inspection/keep_ids.txt",
+        "normalization/normalized.vcf.gz",
+        "qc/plink_qc.bed",
+        "qc/plink_qc.vcf.gz",
+    ):
+        target = job_root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("legacy", encoding="utf-8")
+
+    _, start_stage, ctx = pipeline_orchestrator.discover_resume_state(
+        job_id=job_id,
+        dataset_id="ds-w26-legacy",
+        job_parameters={},
+    )
+    assert start_stage == "imputation"
+    assert "split_map_path" not in ctx
+    assert load_split_map(job_id) is None
+    assert restore_coord("chr1", 500, None) == ("chr1", 500)
+
+    single = [{"snp": "chr1:500", "chr": "1", "pos": 500, "p": 1e-8, "beta": 1.2, "source": "GEMMA"}]
+    multi = [{"snp": "chr1:500", "chr": "1", "pos": 500, "p": 5e-9, "method": "BLINK", "is_significant": True}]
+
+    collected_omitted = collect_significant_snps(single, multi, p_threshold=1e-5)
+    collected_none = collect_significant_snps(single, multi, p_threshold=1e-5, split_map=None)
+    assert collected_omitted == collected_none
+    assert collected_none[0]["orig_chr"] == "1"
+    assert collected_none[0]["orig_pos"] == 500
+
+    res_omitted = multilocus_tasks.generate_peak_comparison(
+        single,
+        multi,
+        tmp_path / "omitted.csv",
+        tmp_path / "omitted.json",
+    )
+    res_none = multilocus_tasks.generate_peak_comparison(
+        single,
+        multi,
+        tmp_path / "none.csv",
+        tmp_path / "none.json",
+        split_map=None,
+    )
+    assert res_omitted == res_none
+    assert (tmp_path / "omitted.csv").read_text(encoding="utf-8") == (tmp_path / "none.csv").read_text(encoding="utf-8")
+    assert (tmp_path / "omitted.json").read_text(encoding="utf-8") == (tmp_path / "none.json").read_text(encoding="utf-8")
