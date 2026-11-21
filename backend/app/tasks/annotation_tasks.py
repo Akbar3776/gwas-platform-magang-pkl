@@ -337,6 +337,8 @@ def run_annotation(
                     max_snps=20,
                     fasta_path=fasta_candidate,
                     output_dir=workspace,
+                    bim_path=bim_candidate,
+                    split_map=split_map,
                 )
                 _attach_region_metadata(primers_data, regions_fa_info, candidate_regions_meta)
                 write_json(workspace / "primers.json", primers_data)
@@ -454,6 +456,8 @@ def run_annotation(
                 max_snps=20,
                 fasta_path=fasta_candidate,
                 output_dir=workspace,
+                bim_path=bim_candidate,
+                split_map=split_map,
             )
             _attach_region_metadata(primers_data, regions_fa_info, candidate_regions_meta)
             write_json(workspace / "primers.json", primers_data)

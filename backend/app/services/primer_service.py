@@ -17,6 +17,7 @@ from typing import Any
 
 import primer3
 
+from app.services.flanking_service import build_bim_position_index, find_nearby_variants
 from app.tasks._common import chr_label
 
 
@@ -383,6 +384,7 @@ def design_primers_for_flanking(
     tm_max: float = 58.0,
     product_min: int = 100,
     product_max: int = 190,
+    excluded_regions: list[list[int]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Mendesain pasangan primer menggunakan engine termodinamika asli `primer3-py`
@@ -397,12 +399,21 @@ def design_primers_for_flanking(
     if eff_prod_max < int(product_min):
         return []
 
+    seq_args: dict[str, Any] = {
+        "SEQUENCE_ID": "flanking_target",
+        "SEQUENCE_TEMPLATE": seq,
+        "SEQUENCE_TARGET": [[int(snp_index_0based), 1]],
+    }
+    valid_excluded = [
+        [int(start), int(length)]
+        for start, length in (excluded_regions or [])
+        if int(length) > 0 and 0 <= int(start) < n_len and int(start) != int(snp_index_0based)
+    ]
+    if valid_excluded:
+        seq_args["SEQUENCE_EXCLUDED_REGION"] = valid_excluded
+
     res = primer3.bindings.design_primers(
-        {
-            "SEQUENCE_ID": "flanking_target",
-            "SEQUENCE_TEMPLATE": seq,
-            "SEQUENCE_TARGET": [[int(snp_index_0based), 1]],
-        },
+        seq_args,
         {
             "PRIMER_TASK": "generic",
             "PRIMER_PICK_LEFT_PRIMER": 1,
@@ -493,6 +504,9 @@ def generate_flanking_and_primers(
     max_snps: int = 10,
     fasta_path: str | Path | None = None,
     output_dir: str | Path | None = None,
+    bim_path: str | Path | None = None,
+    split_map: dict[str, Any] | None = None,
+    flank_len: int = 100,
 ) -> dict[str, Any]:
     """
     Membangkitkan sekuens flanking 201 bp dari FASTA terindeks `.fai` dan desain primer untuk Lead SNPs.
@@ -503,6 +517,11 @@ def generate_flanking_and_primers(
 
     fasta_obj = Path(fasta_path) if fasta_path and Path(fasta_path).is_file() else None
     fasta_index = load_fasta_index(fasta_obj) if fasta_obj is not None else None
+    bim_index = (
+        build_bim_position_index(bim_path, split_map=split_map)
+        if bim_path and Path(bim_path).is_file()
+        else None
+    )
 
     items: list[dict[str, Any]] = []
     for idx, s in enumerate(selected_snps, start=1):
@@ -513,13 +532,25 @@ def generate_flanking_and_primers(
         allele = alt_val or ref_val or "C"
         marker_label = f"{clean_trait}_{raw_chr}_{pos}"
 
+        nearby_variants = (
+            find_nearby_variants(
+                str(s.get("orig_chr") or s.get("chr") or raw_chr),
+                pos,
+                int(flank_len),
+                bim_index,
+                split_map=split_map,
+            )
+            if bim_index is not None
+            else []
+        )
+
         detail = _extract_flanking_detail(
             chr_name=raw_chr,
             pos=pos,
             allele=allele,
             ref_allele=ref_val,
             alt_allele=alt_val,
-            flank_len=100,
+            flank_len=int(flank_len),
             fasta_path=fasta_obj,
             fasta_index=fasta_index,
             allow_synthetic=False,
@@ -531,7 +562,7 @@ def generate_flanking_and_primers(
                 allele=allele,
                 ref_allele=ref_val,
                 alt_allele=alt_val,
-                flank_len=100,
+                flank_len=int(flank_len),
                 fasta_path=None,
                 allow_synthetic=True,
             )
@@ -549,6 +580,9 @@ def generate_flanking_and_primers(
                 "p": s.get("p"),
                 "nearest_gene": s.get("nearest_gene", "-"),
                 "category": s.get("category", "-"),
+                "flank_bp": int(flank_len),
+                "nearby_variants": nearby_variants,
+                "nearby_variants_count": len(nearby_variants),
                 "flanking_sequence": "",
                 "sequence_length": 0,
                 "gc_percent": 0.0,
@@ -565,7 +599,17 @@ def generate_flanking_and_primers(
             continue
 
         snp_idx = int(detail.get("snp_index_0based", len(raw_201_seq) // 2))
-        pairs = design_primers_for_flanking(raw_201_seq, snp_index_0based=snp_idx, max_pairs=5)
+        excluded_regions = [
+            [snp_idx + int(nv["offset"]), 1]
+            for nv in nearby_variants
+            if 0 <= snp_idx + int(nv["offset"]) < len(raw_201_seq)
+        ]
+        pairs = design_primers_for_flanking(
+            raw_201_seq,
+            snp_index_0based=snp_idx,
+            max_pairs=5,
+            excluded_regions=excluded_regions,
+        )
         block_text = format_primer3_block(pairs)
 
         items.append({
@@ -578,6 +622,9 @@ def generate_flanking_and_primers(
             "p": s.get("p"),
             "nearest_gene": s.get("nearest_gene", "-"),
             "category": s.get("category", "-"),
+            "flank_bp": int(flank_len),
+            "nearby_variants": nearby_variants,
+            "nearby_variants_count": len(nearby_variants),
             "flanking_sequence": bracketed_seq,
             "sequence_length": len(raw_201_seq),
             "gc_percent": calculate_gc_percent(raw_201_seq),
@@ -602,6 +649,8 @@ def generate_flanking_and_primers(
         "design_engine": "Primer3",
         "synthetic": has_synthetic,
         "trait": trait_name,
+        "flank_bp": int(flank_len),
+        "total_nearby_variants": sum(int(it.get("nearby_variants_count", 0)) for it in items),
         "total_markers": len(items),
         "markers_with_primers": sum(1 for it in items if it["primer_pairs_count"] > 0),
         "ref_mismatch_count": sum(1 for it in items if it.get("ref_mismatch")),

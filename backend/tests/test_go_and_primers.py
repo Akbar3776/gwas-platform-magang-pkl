@@ -815,3 +815,82 @@ def test_assemble_reference_fasta_never_sticks_validating_on_errors(tmp_path: Pa
     assert "boom index" in (st2.get("error_message") or "")
     assert not (tmp_path / "datasets" / str(ds.id) / "reference.fa").exists()
     assert not (tmp_path / "datasets" / str(ds.id) / "reference.fa.fai").exists()
+
+
+def test_find_nearby_variants_and_primer3_excluded_region(overflow_dataset: dict, tmp_path: Path):
+    from app.services import flanking_service, primer_service
+
+    split_map = {
+        "threshold_bp": overflow_dataset["split_threshold_bp"],
+        "unit_bp": overflow_dataset["split_unit_bp"],
+        "parts": {
+            "chr7_p2": {"orig_chr": "chr7", "part": 2, "offset_bp": 4_000},
+        },
+    }
+    bim_path = tmp_path / "split_chr7.bim"
+    bim_path.write_text(
+        "chr7_p2\tchr7:5500\t0\t1500\tG\tA\n"
+        "chr7_p2\tchr7:5540\t0\t1540\tC\tT\n"
+        "chr7_p2\tchr7:5650\t0\t1650\tA\tG\n",
+        encoding="utf-8",
+    )
+
+    nearby = flanking_service.find_nearby_variants(
+        "chr7",
+        5500,
+        100,
+        bim_path,
+        split_map=split_map,
+    )
+    assert len(nearby) == 1
+    assert nearby[0]["pos"] == 5540
+    assert nearby[0]["offset"] == 40
+    assert nearby[0]["ref"] == "T"
+    assert nearby[0]["alt"] == "C"
+
+    # Build deterministic FASTA template with guaranteed valid Primer3 binding sites
+    left_arm = "ATGCTAGCTAGTCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGAT"
+    right_arm = "GCTAGCTAGCATCGATCGATGCTAGCTGATCGTAGCATCGATGCTAGCTAGCATGCATGCTAGCTAGCATCGATCGATCGATCGATCGATCGATCGATCG"
+    seq_201 = f"{left_arm}A{right_arm}"
+    assert len(seq_201) == 201
+    fasta_file = tmp_path / "det.fa"
+    fasta_file.write_text(f">chr7\n{'N' * 5399}{seq_201}\n", encoding="utf-8")
+
+    baseline = primer_service.generate_flanking_and_primers(
+        lead_snps=[{"snp": "chr7:5500", "chr": "chr7", "pos": 5500, "ref": "A", "alt": "G", "p": 1e-9}],
+        fasta_path=fasta_file,
+    )
+    assert baseline["markers_with_primers"] == 1
+    assert baseline["total_nearby_variants"] == 0
+    base_pair = baseline["markers"][0]["primer_pairs"][0]
+
+    # Pick a base position inside the baseline right primer to place a polymorphic neighbor in BIM
+    r_end_0 = base_pair["right"]["start"] - 1
+    r_start_0 = r_end_0 - base_pair["right"]["len"] + 1
+    polymorphic_0 = (r_start_0 + r_end_0) // 2
+    polymorphic_orig_pos = 5500 + (polymorphic_0 - 100)
+
+    poly_bim = tmp_path / "poly.bim"
+    poly_bim.write_text(
+        "chr7_p2\tchr7:5500\t0\t1500\tG\tA\n"
+        f"chr7_p2\tchr7:{polymorphic_orig_pos}\t0\t{polymorphic_orig_pos - 4000}\tT\tC\n",
+        encoding="utf-8",
+    )
+
+    masked = primer_service.generate_flanking_and_primers(
+        lead_snps=[{"snp": "chr7:5500", "chr": "chr7", "pos": 5500, "ref": "A", "alt": "G", "p": 1e-9}],
+        fasta_path=fasta_file,
+        bim_path=poly_bim,
+        split_map=split_map,
+    )
+    marker = masked["markers"][0]
+    assert marker["nearby_variants_count"] == 1
+    assert masked["total_nearby_variants"] == 1
+    assert marker["flank_bp"] == 100
+    for pair in marker["primer_pairs"]:
+        l_start0 = pair["left"]["start"] - 1
+        l_end0 = l_start0 + pair["left"]["len"] - 1
+        r_right_end0 = pair["right"]["start"] - 1
+        r_right_start0 = r_right_end0 - pair["right"]["len"] + 1
+        assert not (l_start0 <= polymorphic_0 <= l_end0)
+        assert not (r_right_start0 <= polymorphic_0 <= r_right_end0)

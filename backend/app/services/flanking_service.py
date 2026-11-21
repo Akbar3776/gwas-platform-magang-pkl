@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 import csv
 from pathlib import Path
 from typing import Any
@@ -347,3 +348,66 @@ def extract_regions_fasta(
         "max_total_bp": max_bp,
         "fasta_path": str(out_target),
     }
+
+
+def build_bim_position_index(
+    bim_path: str | Path,
+    *,
+    split_map: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Index .bim variants sorted by original position per normalized chromosome for range lookup."""
+    variants = load_bim_variants(bim_path, split_map=split_map)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for var in variants:
+        grouped.setdefault(chr_label(var["orig_chr"]), []).append(var)
+
+    index: dict[str, dict[str, Any]] = {}
+    for norm_chr, items in grouped.items():
+        items.sort(key=lambda item: int(item["orig_pos"]))
+        index[norm_chr] = {
+            "positions": [int(item["orig_pos"]) for item in items],
+            "variants": items,
+        }
+    return index
+
+
+def find_nearby_variants(
+    chrom: str,
+    pos: int,
+    flank_bp: int,
+    bim_or_index: str | Path | dict[str, Any] | None,
+    *,
+    split_map: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Find other BIM variants within +/- flank_bp around (chrom, pos) in original coordinates."""
+    if bim_or_index is None or int(flank_bp) <= 0:
+        return []
+    if isinstance(bim_or_index, dict):
+        pos_index = bim_or_index
+    else:
+        pos_index = build_bim_position_index(bim_or_index, split_map=split_map)
+
+    orig_chr, orig_pos = restore_coord(chrom, int(pos), split_map)
+    bucket = pos_index.get(chr_label(orig_chr))
+    if not bucket or orig_pos <= 0:
+        return []
+
+    positions: list[int] = bucket["positions"]
+    variants: list[dict[str, Any]] = bucket["variants"]
+    win = int(flank_bp)
+    lo = bisect_left(positions, orig_pos - win)
+    hi = bisect_right(positions, orig_pos + win)
+
+    nearby: list[dict[str, Any]] = []
+    for var in variants[lo:hi]:
+        v_pos = int(var["orig_pos"])
+        if v_pos == orig_pos:
+            continue
+        nearby.append({
+            "pos": v_pos,
+            "ref": var["ref"],
+            "alt": var["alt"],
+            "offset": v_pos - orig_pos,
+            "snp_id": var["snp_id"],
+        })
+    return nearby
