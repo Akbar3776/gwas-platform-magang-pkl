@@ -32,6 +32,7 @@ from app.tasks._common import (
     upsert_result,
     which_tool,
     write_json,
+    write_stage_summary,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
 from app.utils.process import CLICancelledError, run_cli_command
@@ -357,6 +358,24 @@ def run_structure_analysis(
             "recommended_model": rec_data["recommended_model"],
             "model_used": rec_data["model_used"],
         }
+        write_stage_summary(
+            job_id,
+            "structure",
+            {
+                "status": "completed",
+                "recommended_model": rec_data["recommended_model"],
+                "model_used": rec_data["model_used"],
+                "ld_decay_method": ld_decay_data.get("method"),
+                "counts": {
+                    "n_samples": int(n_samples),
+                    "n_variants_pruned": int(G.shape[1]),
+                    "n_variants_ld": int(ld_G.shape[1]),
+                    "n_pc": int(n_cov_pcs),
+                    "ld_decay_kb": int(ld_decay_data.get("chosen_kb") or 0),
+                },
+            },
+            db=db,
+        )
         guard_status_change(db, job.id, JobStatus.RUNNING_GWAS)
         job.overall_status = JobStatus.RUNNING_GWAS
         job.current_step = PipelineStep.GWAS

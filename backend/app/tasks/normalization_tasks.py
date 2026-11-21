@@ -319,7 +319,21 @@ def run_vcf_normalization(
                     "qc_overflow_stats": overflow_stats,
                     "chrom_split": chrom_split_meta,
                 }
-            write_stage_summary(job_id, "normalization", chrom_split_meta, db=db)
+            write_stage_summary(
+                job_id,
+                "normalization",
+                {
+                    **chrom_split_meta,
+                    "status": "completed",
+                    "counts": {
+                        "variants_in": int(split_result["total_variants"]),
+                        "variants_out": int(split_result["kept_variants"]),
+                        "invalid_pos_removed": int(split_result["invalid_pos_removed"]),
+                        "overflow_chromosomes": len(split_result["overflow_chromosomes"]),
+                    },
+                },
+                db=db,
+            )
             db.commit()
         finally:
             db.close()

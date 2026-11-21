@@ -191,6 +191,15 @@ def _record_imputation_stage_summary(
         "status": status,
         "beagle_guard_removed": int(beagle_guard_removed),
         "singles_count": int(singles_count),
+        "counts": {
+            "beagle_guard_removed": int(beagle_guard_removed),
+            "singles_removed": int(singles_count),
+        },
+        "warnings": (
+            [f"beagle_guard_removed={int(beagle_guard_removed)}"]
+            if int(beagle_guard_removed) > 0
+            else []
+        ),
     }
     if reason:
         payload["reason"] = reason

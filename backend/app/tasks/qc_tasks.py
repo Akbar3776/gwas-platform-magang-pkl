@@ -31,6 +31,7 @@ from app.tasks._common import (
     upsert_result,
     which_tool,
     write_json,
+    write_stage_summary,
 )
 from app.tasks.celery_app import SoftTimeLimitExceeded, celery_app, get_task_logger
 from app.utils.process import CLICancelledError, CLIExecutionError, SubprocessFailed, run_cli_command
@@ -371,6 +372,26 @@ def run_qc_pipeline(
             "qc_summary": qc_summary,
             "snp_loss_fraction": comparison_data.get("snp_loss_fraction", 0.0),
         }
+        write_stage_summary(
+            job_id,
+            "qc",
+            {
+                "status": "completed",
+                "tool": tool_name,
+                "population_type": cfg.population_type.value,
+                "snp_loss_fraction": float(comparison_data.get("snp_loss_fraction", 0.0) or 0.0),
+                "split_chromosomes": split_chromosomes,
+                "counts": {
+                    "samples_in": int((comparison_data.get("before") or {}).get("n_samples") or 0),
+                    "samples_out": int((comparison_data.get("after") or {}).get("n_samples") or 0),
+                    "variants_in": int((comparison_data.get("before") or {}).get("n_snps") or 0),
+                    "variants_out": int((comparison_data.get("after") or {}).get("n_snps") or 0),
+                    "invalid_pos_removed": int(invalid_pos_removed),
+                },
+                "warnings": [comparison_data["warning"]] if comparison_data.get("warning") else [],
+            },
+            db=db,
+        )
 
         if job.pipeline_type == "qc_only":
             guard_status_change(db, job.id, JobStatus.COMPLETED)

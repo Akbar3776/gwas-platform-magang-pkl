@@ -218,6 +218,7 @@ def run_inspection(
             job_id,
             "inspection",
             {
+                "status": "completed",
                 "trait": report["trait"],
                 "n_matched": report["n_matched"],
                 "chromosome_summary_path": str(chrom_summary_file),
@@ -225,6 +226,13 @@ def run_inspection(
                 "total_overflow": chr_summary["total_overflow"],
                 "total_invalid_pos": chr_summary["total_invalid_pos"],
                 "needs_split": chr_summary["needs_split"],
+                "counts": {
+                    "samples_vcf": int(report["n_vcf_samples"]),
+                    "samples_matched": int(report["n_matched"]),
+                    "variants_in": int(chr_summary["total_variants"]),
+                    "overflow": int(chr_summary["total_overflow"]),
+                    "invalid_pos": int(chr_summary["total_invalid_pos"]),
+                },
             },
             db=db,
         )
