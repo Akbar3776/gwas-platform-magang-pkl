@@ -19,6 +19,7 @@ from app.services.annotation_service import (
     normalize_chr_name,
     parse_gff3_genes,
 )
+from app.services.chromosome_service import _is_gzip_file, load_split_map, restore_coord
 from app.services.go_enrichment_service import run_go_enrichment_analysis
 from app.services.primer_service import generate_flanking_and_primers
 from app.tasks._common import (
@@ -36,23 +37,40 @@ from app.tasks.celery_app import celery_app, get_task_logger
 logger = get_task_logger(__name__)
 
 
-def _enrich_vcf_ref_alleles(snps: list[dict[str, Any]], vcf_candidates: list[Path | None]) -> None:
+def _enrich_vcf_ref_alleles(
+    snps: list[dict[str, Any]],
+    vcf_candidates: list[Path | tuple[Path | None, bool] | None],
+) -> None:
+    selected: tuple[Path, bool] | None = None
+    for cand in vcf_candidates:
+        if isinstance(cand, tuple):
+            cand_path, use_pseudo = cand
+        else:
+            cand_path, use_pseudo = cand, False
+        if cand_path is not None and cand_path.is_file():
+            selected = (cand_path, bool(use_pseudo))
+            break
+    if selected is None:
+        return
+
+    vcf_path, use_pseudo = selected
     targets: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for s in snps:
         if s.get("ref"):
             continue
-        pos = int(s.get("pos") or 0)
+        if use_pseudo:
+            raw_chr = s.get("pseudo_chr") or s.get("chr") or ""
+            pos = int(s.get("pseudo_pos") or s.get("pos") or 0)
+        else:
+            raw_chr = s.get("orig_chr") or s.get("chr") or ""
+            pos = int(s.get("orig_pos") or s.get("pos") or 0)
         if pos <= 0:
             continue
-        targets.setdefault((chr_label(s.get("chr") or ""), pos), []).append(s)
+        targets.setdefault((chr_label(str(raw_chr)), pos), []).append(s)
     if not targets:
         return
 
-    vcf_path = next((p for p in vcf_candidates if p is not None and p.is_file()), None)
-    if vcf_path is None:
-        return
-
-    open_fn = gzip.open if str(vcf_path).lower().endswith(".gz") else open
+    open_fn = gzip.open if _is_gzip_file(vcf_path) else open
     remaining = set(targets.keys())
     try:
         with open_fn(vcf_path, "rt", encoding="utf-8", errors="replace") as fh:
@@ -70,7 +88,8 @@ def _enrich_vcf_ref_alleles(snps: list[dict[str, Any]], vcf_candidates: list[Pat
                     ref_val = parts[3].strip().upper()
                     alt_val = parts[4].split(",")[0].strip().upper()
                     for item in targets[key]:
-                        item.setdefault("ref", ref_val)
+                        if not item.get("ref"):
+                            item["ref"] = ref_val
                         if not item.get("alt") and alt_val != ".":
                             item["alt"] = alt_val
                     remaining.remove(key)
@@ -171,6 +190,24 @@ def run_annotation(
             p_threshold=p_thresh,
         )
 
+        split_map = load_split_map(job_id)
+        for s in lead_snps:
+            pseudo_chr = str(s.get("pseudo_chr") or s.get("chr") or "").strip()
+            pseudo_pos = int(s.get("pseudo_pos") or s.get("pos") or 0)
+            if split_map is not None:
+                orig_chr, orig_pos = restore_coord(pseudo_chr, pseudo_pos, split_map)
+            elif s.get("orig_chr") and s.get("orig_pos"):
+                orig_chr = str(s["orig_chr"]).strip()
+                orig_pos = int(s["orig_pos"])
+            else:
+                orig_chr, orig_pos = pseudo_chr, pseudo_pos
+            s["pseudo_chr"] = pseudo_chr
+            s["pseudo_pos"] = pseudo_pos
+            s["orig_chr"] = orig_chr
+            s["orig_pos"] = orig_pos
+            s["chr"] = orig_chr
+            s["pos"] = orig_pos
+
         # Jendela LD decay (default kb * 1000 bp)
         window_kb = cfg.window_kb or ctx.get("ld_decay_kb") or (job.parameters or {}).get("chosen_ld_decay_kb") or 100
         window_bp = int(window_kb * 1000)
@@ -216,9 +253,9 @@ def run_annotation(
             _enrich_vcf_ref_alleles(
                 lead_snps[:20],
                 [
-                    workspace.parent / "qc" / "plink_qc.vcf.gz",
-                    workspace.parent / "normalization" / "normalized.vcf.gz",
-                    Path(dataset.storage_path) if dataset.storage_path else None,
+                    (workspace.parent / "qc" / "plink_qc.vcf.gz", True),
+                    (workspace.parent / "normalization" / "normalized.vcf.gz", True),
+                    (Path(dataset.storage_path) if dataset.storage_path else None, False),
                 ],
             )
 
@@ -283,6 +320,14 @@ def run_annotation(
             append_log(log_file, f"[ERROR] {msg}")
             raise ValueError(msg)
 
+        unmatched_chrs = sorted(ch for ch in (lead_chrs - set(genes_by_chr.keys())) if ch)
+        if unmatched_chrs:
+            append_log(
+                log_file,
+                f"[WARN] Sebagian kromosom Lead SNP tidak ditemukan di GFF3 ({', '.join(unmatched_chrs)}); "
+                "SNP pada kromosom tersebut akan ditandai Intergenik.",
+            )
+
         # 2. Pemetaan Lead SNPs ke gen
         append_log(log_file, "Memetakan Lead SNPs ke gen kandidat...")
         mapped_rows, category_counts = map_lead_snps_to_genes(
@@ -290,6 +335,13 @@ def run_annotation(
             genes_by_chr=genes_by_chr,
             window_bp=window_bp,
         )
+        for src_snp, mapped_row in zip(lead_snps, mapped_rows):
+            for coord_key in ("orig_chr", "orig_pos", "pseudo_chr", "pseudo_pos"):
+                if coord_key in src_snp:
+                    mapped_row[coord_key] = src_snp[coord_key]
+            for allele_key in ("ref", "alt"):
+                if src_snp.get(allele_key):
+                    mapped_row[allele_key] = src_snp[allele_key]
 
         # Kumpulkan daftar ID gen unik hanya dari gen terdekat yang valid (Genik / Near-gen)
         unique_go_genes: set[str] = set()

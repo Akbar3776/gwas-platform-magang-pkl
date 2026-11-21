@@ -297,3 +297,102 @@ def test_run_annotation_fails_when_zero_chromosomes_match(tmp_path, monkeypatch)
     err = str(exc_info.value)
     assert "1" in err
     assert "Scaffold_01" in err
+
+
+def test_run_annotation_restores_split_coords_for_gff3_and_fasta_flank(
+    tmp_path,
+    monkeypatch,
+    overflow_dataset,
+):
+    import gzip
+    import json
+    import shutil
+    from app.services.chromosome_service import save_split_map
+    from app.tasks import annotation_tasks
+
+    gff_text = overflow_dataset["gff_path"].read_text(encoding="utf-8")
+    job, dataset, job_root = _setup_annotation_job(tmp_path, monkeypatch, gff_text)
+    ds_dir = tmp_path / "datasets" / str(dataset.id)
+    shutil.copyfile(overflow_dataset["fasta_path"], ds_dir / "reference.fa")
+
+    # Parse actual base at chr7 position 5500 from overflow.fa
+    fasta_lines = overflow_dataset["fasta_path"].read_text(encoding="utf-8").splitlines()
+    chr7_chunks: list[str] = []
+    in_chr7 = False
+    for ln in fasta_lines:
+        if ln.startswith(">"):
+            in_chr7 = ln[1:].strip().split()[0] == "chr7"
+            continue
+        if in_chr7:
+            chr7_chunks.append(ln.strip())
+    chr7_seq = "".join(chr7_chunks)
+    expected_ref = chr7_seq[5500 - 1]
+    expected_alt = {"A": "G", "G": "A", "C": "T", "T": "C"}[expected_ref]
+
+    save_split_map(
+        str(job.id),
+        {
+            "threshold_bp": 5_000,
+            "unit_bp": 2_000,
+            "split_chroms": {"chr7": {"max_orig_pos": 6500, "num_parts": 4, "parts": ["chr7_p0", "chr7_p1", "chr7_p2", "chr7_p3"]}},
+            "parts": {
+                "chr7_p2": {"orig_chr": "chr7", "part": 2, "offset_bp": 4_000},
+            },
+        },
+    )
+
+    qc_dir = job_root / "qc"
+    qc_dir.mkdir(parents=True, exist_ok=True)
+    with gzip.open(qc_dir / "plink_qc.vcf.gz", "wt", encoding="utf-8") as gz:
+        gz.write(
+            "##fileformat=VCFv4.2\n"
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+            f"chr7_p2\t1500\tchr7:5500\t{expected_ref}\t{expected_alt}\t100\tPASS\t.\tGT\t0/1\n"
+        )
+
+    (job_root / "postgwas").mkdir(parents=True, exist_ok=True)
+    (job_root / "postgwas" / "lead_snps.json").write_text(
+        json.dumps({
+            "count": 2,
+            "snps": [
+                {"snp": "chr7:5500", "chr": "7_p2", "pos": 1500, "p": 1e-10, "beta": 0.9},
+                {"snp": "unmatched:100", "chr": "Scaffold_Unknown", "pos": 100, "p": 1e-8, "beta": 0.2},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    result = annotation_tasks.run_annotation(
+        prev_result={},
+        job_id=str(job.id),
+        dataset_id=str(dataset.id),
+    )
+
+    cand = result["candidate_genes"]
+    by_snp = {r["snp"]: r for r in cand["rows"]}
+    chr7_row = by_snp["chr7:5500"]
+    assert chr7_row["chr"] == "chr7"
+    assert chr7_row["pos"] == 5500
+    assert chr7_row["orig_chr"] == "chr7"
+    assert chr7_row["orig_pos"] == 5500
+    assert chr7_row["pseudo_chr"] == "7_p2"
+    assert chr7_row["pseudo_pos"] == 1500
+    assert chr7_row["nearest_gene"] == overflow_dataset["overflow_gene_id"]
+    assert chr7_row["category"] == "Genik"
+    assert chr7_row["ref"] == expected_ref
+    assert chr7_row["alt"] == expected_alt
+
+    primers_payload = json.loads((job_root / "annotation" / "primers.json").read_text(encoding="utf-8"))
+    primer_by_snp = {m["snp"]: m for m in primers_payload["markers"]}
+    chr7_marker = primer_by_snp["chr7:5500"]
+    assert chr7_marker["chr"] == "7"
+    assert chr7_marker["pos"] == 5500
+    assert chr7_marker["synthetic"] is False
+    assert chr7_marker["fasta_ref_base"] == expected_ref
+    assert chr7_marker["vcf_ref_base"] == expected_ref
+    assert chr7_marker["ref_mismatch"] is False
+    assert len(chr7_marker["flanking_sequence"]) > 200
+
+    anno_log = (job_root / "annotation" / "annotation.log").read_text(encoding="utf-8")
+    assert "[WARN]" in anno_log
+    assert "scaffold_unknown" in anno_log.lower()
