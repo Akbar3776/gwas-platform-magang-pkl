@@ -92,3 +92,49 @@ def test_capabilities_uses_which_tool_tool_names_and_multilocus_availability(mon
     caps_with_r = cap_routes.get_pipeline_capabilities()
     assert caps_with_r["rscript"] is True
     assert caps_with_r["multilocus_available"] is True
+
+
+def test_overflow_dataset_fixture(overflow_dataset):
+    """Verify scaled overflow_dataset fixture generates valid VCF, FASTA, GFF3, and phenotype."""
+    import gzip
+
+    assert overflow_dataset["vcf_path"].is_file()
+    assert overflow_dataset["pheno_path"].is_file()
+    assert overflow_dataset["gff_path"].is_file()
+    assert overflow_dataset["fasta_path"].is_file()
+
+    pos_by_chr: dict[str, list[int]] = {}
+    invalid_pos_count = 0
+    header_samples: list[str] = []
+    chr7_5500_ref = None
+
+    with gzip.open(overflow_dataset["vcf_path"], "rt", encoding="utf-8") as vf:
+        for line in vf:
+            if line.startswith("#CHROM"):
+                header_samples = line.strip().split("\t")[9:]
+                continue
+            if line.startswith("#"):
+                continue
+            cols = line.strip().split("\t")
+            chrom, pos, ref = cols[0], int(cols[1]), cols[3]
+            pos_by_chr.setdefault(chrom, []).append(pos)
+            if pos <= 0:
+                invalid_pos_count += 1
+            if chrom == "chr7" and pos == 5500:
+                chr7_5500_ref = ref
+
+    assert len(header_samples) == 8
+    assert max(pos_by_chr["chr7"]) > overflow_dataset["split_threshold_bp"]
+    assert max(pos_by_chr["chr1"]) <= overflow_dataset["split_threshold_bp"]
+    assert invalid_pos_count == overflow_dataset["invalid_pos_count"] == 1
+
+    fasta_lines = overflow_dataset["fasta_path"].read_text(encoding="utf-8").splitlines()
+    chr7_seq = []
+    in_chr7 = False
+    for ln in fasta_lines:
+        if ln.startswith(">"):
+            in_chr7 = ln.strip() == ">chr7"
+        elif in_chr7:
+            chr7_seq.append(ln.strip())
+    full_chr7 = "".join(chr7_seq)
+    assert chr7_5500_ref == full_chr7[5500 - 1]

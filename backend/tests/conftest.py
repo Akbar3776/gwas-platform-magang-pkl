@@ -143,3 +143,18 @@ def _isolate_storage_root(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(upload_service, "_STAGING_ROOT", root / "staging")
     monkeypatch.setattr(upload_service, "_DATASETS_ROOT", root / "datasets")
     yield root
+
+
+@pytest.fixture
+def overflow_dataset(tmp_path, monkeypatch):
+    """Fixture dataset dengan kromosom chr7 melebihi ambang split terskala untuk uji migrasi."""
+    from app.core.config import settings
+    from tests.fixtures.make_fixtures import make_overflow_fixture
+
+    monkeypatch.setattr(settings, "CHROM_SPLIT_THRESHOLD_BP", 5_000)
+    monkeypatch.setattr(settings, "CHROM_SPLIT_UNIT_BP", 2_000)
+    return make_overflow_fixture(
+        tmp_path / "overflow_fixture",
+        split_threshold_bp=5_000,
+        split_unit_bp=2_000,
+    )

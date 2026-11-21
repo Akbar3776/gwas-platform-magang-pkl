@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import gzip
 from pathlib import Path
+from typing import Any
 import numpy as np
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "data"
@@ -205,6 +206,108 @@ def ensure_fixtures(force: bool = False) -> tuple[Path, Path, Path]:
     gff_path.write_text("\n".join(gff_lines) + "\n", encoding="utf-8")
 
     return vcf_path, pheno_path, gff_path
+
+
+def make_overflow_fixture(
+    out_dir: Path,
+    *,
+    split_threshold_bp: int = 5_000,
+    split_unit_bp: int = 2_000,
+) -> dict[str, Any]:
+    """Generate a scaled VCF/GFF3/FASTA/phenotype fixture with chr7 exceeding split_threshold_bp."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(20261121)
+    bases = np.array(["A", "C", "G", "T"])
+    alt_map = {"A": "G", "G": "A", "C": "T", "T": "C"}
+
+    sample_ids = [f"OVF_S{i + 1:02d}" for i in range(8)]
+    chr1_len = 4_000
+    chr7_len = 7_000
+    chr1_seq = "".join(rng.choice(bases, size=chr1_len).tolist())
+    chr7_seq = "".join(rng.choice(bases, size=chr7_len).tolist())
+    seqs = {"chr1": chr1_seq, "chr7": chr7_seq}
+
+    fasta_path = out_dir / "overflow.fa"
+    fasta_lines: list[str] = []
+    for contig, seq in seqs.items():
+        fasta_lines.append(f">{contig}")
+        for start in range(0, len(seq), 80):
+            fasta_lines.append(seq[start:start + 80])
+    fasta_path.write_text("\n".join(fasta_lines) + "\n", encoding="utf-8")
+
+    chr1_positions = [500, 1000, 1500, 2000, 2500, 3000, 3500]
+    chr7_positions = [500, 1200, 2500, 3200, 4500, 5200, 5500, 5540, 6200, 6500]
+    causal_dosages = [0, 0, 1, 1, 1, 2, 2, 2]
+    gt_code = {0: "0/0", 1: "0/1", 2: "1/1"}
+
+    vcf_path = out_dir / "overflow.vcf.gz"
+    with gzip.open(vcf_path, "wt", encoding="utf-8") as vcf:
+        vcf.write("##fileformat=VCFv4.2\n")
+        vcf.write("##source=GWAS_Platform_Overflow_Fixture\n")
+        vcf.write("##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n")
+        vcf.write(f"##contig=<ID=chr1,length={chr1_len}>\n")
+        vcf.write(f"##contig=<ID=chr7,length={chr7_len}>\n")
+        vcf.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(sample_ids) + "\n")
+
+        variant_idx = 0
+        for pos in chr1_positions:
+            ref = chr1_seq[pos - 1]
+            alt = alt_map[ref]
+            dosages = np.roll(causal_dosages, variant_idx % len(sample_ids)).tolist()
+            gts = [gt_code[int(d)] for d in dosages]
+            vcf.write(f"chr1\t{pos}\tchr1:{pos}\t{ref}\t{alt}\t100\tPASS\t.\tGT\t" + "\t".join(gts) + "\n")
+            variant_idx += 1
+
+        # Satu varian dengan POS=0 (INVALID_POS) di awal chr7
+        invalid_gts = [gt_code[int(d)] for d in causal_dosages]
+        vcf.write("chr7\t0\tchr7:0\tA\tG\t100\tPASS\t.\tGT\t" + "\t".join(invalid_gts) + "\n")
+
+        for pos in chr7_positions:
+            ref = chr7_seq[pos - 1]
+            alt = alt_map[ref]
+            if pos == 5500:
+                dosages = causal_dosages
+            else:
+                dosages = np.roll(causal_dosages, variant_idx % len(sample_ids)).tolist()
+            gts = [gt_code[int(d)] for d in dosages]
+            vcf.write(f"chr7\t{pos}\tchr7:{pos}\t{ref}\t{alt}\t100\tPASS\t.\tGT\t" + "\t".join(gts) + "\n")
+            variant_idx += 1
+
+    pheno_path = out_dir / "overflow_pheno.txt"
+    pheno_lines = ["FID\tIID\tTRAIT1"]
+    for s_id, dos in zip(sample_ids, causal_dosages):
+        val = 10.0 + 3.0 * dos + float(rng.normal(0.0, 0.25))
+        pheno_lines.append(f"{s_id}\t{s_id}\t{val:.4f}")
+    pheno_path.write_text("\n".join(pheno_lines) + "\n", encoding="utf-8")
+
+    gff_path = out_dir / "overflow_annotation.gff3"
+    gff_lines = [
+        "##gff-version 3",
+        f"##sequence-region chr1 1 {chr1_len}",
+        f"##sequence-region chr7 1 {chr7_len}",
+        "chr1\tSimGWAS\tgene\t1400\t1600\t.\t+\t.\tID=GENE_CHR1_1;Name=GENE_CHR1_1",
+        "chr1\tSimGWAS\tmRNA\t1400\t1600\t.\t+\t.\tID=mRNA_CHR1_1;Parent=GENE_CHR1_1",
+        "chr7\tSimGWAS\tgene\t5400\t5700\t.\t+\t.\tID=GENE_CHR7_OVERFLOW;Name=GENE_CHR7_OVERFLOW",
+        "chr7\tSimGWAS\tmRNA\t5400\t5700\t.\t+\t.\tID=mRNA_CHR7_OVERFLOW;Parent=GENE_CHR7_OVERFLOW",
+        "chr7\tSimGWAS\tgene\t6300\t6400\t.\t-\t.\tID=GENE_CHR7_NEAR;Name=GENE_CHR7_NEAR",
+        "chr7\tSimGWAS\tmRNA\t6300\t6400\t.\t-\t.\tID=mRNA_CHR7_NEAR;Parent=GENE_CHR7_NEAR",
+    ]
+    gff_path.write_text("\n".join(gff_lines) + "\n", encoding="utf-8")
+
+    return {
+        "vcf_path": vcf_path,
+        "pheno_path": pheno_path,
+        "gff_path": gff_path,
+        "fasta_path": fasta_path,
+        "split_threshold_bp": split_threshold_bp,
+        "split_unit_bp": split_unit_bp,
+        "overflow_chr": "chr7",
+        "overflow_gene_id": "GENE_CHR7_OVERFLOW",
+        "overflow_snp_pos": 5500,
+        "nearby_snp_pos": 5540,
+        "invalid_pos_count": 1,
+        "sample_ids": sample_ids,
+    }
 
 
 if __name__ == "__main__":
