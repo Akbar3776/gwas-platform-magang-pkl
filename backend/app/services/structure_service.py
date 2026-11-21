@@ -253,6 +253,39 @@ def compute_centered_kinship(
     return K
 
 
+_KING_CHUNK_VARIANTS = 8192
+
+
+def _accumulate_king_pair_counts(
+    G: np.ndarray,
+    cancel_check: Callable[[], None] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Accumulate pairwise valid, het-het, IBS0, and het-valid counts via chunked BLAS."""
+    n_samples, n_variants = G.shape
+    n_valid = np.zeros((n_samples, n_samples), dtype=np.int64)
+    n_hethet = np.zeros((n_samples, n_samples), dtype=np.int64)
+    n_ibs0 = np.zeros((n_samples, n_samples), dtype=np.int64)
+    n_het_valid = np.zeros((n_samples, n_samples), dtype=np.int64)
+
+    for start in range(0, n_variants, _KING_CHUNK_VARIANTS):
+        if cancel_check is not None:
+            cancel_check()
+        Gc = G[:, start:start + _KING_CHUNK_VARIANTS]
+        # Chunk width <= 8192 stays well inside exact float32 integer range (2^24).
+        valid_f = (Gc >= 0).astype(np.float32)
+        het_f = (Gc == 1).astype(np.float32)
+        hom_ref_f = (Gc == 0).astype(np.float32)
+        hom_alt_f = (Gc == 2).astype(np.float32)
+
+        n_valid += np.rint(valid_f @ valid_f.T).astype(np.int64)
+        n_hethet += np.rint(het_f @ het_f.T).astype(np.int64)
+        ibs_chunk = np.rint(hom_ref_f @ hom_alt_f.T).astype(np.int64)
+        n_ibs0 += ibs_chunk + ibs_chunk.T
+        n_het_valid += np.rint(het_f @ valid_f.T).astype(np.int64)
+
+    return n_valid, n_hethet, n_ibs0, n_het_valid
+
+
 def compute_king_robust_table(
     G: np.ndarray,
     sample_ids: list[str],
@@ -282,58 +315,57 @@ def compute_king_robust_table(
             "top_pairs": top_pairs,
         }
 
-    # Hitung kinship KING-robust untuk setiap pasangan
-    # Masking missing genotypes (-1)
-    for i in range(n_samples):
-        if cancel_check is not None and i % 25 == 0:
-            cancel_check()
-        for j in range(i + 1, n_samples):
-            g_i = G[i, :]
-            g_j = G[j, :]
-            valid = (g_i >= 0) & (g_j >= 0)
-            n_valid = int(np.sum(valid))
-            if n_valid < 10:
-                continue
+    # Rumus KING-robust antar keluarga (Manichaikul et al., 2010):
+    # phi = (N_het,het - 2 * N_IBS0) / (N_het_i + N_het_j)
+    n_valid_mat, n_hethet_mat, n_ibs0_mat, n_het_valid_mat = _accumulate_king_pair_counts(
+        G, cancel_check=cancel_check
+    )
+    iu, ju = np.triu_indices(n_samples, k=1)
+    valid_mask = n_valid_mat[iu, ju] >= 10
+    if not np.any(valid_mask):
+        return {
+            "estimator": "KING-robust",
+            "pairs_summary": pairs_summary,
+            "top_pairs": top_pairs,
+        }
 
-            vi = g_i[valid]
-            vj = g_j[valid]
+    pi = iu[valid_mask]
+    pj = ju[valid_mask]
+    denom = (n_het_valid_mat[pi, pj] + n_het_valid_mat[pj, pi]).astype(np.float64)
+    numer = (n_hethet_mat[pi, pj] - 2 * n_ibs0_mat[pi, pj]).astype(np.float64)
+    phi = np.zeros(len(pi), dtype=np.float64)
+    pos_denom = denom > 0
+    phi[pos_denom] = numer[pos_denom] / denom[pos_denom]
 
-            n_het_i = int(np.sum(vi == 1))
-            n_het_j = int(np.sum(vj == 1))
-            n_het_het = int(np.sum((vi == 1) & (vj == 1)))
-            n_ibs0 = int(np.sum((vi == 0) & (vj == 2)) + np.sum((vi == 2) & (vj == 0)))
+    dup_mask = phi > 0.354
+    first_mask = (~dup_mask) & (phi >= 0.177)
+    second_mask = (phi >= 0.0884) & (phi < 0.177)
+    third_mask = (phi >= 0.0442) & (phi < 0.0884)
+    unrelated_mask = phi < 0.0442
 
-            # Rumus KING-robust antar keluarga (Manichaikul et al., 2010):
-            # phi = (N_het,het - 2 * N_IBS0) / (N_het_i + N_het_j)
-            denom = n_het_i + n_het_j
-            if denom > 0:
-                phi = float((n_het_het - 2 * n_ibs0) / denom)
-            else:
-                phi = 0.0
+    pairs_summary["duplicate"] = int(np.count_nonzero(dup_mask))
+    pairs_summary["first_degree"] = int(np.count_nonzero(first_mask))
+    pairs_summary["second_degree"] = int(np.count_nonzero(second_mask))
+    pairs_summary["third_degree"] = int(np.count_nonzero(third_mask))
+    pairs_summary["unrelated"] = int(np.count_nonzero(unrelated_mask))
 
-            if phi > 0.354:
-                pairs_summary["duplicate"] += 1
-                deg = "Duplikat / MZ"
-            elif phi >= 0.177:
-                pairs_summary["first_degree"] += 1
-                deg = "Derajat-1"
-            elif phi >= 0.0884:
-                pairs_summary["second_degree"] += 1
-                deg = "Derajat-2"
-            elif phi >= 0.0442:
-                pairs_summary["third_degree"] += 1
-                deg = "Derajat-3"
-            else:
-                pairs_summary["unrelated"] += 1
-                deg = "Tidak Berkerabat"
-
-            if phi >= 0.0442:
-                top_pairs.append({
-                    "id1": sample_ids[i],
-                    "id2": sample_ids[j],
-                    "kinship": round(phi, 4),
-                    "relationship": deg,
-                })
+    rel_indices = np.flatnonzero(phi >= 0.0442)
+    for k in rel_indices:
+        val = float(phi[k])
+        if val > 0.354:
+            deg = "Duplikat / MZ"
+        elif val >= 0.177:
+            deg = "Derajat-1"
+        elif val >= 0.0884:
+            deg = "Derajat-2"
+        else:
+            deg = "Derajat-3"
+        top_pairs.append({
+            "id1": sample_ids[int(pi[k])],
+            "id2": sample_ids[int(pj[k])],
+            "kinship": round(val, 4),
+            "relationship": deg,
+        })
 
     top_pairs.sort(key=lambda p: p["kinship"], reverse=True)
     return {

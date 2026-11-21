@@ -703,3 +703,111 @@ def test_ld_decay_matches_plink2_r2_unphased(tmp_path):
         text=True,
     )
     assert len(subset_prefix.with_suffix(".bim").read_text(encoding="utf-8").splitlines()) == 10
+
+
+def _reference_king_robust_loop(G: np.ndarray, sample_ids: list[str]) -> dict:
+    """Reference double-loop implementation retained in tests to verify vectorized KING-robust output."""
+    n_samples, n_variants = G.shape
+    pairs_summary = {
+        "duplicate": 0,
+        "first_degree": 0,
+        "second_degree": 0,
+        "third_degree": 0,
+        "unrelated": 0,
+    }
+    top_pairs = []
+    if n_samples < 2 or n_variants < 5:
+        return {"estimator": "KING-robust", "pairs_summary": pairs_summary, "top_pairs": top_pairs}
+
+    for i in range(n_samples):
+        for j in range(i + 1, n_samples):
+            g_i = G[i, :]
+            g_j = G[j, :]
+            valid = (g_i >= 0) & (g_j >= 0)
+            if int(np.sum(valid)) < 10:
+                continue
+            vi = g_i[valid]
+            vj = g_j[valid]
+            n_het_i = int(np.sum(vi == 1))
+            n_het_j = int(np.sum(vj == 1))
+            n_het_het = int(np.sum((vi == 1) & (vj == 1)))
+            n_ibs0 = int(np.sum((vi == 0) & (vj == 2)) + np.sum((vi == 2) & (vj == 0)))
+            denom = n_het_i + n_het_j
+            phi = float((n_het_het - 2 * n_ibs0) / denom) if denom > 0 else 0.0
+            if phi > 0.354:
+                pairs_summary["duplicate"] += 1
+                deg = "Duplikat / MZ"
+            elif phi >= 0.177:
+                pairs_summary["first_degree"] += 1
+                deg = "Derajat-1"
+            elif phi >= 0.0884:
+                pairs_summary["second_degree"] += 1
+                deg = "Derajat-2"
+            elif phi >= 0.0442:
+                pairs_summary["third_degree"] += 1
+                deg = "Derajat-3"
+            else:
+                pairs_summary["unrelated"] += 1
+                deg = "Tidak Berkerabat"
+            if phi >= 0.0442:
+                top_pairs.append({
+                    "id1": sample_ids[i],
+                    "id2": sample_ids[j],
+                    "kinship": round(phi, 4),
+                    "relationship": deg,
+                })
+    top_pairs.sort(key=lambda p: p["kinship"], reverse=True)
+    return {"estimator": "KING-robust", "pairs_summary": pairs_summary, "top_pairs": top_pairs[:50]}
+
+
+def test_king_robust_vectorized_matches_loop_reference_exact():
+    rng = np.random.default_rng(20261121)
+    n_samples, n_snps = 30, 250
+    sample_ids = [f"S_{i:02d}" for i in range(n_samples)]
+    G = rng.choice([0, 1, 2], size=(n_samples, n_snps), p=[0.4, 0.4, 0.2]).astype(np.int8)
+
+    # Duplicate pair (0, 1)
+    G[1] = G[0]
+    # 1st-degree related pair (2, 3)
+    share_1st = rng.random(n_snps) < 0.70
+    G[3, share_1st] = G[2, share_1st]
+    # 2nd/3rd degree pairs (4, 5) and (6, 7)
+    share_2nd = rng.random(n_snps) < 0.48
+    G[5, share_2nd] = G[4, share_2nd]
+    # All-homozygous pair (8, 9) -> denom == 0 edge case
+    G[8, :] = rng.choice([0, 2], size=n_snps).astype(np.int8)
+    G[9, :] = rng.choice([0, 2], size=n_snps).astype(np.int8)
+    # Random ~8% missingness
+    miss = rng.random(G.shape) < 0.08
+    G[miss] = -1
+    # Sparse pair with < 10 valid overlapping SNPs (sample 10 mostly missing)
+    G[10, 5:] = -1
+
+    vec_res = compute_king_robust_table(G, sample_ids)
+    ref_res = _reference_king_robust_loop(G, sample_ids)
+
+    assert vec_res["pairs_summary"] == ref_res["pairs_summary"]
+    assert len(vec_res["top_pairs"]) == len(ref_res["top_pairs"])
+    for v_pair, r_pair in zip(vec_res["top_pairs"], ref_res["top_pairs"]):
+        assert v_pair["id1"] == r_pair["id1"]
+        assert v_pair["id2"] == r_pair["id2"]
+        assert v_pair["relationship"] == r_pair["relationship"]
+        assert abs(v_pair["kinship"] - r_pair["kinship"]) <= 1e-9
+
+    # Also exercise multi-chunk variant summation (> 8192 SNPs)
+    G_chunk = rng.choice([0, 1, 2], size=(6, 8250), p=[0.45, 0.35, 0.2]).astype(np.int8)
+    G_chunk[1] = G_chunk[0]
+    G_chunk[rng.random(G_chunk.shape) < 0.05] = -1
+    chunk_ids = [f"C_{i}" for i in range(6)]
+    assert compute_king_robust_table(G_chunk, chunk_ids) == _reference_king_robust_loop(G_chunk, chunk_ids)
+
+    # Verify cancel_check callback is honored
+    calls = []
+
+    def _cancel():
+        calls.append(1)
+        raise RuntimeError("cancelled-king")
+
+    with pytest.raises(RuntimeError, match="cancelled-king"):
+        compute_king_robust_table(G, sample_ids, cancel_check=_cancel)
+    assert len(calls) == 1
