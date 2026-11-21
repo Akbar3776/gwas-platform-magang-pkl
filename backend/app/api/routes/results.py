@@ -232,6 +232,28 @@ def get_inspection_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dic
     )
 
 
+def _enrich_qc_split_parts(data: Any, job_id: uuid.UUID) -> Any:
+    """Populate split_chrom_parts/split_chromosomes from chrom_split_map when absent."""
+    if not isinstance(data, dict) or data.get("status") in {"skipped", "not_available"}:
+        return data
+    if "split_chrom_parts" in data and isinstance(data["split_chrom_parts"], dict):
+        return data
+    smap = load_split_map(job_id)
+    split_chroms = smap.get("split_chroms") if isinstance(smap, dict) else None
+    if not isinstance(split_chroms, dict) or not split_chroms:
+        return data
+    parts_counts = {
+        str(k): int(v.get("num_parts") or len(v.get("parts") or []))
+        for k, v in split_chroms.items()
+        if isinstance(v, dict)
+    }
+    enriched = dict(data)
+    enriched["split_chrom_parts"] = parts_counts
+    if not enriched.get("split_chromosomes"):
+        enriched["split_chromosomes"] = sorted(parts_counts.keys())
+    return enriched
+
+
 @router.get("/{job_id}/qc-comparison", summary="Data perbandingan QC sebelum/sesudah (Fase 2)")
 def get_qc_comparison_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
     data = _load_job_json_result(
@@ -250,13 +272,13 @@ def get_qc_comparison_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> 
             if qc_dir.is_dir() and ((qc_dir / "before_qc.afreq").is_file() or (qc_dir / "before_qc.frq").is_file()):
                 from app.services.qc_service import build_qc_comparison_from_plink_outputs
                 try:
-                    healed = build_qc_comparison_from_plink_outputs(qc_dir)
+                    healed = _enrich_qc_split_parts(build_qc_comparison_from_plink_outputs(qc_dir), job_id)
                     comp_file = qc_dir / "qc_comparison.json"
                     comp_file.write_text(json.dumps(healed, indent=2), encoding="utf-8")
                     return healed
                 except Exception as err:
                     logger.warning("Gagal meregenerasi perbandingan QC untuk job %s: %s", job_id, err)
-    return data
+    return _enrich_qc_split_parts(data, job_id)
 
 
 @router.get("/{job_id}/pca", summary="Data dekomposisi PCA & Scree plot (Fase 3)")

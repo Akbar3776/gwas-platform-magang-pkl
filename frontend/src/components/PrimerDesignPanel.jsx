@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import { Pagination } from "./Pagination";
 import { toCsv } from "../utils/csv";
 import { saveBlob } from "../utils/download";
+import { downloadJobFileByName } from "../utils/jobFiles";
 
 function renderHighlightedFlanking(seqStr) {
   if (!seqStr) return "-";
@@ -28,17 +29,45 @@ function renderHighlightedFlanking(seqStr) {
   );
 }
 
+function getMarkerRefAlt(item) {
+  let ref = item?.ref || item?.vcf_ref_base || item?.fasta_ref_base || "";
+  let alt = item?.alt || "";
+  if ((!ref || !alt) && typeof item?.flanking_sequence === "string") {
+    const bracketMatch = item.flanking_sequence.match(/\[([A-Za-z*]+)\/([A-Za-z*]+)\]/);
+    if (bracketMatch) {
+      if (!ref) ref = bracketMatch[1];
+      if (!alt) alt = bracketMatch[2];
+    }
+  }
+  if (!alt && item?.allele && item.allele !== ref) {
+    alt = item.allele;
+  }
+  return { ref: ref || "-", alt: alt || "-" };
+}
+
 export function PrimerDesignPanel({ primersData = null, jobId = null }) {
   const [searchText, setSearchText] = useState("");
   const [viewMode, setViewMode] = useState("both"); // "both" | "primer3" | "table"
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(5);
+  const [downloadError, setDownloadError] = useState(null);
 
   useEffect(() => {
     setCurrentPage(1);
   }, [searchText, viewMode]);
 
   const markers = useMemo(() => primersData?.markers || [], [primersData]);
+
+  const flankBp = useMemo(() => {
+    const top = Number(primersData?.flank_bp);
+    if (Number.isFinite(top) && top > 0) return top;
+    const itemFlank = markers.find((m) => Number(m?.flank_bp) > 0)?.flank_bp;
+    if (Number(itemFlank) > 0) return Number(itemFlank);
+    const seqLen = markers.find((m) => Number(m?.sequence_length) > 0)?.sequence_length;
+    if (Number(seqLen) > 1) return Math.floor((Number(seqLen) - 1) / 2);
+    return 100;
+  }, [primersData, markers]);
+  const totalFlankBp = flankBp * 2 + 1;
 
   const filteredMarkers = useMemo(() => {
     const q = searchText.toLowerCase().trim();
@@ -57,6 +86,16 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
     return filteredMarkers.slice(start, start + pageSize);
   }, [filteredMarkers, currentPage, pageSize]);
 
+  const handleDownloadArtifact = async (filename) => {
+    if (!jobId || !filename) return;
+    setDownloadError(null);
+    try {
+      await downloadJobFileByName(jobId, filename, "annotation");
+    } catch (err) {
+      setDownloadError(err?.message || `Gagal mengunduh ${filename}`);
+    }
+  };
+
   const handleDownloadPrimerTxt = () => {
     if (!markers.length) return;
     const blocks = markers.map(
@@ -74,6 +113,9 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
       "SNP",
       "Chr",
       "Pos",
+      "REF",
+      "ALT",
+      "Nearby_Variants_Count",
       "Nearest_Gene",
       "Pair_Index",
       "Left_Start",
@@ -87,10 +129,13 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
       "Right_GC",
       "Right_Seq",
       "Product_Size_bp",
-      "Flanking_201bp",
+      "Flanking_Sequence",
     ];
     const rows = [];
     for (const m of markers) {
+      const { ref, alt } = getMarkerRefAlt(m);
+      const nearbyCount =
+        m.nearby_variants_count ?? (Array.isArray(m.nearby_variants) ? m.nearby_variants.length : 0);
       if (!m.primer_pairs || m.primer_pairs.length === 0) {
         rows.push([
           m.rank,
@@ -98,6 +143,9 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
           m.snp,
           m.chr,
           m.pos,
+          ref,
+          alt,
+          nearbyCount,
           m.nearest_gene || "-",
           0,
           "-",
@@ -121,6 +169,9 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
             m.snp,
             m.chr,
             m.pos,
+            ref,
+            alt,
+            nearbyCount,
             m.nearest_gene || "-",
             idx + 1,
             p.left.start,
@@ -152,27 +203,130 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
     (markers.length > 0 &&
       markers.every((m) => m.status === "no_reference" || m.status === "no_reference_for_chr"));
 
-  if ((!primersData || !markers.length || isNoReference) && !isSynthetic) {
+  const candidateRegions = primersData?.candidate_regions || null;
+  const regionsStatus = primersData?.regions_status || null;
+  const renderCandidateRegionsCard = () => {
+    if (!candidateRegions || isSynthetic) return null;
+    const windowKb = Math.round(Number(candidateRegions.window_bp || 0) / 1000);
     return (
       <div
         style={{
-          padding: 24,
-          borderRadius: 8,
           background: "#f8fafc",
-          border: "1px dashed #cbd5e1",
-          textAlign: "center",
-          color: "#64748b",
+          border: "1px solid #cbd5e1",
+          borderRadius: 8,
+          padding: 12,
+          display: "grid",
+          gap: 8,
+          textAlign: "left",
         }}
       >
-        <div style={{ fontSize: 24, marginBottom: 8 }}>🧪</div>
-        <div style={{ fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-          Sekuens Flanking &amp; Desain Primer3 Belum Tersedia
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+              Region Kandidat (Fase 5.4)
+            </div>
+            <div style={{ fontSize: 12, color: "#475569", marginTop: 2 }}>
+              {Number(candidateRegions.written_regions ?? candidateRegions.n_regions ?? 0)}/
+              {Number(candidateRegions.n_regions || 0)} region · Total{" "}
+              {Number(candidateRegions.total_bp || 0).toLocaleString("id-ID")} bp
+              {windowKb > 0 ? ` (jendela ±${windowKb} kb)` : ""}
+              {candidateRegions.truncated ? " · Dipotong sesuai batas total bp" : ""}
+              {regionsStatus === "no_reference" ? " · FASTA referensi tidak tersedia" : ""}
+            </div>
+          </div>
+
+          {jobId && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {candidateRegions.bed && (
+                <button
+                  type="button"
+                  onClick={() => handleDownloadArtifact(candidateRegions.bed)}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 11.5,
+                    borderRadius: 6,
+                    border: "1px solid #cbd5e1",
+                    background: "#fff",
+                    color: "#1e293b",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  📥 candidate_regions.bed
+                </button>
+              )}
+              {candidateRegions.fasta && (
+                <button
+                  type="button"
+                  onClick={() => handleDownloadArtifact(candidateRegions.fasta)}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 11.5,
+                    borderRadius: 6,
+                    border: "1px solid #cbd5e1",
+                    background: "#fff",
+                    color: "#1e293b",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  📥 candidate_regions.fa
+                </button>
+              )}
+              {candidateRegions.csv && (
+                <button
+                  type="button"
+                  onClick={() => handleDownloadArtifact(candidateRegions.csv)}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 11.5,
+                    borderRadius: 6,
+                    border: "1px solid #cbd5e1",
+                    background: "#fff",
+                    color: "#1e293b",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  📥 candidate_regions.csv
+                </button>
+              )}
+            </div>
+          )}
         </div>
-        <p style={{ margin: 0, fontSize: 13, maxWidth: 540, marginInline: "auto" }}>
-          {isNoReference
-            ? "Referensi FASTA tidak tersedia; unggah berkas FASTA referensi untuk mengekstrak sekuens flanking 201 bp dan desain primer Primer3."
-            : "Tidak ditemukan Lead SNP kandidat pada job ini untuk ekstraksi sekuens flanking 201 bp dan desain primer Primer3."}
-        </p>
+      </div>
+    );
+  };
+
+  if ((!primersData || !markers.length || isNoReference) && !isSynthetic) {
+    return (
+      <div style={{ display: "grid", gap: 12 }}>
+        {downloadError && (
+          <div role="alert" style={{ padding: 10, borderRadius: 6, background: "#fef2f2", color: "#b91c1c", fontSize: 12 }}>
+            {downloadError}
+          </div>
+        )}
+        <div
+          style={{
+            padding: 24,
+            borderRadius: 8,
+            background: "#f8fafc",
+            border: "1px dashed #cbd5e1",
+            textAlign: "center",
+            color: "#64748b",
+          }}
+        >
+          <div style={{ fontSize: 24, marginBottom: 8 }}>🧪</div>
+          <div style={{ fontWeight: 600, color: "#334155", marginBottom: 4 }}>
+            Sekuens Flanking &amp; Desain Primer3 Belum Tersedia
+          </div>
+          <p style={{ margin: 0, fontSize: 13, maxWidth: 540, marginInline: "auto" }}>
+            {isNoReference
+              ? "Referensi FASTA tidak tersedia; unggah berkas FASTA referensi untuk mengekstrak sekuens flanking dan desain primer Primer3."
+              : "Tidak ditemukan Lead SNP kandidat pada job ini untuk ekstraksi sekuens flanking dan desain primer Primer3."}
+          </p>
+        </div>
+        {renderCandidateRegionsCard()}
       </div>
     );
   }
@@ -196,14 +350,20 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
         </div>
       )}
 
+      {downloadError && (
+        <div role="alert" style={{ padding: 10, borderRadius: 6, background: "#fef2f2", color: "#b91c1c", fontSize: 12 }}>
+          {downloadError}
+        </div>
+      )}
+
       {/* Header & Tombol Ekspor */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <div>
           <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#0f172a" }}>
-            Ekstraksi Sekuens Flanking (201 bp) &amp; Desain Primer3 — Fase 5.4 / Fase 6–8
+            Ekstraksi Sekuens Flanking ({totalFlankBp} bp) &amp; Desain Primer3 — Fase 5.4 / Fase 6–8
           </h4>
           <p style={{ margin: "3px 0 0", fontSize: 12, color: "#64748b" }}>
-            Sekuens 100 bp upstream + `[Alel Target]` + 100 bp downstream beserta pasangan `LEFT PRIMER` &amp; `RIGHT PRIMER`.
+            Sekuens {flankBp} bp upstream + `[Alel Target]` + {flankBp} bp downstream beserta pasangan `LEFT PRIMER` &amp; `RIGHT PRIMER`.
           </p>
         </div>
 
@@ -257,13 +417,17 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
         </div>
         <div style={{ padding: "10px 14px", background: "#eff6ff", borderRadius: 6, border: "1px solid #bfdbfe" }}>
           <div style={{ fontSize: 11, color: "#1e40af", textTransform: "uppercase", fontWeight: 600 }}>Ukuran Sekuens Flanking</div>
-          <div style={{ fontSize: 18, fontWeight: 700, color: "#2563eb" }}>201 bp (±100 bp)</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#2563eb" }}>
+            {totalFlankBp} bp (±{flankBp} bp)
+          </div>
         </div>
         <div style={{ padding: "10px 14px", background: "#fffbeb", borderRadius: 6, border: "1px solid #fde68a" }}>
           <div style={{ fontSize: 11, color: "#92400e", textTransform: "uppercase", fontWeight: 600 }}>Parameter GC% &amp; Tm</div>
           <div style={{ fontSize: 14, fontWeight: 700, color: "#b45309", marginTop: 2 }}>GC 35–50% · Tm ~54–56°C</div>
         </div>
       </div>
+
+      {renderCandidateRegionsCard()}
 
       {/* Filter & Mode Tampilan */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
@@ -311,7 +475,15 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
 
       {/* Daftar Sekuens Flanking & Primer per SNP */}
       <div style={{ display: "grid", gap: 14 }}>
-        {paginatedMarkers.map((item) => (
+        {paginatedMarkers.map((item) => {
+          const { ref, alt } = getMarkerRefAlt(item);
+          const nearbyCount =
+            item.nearby_variants_count !== undefined && item.nearby_variants_count !== null
+              ? Number(item.nearby_variants_count)
+              : Array.isArray(item.nearby_variants)
+                ? item.nearby_variants.length
+                : null;
+          return (
           <div
             key={item.marker_id || item.rank}
             style={{
@@ -340,6 +512,33 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
                 >
                   SNP: {item.snp} (Chr {item.chr}:{Number(item.pos || 0).toLocaleString("id-ID")})
                 </span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 8px",
+                    borderRadius: 12,
+                    background: "#eff6ff",
+                    color: "#1e40af",
+                    fontWeight: 600,
+                  }}
+                >
+                  REF/ALT: {ref}/{alt}
+                </span>
+                {nearbyCount !== null && (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: nearbyCount > 0 ? "#fef3c7" : "#f1f5f9",
+                      color: nearbyCount > 0 ? "#92400e" : "#475569",
+                      fontWeight: 600,
+                    }}
+                  >
+                    Varian tetangga: {nearbyCount}
+                    {nearbyCount > 0 ? " (dikecualikan Primer3)" : ""}
+                  </span>
+                )}
                 {item.nearest_gene && item.nearest_gene !== "-" && (
                   <span
                     style={{
@@ -370,7 +569,7 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
               </span>
             </div>
 
-            {/* Sekuens Flanking 201 bp */}
+            {/* Sekuens Flanking */}
             <div
               style={{
                 background: "#f8fafc",
@@ -467,7 +666,8 @@ export function PrimerDesignPanel({ primersData = null, jobId = null }) {
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <Pagination

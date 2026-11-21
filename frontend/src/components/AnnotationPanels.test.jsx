@@ -1,8 +1,13 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { GoEnrichmentPanel } from "./GoEnrichmentPanel";
 import { PrimerDesignPanel } from "./PrimerDesignPanel";
+import { downloadJobFileByName } from "../utils/jobFiles";
+
+jest.mock("../utils/jobFiles", () => ({
+  downloadJobFileByName: jest.fn(() => Promise.resolve()),
+}));
 
 describe("Annotation Synthetic Banner & Heuristic Labels", () => {
   beforeAll(() => {
@@ -227,5 +232,70 @@ describe("Annotation Synthetic Banner & Heuristic Labels", () => {
       URL.createObjectURL = origCreateObjectURL;
       URL.revokeObjectURL = origRevokeObjectURL;
     }
+  });
+
+  test("PrimerDesignPanel renders dynamic flank size, REF/ALT, nearby variants, and candidate region downloads (W23)", async () => {
+    downloadJobFileByName.mockClear();
+
+    render(
+      <PrimerDesignPanel
+        jobId="job-1"
+        primersData={{
+          status: "completed",
+          synthetic: false,
+          flank_bp: 150,
+          regions_status: "completed",
+          candidate_regions: {
+            csv: "candidate_regions.csv",
+            bed: "candidate_regions.bed",
+            fasta: "candidate_regions.fa",
+            n_regions: 2,
+            written_regions: 2,
+            total_bp: 400002,
+            window_bp: 200000,
+          },
+          total_markers: 1,
+          markers_with_primers: 1,
+          markers: [
+            {
+              rank: 1,
+              marker_id: "trait_7_5500",
+              snp: "SNP_74098",
+              chr: "chr7",
+              pos: 5500,
+              ref: "T",
+              alt: "C",
+              nearby_variants_count: 1,
+              nearby_variants: [{ pos: 5540, ref: "A", alt: "G", offset: 40 }],
+              flank_bp: 150,
+              sequence_length: 301,
+              flanking_sequence: "ACGT[T/C]TGCA",
+              primer_pairs_count: 1,
+              primer_pairs: [
+                {
+                  left: { start: 1, len: 20, tm: 55, gc: 50, any_th: 0, three_th: 0, hairpin: 0, seq: "AAAACCCCGGGGTTTTAAAA" },
+                  right: { start: 280, len: 20, tm: 55, gc: 50, any_th: 0, three_th: 0, hairpin: 0, seq: "TTTTCCCCGGGGAAAATTTT" },
+                  product_size: 280,
+                },
+              ],
+              primer3_output: "LEFT PRIMER ...",
+            },
+          ],
+        }}
+      />
+    );
+
+    expect(screen.getByText(/301 bp \(±150 bp\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/REF\/ALT: T\/C/i)).toBeInTheDocument();
+    expect(screen.getByText(/Varian tetangga: 1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Region Kandidat \(Fase 5\.4\)/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /candidate_regions\.bed/i }));
+    fireEvent.click(screen.getByRole("button", { name: /candidate_regions\.fa/i }));
+
+    await waitFor(() => {
+      expect(downloadJobFileByName).toHaveBeenCalledWith("job-1", "candidate_regions.bed", "annotation");
+      expect(downloadJobFileByName).toHaveBeenCalledWith("job-1", "candidate_regions.fa", "annotation");
+    });
   });
 });

@@ -39,6 +39,17 @@ logger = get_task_logger(__name__)
 QC_TIMEOUT_SECONDS = int(os.getenv("QC_TIMEOUT_SECONDS", str(6 * 60 * 60)))
 
 
+def _extract_split_parts(split_map_obj: dict[str, Any] | None) -> dict[str, int]:
+    """Return {orig_chr: num_parts} mapping from chrom_split_map payload."""
+    if not isinstance(split_map_obj, dict):
+        return {}
+    out: dict[str, int] = {}
+    for chrom_name, meta in (split_map_obj.get("split_chroms") or {}).items():
+        if isinstance(meta, dict):
+            out[str(chrom_name)] = int(meta.get("num_parts") or len(meta.get("parts") or []))
+    return out
+
+
 def _error_text(exc: Exception) -> str:
     """Return a useful bounded error message for the database and UI."""
     if isinstance(exc, CLIExecutionError):
@@ -152,6 +163,7 @@ def run_qc_pipeline(
         chrom_split_ctx = ctx.get("chrom_split") or (job.parameters or {}).get("chrom_split") or {}
         invalid_pos_removed = int(chrom_split_ctx.get("invalid_pos_removed") or 0)
         split_chromosomes: list[str] = list(chrom_split_ctx.get("overflow_chromosomes") or [])
+        split_chrom_parts: dict[str, int] = {}
 
         norm_stats_file = workspace.parent / "normalization" / "qc_overflow_stats.json"
         if norm_stats_file.is_file():
@@ -166,10 +178,11 @@ def run_qc_pipeline(
             except Exception:
                 pass
 
-        if not split_chromosomes:
-            existing_map = load_split_map(job_id)
-            if existing_map and isinstance(existing_map.get("split_chroms"), dict):
-                split_chromosomes = sorted(existing_map["split_chroms"].keys())
+        existing_map = load_split_map(job_id)
+        if existing_map:
+            split_chrom_parts = _extract_split_parts(existing_map)
+            if not split_chromosomes and split_chrom_parts:
+                split_chromosomes = sorted(split_chrom_parts.keys())
 
         standalone_clean_vcf: Path | None = None
         if not ctx.get("normalized_vcf_path") and Path(input_vcf_path).is_file():
@@ -180,6 +193,7 @@ def run_qc_pipeline(
             )
             if split_stats["split_applied"]:
                 save_split_map(job_id, split_stats["split_map"])
+                split_chrom_parts = _extract_split_parts(split_stats["split_map"])
             overflow_removed = int(split_stats["overflow_removed"])
             invalid_pos_removed = int(split_stats["invalid_pos_removed"])
             split_chromosomes = list(split_stats["overflow_chromosomes"])
@@ -328,6 +342,7 @@ def run_qc_pipeline(
         comparison_data.setdefault("removed", {})["overflow_32bit"] = overflow_removed
         comparison_data["removed"]["invalid_pos"] = invalid_pos_removed
         comparison_data["split_chromosomes"] = split_chromosomes
+        comparison_data["split_chrom_parts"] = split_chrom_parts
 
         write_json(comparison_file, comparison_data)
 

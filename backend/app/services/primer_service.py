@@ -576,6 +576,8 @@ def generate_flanking_and_primers(
                 "snp": s.get("snp") or f"chr{raw_chr}:{pos}",
                 "chr": raw_chr,
                 "pos": pos,
+                "ref": ref_val,
+                "alt": alt_val,
                 "allele": allele,
                 "p": s.get("p"),
                 "nearest_gene": s.get("nearest_gene", "-"),
@@ -618,6 +620,8 @@ def generate_flanking_and_primers(
             "snp": s.get("snp") or f"chr{raw_chr}:{pos}",
             "chr": raw_chr,
             "pos": pos,
+            "ref": ref_val,
+            "alt": alt_val,
             "allele": allele,
             "p": s.get("p"),
             "nearest_gene": s.get("nearest_gene", "-"),
@@ -696,7 +700,7 @@ def generate_flanking_and_primers(
                 "Right_GC",
                 "Right_Seq",
                 "Product_Size_bp",
-                "Flanking_201bp",
+                f"Flanking_{2 * int(flank_len) + 1}bp",
             ])
             for it in items:
                 if it["status"] in {"no_reference", "no_reference_for_chr"}:

@@ -172,7 +172,7 @@ export async function fetchGoEnrichmentData(jobId, signal) {
 }
 
 /**
- * Mengambil sekuens flanking 201 bp dan desain primer Primer3 (Fase 5.4 / 6–8).
+ * Mengambil sekuens flanking dan desain primer Primer3/KASP (Fase 5.4 / 6–8).
  */
 export async function fetchPrimersData(jobId, signal) {
   const response = await apiFetch(`/results/${jobId}/primers`, {

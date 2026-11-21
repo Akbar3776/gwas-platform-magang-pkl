@@ -124,7 +124,7 @@ export function ReferenceUploader({
             FASTA Referensi Genom (Opsional)
           </strong>
           <p style={{ margin: "4px 0 0", fontSize: 12, color: "#64748b" }}>
-            Untuk ekstraksi sekuens flanking 201 bp &amp; desain primer KASP/CAPS (`.fa`, `.fasta`, `.fna`, `.gz`).
+            Untuk ekstraksi sekuens flanking &amp; desain primer Primer3/KASP (`.fa`, `.fasta`, `.fna`, `.gz`).
           </p>
         </div>
 

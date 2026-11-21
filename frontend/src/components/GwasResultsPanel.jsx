@@ -594,7 +594,7 @@ export default function GwasResultsPanel({ jobId }) {
         </div>
       )}
 
-      {/* TAB 7: FLANKING SEQUENCE (201 BP) & PRIMER3 DESIGN */}
+      {/* TAB 7: FLANKING SEQUENCE & PRIMER DESIGN */}
       {activeTab === "primers" && (
         <div style={{ background: "#fff", padding: 16, borderRadius: 8, border: "1px solid #e2e8f0", display: "grid", gap: 14 }}>
           <TabResourceNotice resources={[primersRes]} label="data desain primer Primer3" />

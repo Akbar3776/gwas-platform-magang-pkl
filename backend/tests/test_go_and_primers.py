@@ -884,6 +884,8 @@ def test_find_nearby_variants_and_primer3_excluded_region(overflow_dataset: dict
         split_map=split_map,
     )
     marker = masked["markers"][0]
+    assert marker["ref"] == "A"
+    assert marker["alt"] == "G"
     assert marker["nearby_variants_count"] == 1
     assert masked["total_nearby_variants"] == 1
     assert marker["flank_bp"] == 100

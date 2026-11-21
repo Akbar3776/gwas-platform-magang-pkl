@@ -7,6 +7,35 @@ function formatCount(val) {
   return isNaN(num) ? String(val) : num.toLocaleString("id-ID");
 }
 
+function formatSplitChromosomes(splitChroms, splitParts) {
+  if (!splitChroms) return "";
+  const partsMap = splitParts && typeof splitParts === "object" && !Array.isArray(splitParts) ? splitParts : {};
+  const entries = [];
+  if (Array.isArray(splitChroms)) {
+    for (const item of splitChroms) {
+      if (typeof item === "string") {
+        const clean = item.trim();
+        if (!clean) continue;
+        const count = Number(partsMap[clean] || 0);
+        entries.push(count > 0 ? `${clean} (${count} bagian)` : clean);
+      } else if (item && typeof item === "object") {
+        const name = String(item.chrom || item.chr || item.name || "").trim();
+        if (!name) continue;
+        const count = Number(item.num_parts || (Array.isArray(item.parts) ? item.parts.length : 0) || partsMap[name] || 0);
+        entries.push(count > 0 ? `${name} (${count} bagian)` : name);
+      }
+    }
+  } else if (typeof splitChroms === "object") {
+    for (const [chrom, meta] of Object.entries(splitChroms)) {
+      const count = typeof meta === "number"
+        ? meta
+        : Number(meta?.num_parts || (Array.isArray(meta?.parts) ? meta.parts.length : 0) || partsMap[chrom] || 0);
+      entries.push(count > 0 ? `${chrom} (${count} bagian)` : chrom);
+    }
+  }
+  return entries.join(", ");
+}
+
 export function QcComparisonPanel({ comparison }) {
   if (!comparison || comparison.status === "not_available" || comparison.status === "skipped") {
     return (
@@ -22,10 +51,17 @@ export function QcComparisonPanel({ comparison }) {
     removed = {},
     snp_loss_fraction = 0,
     warning = null,
+    split_chromosomes = null,
+    split_chrom_parts = null,
   } = comparison;
 
   const numFraction = typeof snp_loss_fraction === "number" ? snp_loss_fraction : Number(snp_loss_fraction) || 0;
   const lossPct = (numFraction * 100).toFixed(1);
+  const splitListText = formatSplitChromosomes(split_chromosomes, split_chrom_parts);
+  const hasSplitChroms = Boolean(splitListText);
+  const hasInvalidPos = removed.invalid_pos !== undefined && removed.invalid_pos !== null;
+  const hasLegacyOverflow = Number(removed.overflow_32bit || 0) > 0 && !hasSplitChroms;
+  const useLegacyOverflowCard = hasLegacyOverflow || (!hasSplitChroms && !hasInvalidPos);
 
   const hasBeforeHist = before?.maf_hist?.edges?.length > 1;
   const hasAfterHist = after?.maf_hist?.edges?.length > 1;
@@ -91,11 +127,34 @@ export function QcComparisonPanel({ comparison }) {
         <h4 style={{ margin: "0 0 10px", fontSize: 13, fontWeight: 700, color: "#1e293b" }}>
           Rincian Varian & Sampel Terbuang per Kriteria QC:
         </h4>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
-          <div style={{ padding: 8, background: "#f8fafc", borderRadius: 6, border: "1px solid #f1f5f9" }}>
-            <span style={{ fontSize: 11, color: "#64748b" }}>Overflow 32-bit (Fase 0)</span>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#b91c1c" }}>{formatCount(removed.overflow_32bit)}</div>
+        {hasSplitChroms && (
+          <div
+            style={{
+              marginBottom: 10,
+              padding: "8px 12px",
+              borderRadius: 6,
+              background: "#eff6ff",
+              border: "1px solid #bfdbfe",
+              color: "#1e40af",
+              fontSize: 12.5,
+              fontWeight: 600,
+            }}
+          >
+            Kromosom dipecah: {splitListText}
           </div>
+        )}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
+          {useLegacyOverflowCard ? (
+            <div style={{ padding: 8, background: "#f8fafc", borderRadius: 6, border: "1px solid #f1f5f9" }}>
+              <span style={{ fontSize: 11, color: "#64748b" }}>Overflow 32-bit (Fase 0)</span>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#b91c1c" }}>{formatCount(removed.overflow_32bit)}</div>
+            </div>
+          ) : (
+            <div style={{ padding: 8, background: "#f8fafc", borderRadius: 6, border: "1px solid #f1f5f9" }}>
+              <span style={{ fontSize: 11, color: "#64748b" }}>INVALID_POS dibuang</span>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#b91c1c" }}>{formatCount(removed.invalid_pos)}</div>
+            </div>
+          )}
           <div style={{ padding: 8, background: "#f8fafc", borderRadius: 6, border: "1px solid #f1f5f9" }}>
             <span style={{ fontSize: 11, color: "#64748b" }}>Filter MAF</span>
             <div style={{ fontSize: 15, fontWeight: 700, color: "#b91c1c" }}>{formatCount(removed.maf)}</div>
