@@ -875,3 +875,52 @@ def test_get_primers_data_forwards_kasp_block_with_relative_files(tmp_path, monk
         "primers_tsv": "kasp_primers.tsv",
         "primers_no_tail_fa": "kasp_primers_no_tail.fa",
     }
+
+
+def test_get_job_status_exposes_stage_summaries_and_defaults_empty_for_legacy(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs.settings, "STORAGE_ROOT", str(tmp_path))
+
+    user = User(
+        id=uuid.uuid4(),
+        email="status-owner@example.com",
+        hashed_password="test",
+        role=UserRole.RESEARCHER,
+    )
+    dataset = Dataset(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        original_filename="cohort.vcf.gz",
+        storage_path=str(tmp_path / "cohort.vcf.gz"),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    summaries_payload = {
+        "inspection": {"stage": "inspection", "counts": {"n_samples": 149}},
+        "normalization": {"stage": "normalization", "counts": {"kept_variants": 17}},
+    }
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.COMPLETED,
+        current_step=PipelineStep.ANNOTATION,
+        created_at=datetime.now(timezone.utc),
+        parameters={"stage_summaries": summaries_payload},
+    )
+
+    resp = jobs.get_job_status(job_id=job.id, db=FakeSession(dataset, job=job), user=user)
+    assert resp.stage_summaries == summaries_payload
+
+    legacy_job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=dataset.id,
+        triggered_by=user.id,
+        pipeline_type="full_pipeline",
+        overall_status=JobStatus.COMPLETED,
+        current_step=PipelineStep.ANNOTATION,
+        created_at=datetime.now(timezone.utc),
+        parameters={},
+    )
+    legacy_resp = jobs.get_job_status(job_id=legacy_job.id, db=FakeSession(dataset, job=legacy_job), user=user)
+    assert legacy_resp.stage_summaries == {}

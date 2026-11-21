@@ -554,6 +554,7 @@ def get_job_status(
     params = job.parameters or {}
     trait_val = params.get("phenotype", {}).get("trait")
     model_val = params.get("gwas", {}).get("model")
+    raw_summaries = params.get("stage_summaries")
 
     return JobStatusResponse(
         job_id=job.id,
@@ -570,6 +571,7 @@ def get_job_status(
         last_log_line=last_log_line,
         elapsed_seconds=elapsed_seconds,
         step_logs=step_logs,
+        stage_summaries=dict(raw_summaries) if isinstance(raw_summaries, dict) else {},
         created_at=job.created_at,
         started_at=job.started_at,
         completed_at=job.completed_at,

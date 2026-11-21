@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -50,6 +51,7 @@ class JobStatusResponse(BaseModel):
     last_log_line: str | None = None
     elapsed_seconds: float | None = None
     step_logs: list[StepLogEntry] = Field(default_factory=list)
+    stage_summaries: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
