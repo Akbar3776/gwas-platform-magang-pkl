@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 
+from pydantic import ValidationError
 import pytest
 
 from app.core import config, security
@@ -63,6 +64,7 @@ def test_workflow_settings_defaults(monkeypatch):
         "CHROM_SPLIT_UNIT_BP",
         "CANDIDATE_REGION_MAX_TOTAL_BP",
         "KASP_FLANK_BP",
+        "NON_PRIMARY_CONTIG_REGEX",
     ):
         monkeypatch.delenv(key, raising=False)
     cfg = config.Settings()
@@ -70,6 +72,7 @@ def test_workflow_settings_defaults(monkeypatch):
     assert cfg.CHROM_SPLIT_UNIT_BP == 1_000_000_000
     assert cfg.CANDIDATE_REGION_MAX_TOTAL_BP == 50_000_000
     assert cfg.KASP_FLANK_BP == 150
+    assert cfg.NON_PRIMARY_CONTIG_REGEX == config.DEFAULT_NON_PRIMARY_CONTIG_REGEX
 
 
 @pytest.mark.parametrize(
@@ -85,6 +88,14 @@ def test_workflow_settings_defaults(monkeypatch):
 def test_workflow_settings_validation_rejects_invalid_values(overrides):
     with pytest.raises(ValueError):
         config.Settings(**overrides)
+
+
+def test_non_primary_contig_regex_invalid_raises_validation_error():
+    with pytest.raises(ValidationError, match="NON_PRIMARY_CONTIG_REGEX"):
+        config.Settings(NON_PRIMARY_CONTIG_REGEX="[invalid")
+
+    cfg_empty = config.Settings(NON_PRIMARY_CONTIG_REGEX="")
+    assert cfg_empty.NON_PRIMARY_CONTIG_REGEX == ""
 
 
 def test_env_example_files_share_same_keys_except_compose_only():

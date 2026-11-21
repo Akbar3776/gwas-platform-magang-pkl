@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from app.core.config import settings
+from app.core.config import DEFAULT_NON_PRIMARY_CONTIG_REGEX, settings
 from app.services.chromosome_service import (
     SIGNED_32BIT_MAX,
     load_chromosome_summary,
@@ -193,3 +194,45 @@ def test_split_vcf_valid_for_bcftools_view_and_csi_index(overflow_dataset: dict,
     )
     assert idx_proc.returncode == 0, idx_proc.stderr
     assert Path(str(sorted_gz) + ".csi").is_file()
+
+
+@pytest.mark.parametrize(
+    "contig",
+    [
+        "scaffold1",
+        "scaffold10019",
+        "Scaffold_5",
+        "contig_12",
+        "ctg7",
+        "chrUn_KI270302v1",
+        "chr1_random",
+        "UNPLACED_99",
+    ],
+)
+def test_default_non_primary_contig_regex_matches_scaffolds(contig: str):
+    pattern = re.compile(DEFAULT_NON_PRIMARY_CONTIG_REGEX)
+    assert pattern.search(contig) is not None
+
+
+@pytest.mark.parametrize(
+    "contig",
+    [
+        "chr1",
+        "chr8",
+        "1",
+        "Chr01",
+        "Gm01",
+        "LG3",
+        "A01",
+        "chr7_p0",
+        "chr7_p2",
+        "chrX",
+        "chrM",
+        "chrC",
+        "Pt",
+        "MT",
+    ],
+)
+def test_default_non_primary_contig_regex_preserves_primary_and_organelle_contigs(contig: str):
+    pattern = re.compile(DEFAULT_NON_PRIMARY_CONTIG_REGEX)
+    assert pattern.search(contig) is None

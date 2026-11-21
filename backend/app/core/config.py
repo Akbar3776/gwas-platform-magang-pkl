@@ -8,6 +8,7 @@ atau environment variable dari docker-compose.
 
 import os
 from pathlib import Path
+import re
 
 from pydantic import model_validator
 
@@ -31,6 +32,9 @@ if _BACKEND_ENV_FILE.is_file():
 
 _DEFAULT_STORAGE = (
     str(_BACKEND_DIR / "data" / "storage") if os.name == "nt" else "/data/storage"
+)
+DEFAULT_NON_PRIMARY_CONTIG_REGEX = (
+    r"(?i)^(scaffold|contig|ctg|unplaced|chrun)|_(random|unplaced|alt)$"
 )
 _raw_storage = os.getenv("STORAGE_ROOT", _DEFAULT_STORAGE)
 if os.name == "nt" and _raw_storage.startswith("/data"):
@@ -89,6 +93,10 @@ class Settings(BaseSettings):
     CHROM_SPLIT_UNIT_BP: int = int(os.getenv("CHROM_SPLIT_UNIT_BP", "1000000000"))
     CANDIDATE_REGION_MAX_TOTAL_BP: int = int(os.getenv("CANDIDATE_REGION_MAX_TOTAL_BP", "50000000"))
     KASP_FLANK_BP: int = int(os.getenv("KASP_FLANK_BP", "150"))
+    NON_PRIMARY_CONTIG_REGEX: str = os.getenv(
+        "NON_PRIMARY_CONTIG_REGEX",
+        DEFAULT_NON_PRIMARY_CONTIG_REGEX,
+    )
 
     @model_validator(mode="after")
     def validate_workflow_settings(self) -> "Settings":
@@ -104,6 +112,11 @@ class Settings(BaseSettings):
             )
         if self.KASP_FLANK_BP < 60:
             raise ValueError("KASP_FLANK_BP minimal 60 bp per sisi (syarat EasyKASP).")
+        if self.NON_PRIMARY_CONTIG_REGEX:
+            try:
+                re.compile(self.NON_PRIMARY_CONTIG_REGEX)
+            except re.error as exc:
+                raise ValueError(f"NON_PRIMARY_CONTIG_REGEX tidak valid: {exc}") from exc
         return self
 
     if _HAS_PYDANTIC_SETTINGS:
