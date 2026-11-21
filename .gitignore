@@ -98,3 +98,7 @@ infra/acme/
 # 
 GWAS WORKFLOW (SEMUA).md
 Hasil_Output
+ncbi_dataset
+.clineignore
+GWAS_Workflow_211126/
+KASP_Primer/
