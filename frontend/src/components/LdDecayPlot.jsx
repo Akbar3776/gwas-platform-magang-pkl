@@ -5,6 +5,10 @@ const MARGIN = { top: 32, right: 24, bottom: 44, left: 48 };
 
 const EMPTY_BINS = [];
 
+function isValidBin(bin) {
+  return typeof bin?.mean_r2 === "number" && Number.isFinite(bin.mean_r2);
+}
+
 export function LdDecayPlot({
   data,
   width = 460,
@@ -101,27 +105,43 @@ export function LdDecayPlot({
       ctx.fillText(`Jarak Clumping: ${chosenKb} kb`, chX - 6, MARGIN.top + 16);
     }
 
-    // Draw Smooth Area & Line for LD Decay
-    ctx.beginPath();
-    ctx.moveTo(MARGIN.left, MARGIN.top + plotHeight);
-    bins.forEach((b, idx) => {
-      const px = xScale(b.bin_kb);
-      const py = yScale(b.mean_r2);
-      if (idx === 0) ctx.lineTo(px, py);
-      else ctx.lineTo(px, py);
+    // Draw Smooth Area & Line for LD Decay (skip null bins without interpolating gaps)
+    const segments = [];
+    let currentSegment = [];
+    bins.forEach((b) => {
+      if (isValidBin(b)) {
+        currentSegment.push(b);
+      } else if (currentSegment.length > 0) {
+        segments.push(currentSegment);
+        currentSegment = [];
+      }
     });
-    ctx.lineTo(xScale(bins[bins.length - 1].bin_kb), MARGIN.top + plotHeight);
-    ctx.closePath();
-    ctx.fillStyle = "rgba(37, 99, 235, 0.08)";
-    ctx.fill();
+    if (currentSegment.length > 0) {
+      segments.push(currentSegment);
+    }
+
+    segments.forEach((seg) => {
+      if (seg.length < 2) return;
+      ctx.beginPath();
+      ctx.moveTo(xScale(seg[0].bin_kb), MARGIN.top + plotHeight);
+      seg.forEach((b) => {
+        ctx.lineTo(xScale(b.bin_kb), yScale(b.mean_r2));
+      });
+      ctx.lineTo(xScale(seg[seg.length - 1].bin_kb), MARGIN.top + plotHeight);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(37, 99, 235, 0.08)";
+      ctx.fill();
+    });
 
     // Line
     ctx.beginPath();
-    bins.forEach((b, idx) => {
-      const px = xScale(b.bin_kb);
-      const py = yScale(b.mean_r2);
-      if (idx === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
+    segments.forEach((seg) => {
+      seg.forEach((b, sIdx) => {
+        const px = xScale(b.bin_kb);
+        const py = yScale(b.mean_r2);
+        if (sIdx === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
     });
     ctx.strokeStyle = "#2563eb";
     ctx.lineWidth = 2.5;
@@ -129,6 +149,7 @@ export function LdDecayPlot({
 
     // Dots
     bins.forEach((b, idx) => {
+      if (!isValidBin(b)) return;
       const px = xScale(b.bin_kb);
       const py = yScale(b.mean_r2);
       const isHovered = hoveredBin === idx;
@@ -172,6 +193,7 @@ export function LdDecayPlot({
     let closestIdx = null;
     let closestDist = 12;
     for (let i = 0; i < bins.length; i++) {
+      if (!isValidBin(bins[i])) continue;
       const px = xScale(bins[i].bin_kb);
       const py = yScale(bins[i].mean_r2);
       const d = Math.hypot(mx - px, my - py);
@@ -194,7 +216,7 @@ export function LdDecayPlot({
           onMouseLeave={() => setHoveredBin(null)}
           style={{ borderRadius: 8, border: "1px solid #e2e8f0" }}
         />
-        {hoveredBin !== null && bins[hoveredBin] && (
+        {hoveredBin !== null && isValidBin(bins[hoveredBin]) && (
           <div
             style={{
               position: "absolute",

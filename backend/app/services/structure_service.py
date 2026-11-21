@@ -401,14 +401,17 @@ def compute_ld_decay_curve(
     # Rangkum kurva bin
     bins_data: list[dict[str, Any]] = []
     cutoff_kb: int | None = None
-    min_r2_observed: float = 1.0
+    min_r2_observed: float | None = None
+    min_r2_bin_kb: int | None = None
 
     for b in range(n_bins):
         bin_center = (b + 1) * bin_kb
         n_pairs = int(counts[b])
         if n_pairs > 0:
             mean_r2 = float(sum_r2[b] / n_pairs)
-            min_r2_observed = min(min_r2_observed, mean_r2)
+            if min_r2_observed is None or mean_r2 < min_r2_observed:
+                min_r2_observed = mean_r2
+                min_r2_bin_kb = bin_center
             bins_data.append({
                 "bin_kb": bin_center,
                 "mean_r2": round(mean_r2, 4),
@@ -417,24 +420,26 @@ def compute_ld_decay_curve(
             if cutoff_kb is None and mean_r2 < cutoff_r2:
                 cutoff_kb = bin_center
         else:
-            # Estimasi peluruhan teoritis bila sampel/varian sedikit
-            decay_est = max(0.5 * np.exp(-bin_center / 150.0), 0.05)
             bins_data.append({
                 "bin_kb": bin_center,
-                "mean_r2": round(decay_est, 4),
+                "mean_r2": None,
                 "n_pairs": 0,
             })
-            if cutoff_kb is None and decay_est < cutoff_r2:
-                cutoff_kb = bin_center
 
     if cutoff_kb is not None:
         chosen_kb = cutoff_kb
-        reason = f"LD r^2 mencapai ambang {cutoff_r2} pada jarak {cutoff_kb} kb"
+        reason = f"LD r² mencapai ambang {cutoff_r2} pada jarak {cutoff_kb} kb"
+    elif min_r2_observed is not None:
+        chosen_kb = fallback_kb
+        reason = (
+            f"r² terendah teramati {round(min_r2_observed, 4)} pada {min_r2_bin_kb} kb; "
+            f"ambang {cutoff_r2} tidak tercapai, interval ditetapkan ±{fallback_kb} kb"
+        )
     else:
         chosen_kb = fallback_kb
         reason = (
-            f"LD r^2 terendah yang diamati adalah {round(min_r2_observed, 3)}; "
-            f"tidak menembus ambang {cutoff_r2}, jendela ditetapkan ke fallback {fallback_kb} kb."
+            f"Tidak ada pasangan SNP teramati dalam jendela {window_kb} kb; "
+            f"ambang {cutoff_r2} tidak tercapai, interval ditetapkan ±{fallback_kb} kb"
         )
 
     return {
@@ -443,7 +448,7 @@ def compute_ld_decay_curve(
         "cutoff_kb": cutoff_kb,
         "chosen_kb": chosen_kb,
         "reason": reason,
-        "min_r2_observed": round(min_r2_observed, 4),
+        "min_r2_observed": round(min_r2_observed, 4) if min_r2_observed is not None else None,
     }
 
 

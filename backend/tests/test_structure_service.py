@@ -431,3 +431,60 @@ def test_king_robust_formula_duplicate_sibling_and_unrelated():
     res_unrel = compute_king_robust_table(np.vstack([sib1, unrelated]), ["Sib1", "Unrel"])
     assert res_unrel["pairs_summary"]["unrelated"] == 1
     assert res_unrel["top_pairs"] == []
+
+
+def test_ld_decay_empty_bins_are_null_and_do_not_trigger_cutoff():
+    g_col = np.array([0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2], dtype=np.int8)
+    G = np.column_stack([g_col, g_col])
+    variants = [
+        {"chrom": "1", "rsid": "s1", "pos": 1000, "a1": "A", "a2": "G"},
+        {"chrom": "1", "rsid": "s2", "pos": 6000, "a1": "A", "a2": "G"},
+    ]
+    ld = compute_ld_decay_curve(
+        variants, G, window_kb=100, bin_kb=10, cutoff_r2=0.2, fallback_kb=100
+    )
+    assert ld["bins"][0]["n_pairs"] == 1
+    assert ld["bins"][0]["mean_r2"] >= 0.99
+    for b in ld["bins"][1:]:
+        assert b["n_pairs"] == 0
+        assert b["mean_r2"] is None
+    assert ld["cutoff_kb"] is None
+    assert ld["chosen_kb"] == 100
+    assert "tidak tercapai" in ld["reason"]
+    assert "100 kb" in ld["reason"]
+
+
+def test_ld_decay_observed_cutoff_ignores_empty_bins():
+    g0 = np.array([0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2], dtype=np.int8)
+    g2 = np.array([0, 1, 2, 1, 0, 1, 2, 1, 0, 1, 2, 1], dtype=np.int8)
+    G = np.column_stack([g0, g0, g2])
+    variants = [
+        {"chrom": "1", "rsid": "s1", "pos": 1000, "a1": "A", "a2": "G"},
+        {"chrom": "1", "rsid": "s2", "pos": 6000, "a1": "A", "a2": "G"},
+        {"chrom": "1", "rsid": "s3", "pos": 32000, "a1": "C", "a2": "T"},
+    ]
+    ld = compute_ld_decay_curve(
+        variants, G, window_kb=100, bin_kb=10, cutoff_r2=0.2, fallback_kb=100
+    )
+    bin_20 = ld["bins"][1]
+    assert bin_20["bin_kb"] == 20
+    assert bin_20["n_pairs"] == 0
+    assert bin_20["mean_r2"] is None
+    assert ld["cutoff_kb"] == 30
+    assert ld["chosen_kb"] == 30
+
+
+def test_ld_decay_all_empty_bins_reports_honestly():
+    g0 = np.array([0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2], dtype=np.int8)
+    G = np.column_stack([g0, g0])
+    variants = [
+        {"chrom": "1", "rsid": "s1", "pos": 1000, "a1": "A", "a2": "G"},
+        {"chrom": "2", "rsid": "s2", "pos": 1000, "a1": "A", "a2": "G"},
+    ]
+    ld = compute_ld_decay_curve(
+        variants, G, window_kb=50, bin_kb=10, cutoff_r2=0.2, fallback_kb=100
+    )
+    assert all(b["n_pairs"] == 0 and b["mean_r2"] is None for b in ld["bins"])
+    assert ld["cutoff_kb"] is None
+    assert ld["chosen_kb"] == 100
+    assert ld["min_r2_observed"] is None

@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { KinshipHeatmap } from "./KinshipHeatmap";
 import { LdDecayPlot } from "./LdDecayPlot";
@@ -113,5 +113,48 @@ describe("Canvas charts accessibility batch A (A37a)", () => {
     expect(img).toHaveAttribute("aria-label", expect.stringMatching(/2 bin/i));
     expect(img).toHaveAttribute("aria-label", expect.stringMatching(/0\.2/));
     expect(img).toHaveAttribute("aria-label", expect.stringMatching(/120 kb/i));
+  });
+
+  test("LdDecayPlot skips null mean_r2 bins safely without crashing or drawing empty dots", () => {
+    const ctxSpy = mockCanvas2dContext();
+    const getContextSpy = jest
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockImplementation(() => ctxSpy);
+    try {
+      const { rerender } = render(
+        <LdDecayPlot
+          data={{
+            bins: [
+              { bin_kb: 10, mean_r2: 0.72, n_pairs: 12 },
+              { bin_kb: 20, mean_r2: null, n_pairs: 0 },
+              { bin_kb: 30, mean_r2: 0.15, n_pairs: 5 },
+            ],
+            cutoff_r2: 0.2,
+            chosen_kb: 30,
+          }}
+        />
+      );
+      const img = screen.getByRole("img");
+      expect(ctxSpy.arc).toHaveBeenCalledTimes(2);
+      fireEvent.mouseMove(img, { clientX: 50, clientY: 50 });
+
+      ctxSpy.arc.mockClear();
+      rerender(
+        <LdDecayPlot
+          data={{
+            bins: [
+              { bin_kb: 10, mean_r2: null, n_pairs: 0 },
+              { bin_kb: 20, mean_r2: null, n_pairs: 0 },
+            ],
+            cutoff_r2: 0.2,
+            chosen_kb: 100,
+          }}
+        />
+      );
+      expect(ctxSpy.arc).not.toHaveBeenCalled();
+      fireEvent.mouseMove(screen.getByRole("img"), { clientX: 50, clientY: 50 });
+    } finally {
+      getContextSpy.mockRestore();
+    }
   });
 });
