@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 import gzip
 import logging
 from pathlib import Path
@@ -35,10 +36,73 @@ def _open_vcf_text(path: Path) -> TextIO:
     return path.open("r", encoding="utf-8", errors="replace")
 
 
-def _build_summary_payload(rows: list[dict[str, Any]], threshold: int) -> dict[str, Any]:
+@lru_cache(maxsize=32)
+def _compile_contig_pattern(raw_pattern: str) -> re.Pattern[str]:
+    """Compile and cache a regex for non-primary contig classification."""
+    return re.compile(raw_pattern)
+
+
+def _resolve_contig_pattern(
+    pattern: str | re.Pattern[str] | None,
+) -> tuple[str, re.Pattern[str] | None]:
+    """Resolve effective non-primary contig regex string and compiled Pattern."""
+    if pattern is None:
+        raw = str(settings.NON_PRIMARY_CONTIG_REGEX or "").strip()
+    elif isinstance(pattern, re.Pattern):
+        return (pattern.pattern, pattern)
+    else:
+        raw = str(pattern).strip()
+    if not raw:
+        return ("", None)
+    return (raw, _compile_contig_pattern(raw))
+
+
+def is_non_primary_contig(
+    name: str,
+    pattern: str | re.Pattern[str] | None = None,
+) -> bool:
+    """Return True when contig name matches the configured non-primary blacklist regex."""
+    chrom = str(name or "").strip()
+    if not chrom:
+        return False
+    _, compiled = _resolve_contig_pattern(pattern)
+    if compiled is None:
+        return False
+    return bool(compiled.search(chrom))
+
+
+def _build_summary_payload(
+    rows: list[dict[str, Any]],
+    threshold: int,
+    *,
+    drop_pattern: str | re.Pattern[str] | None = None,
+) -> dict[str, Any]:
     """Assemble standardized summary totals and chromosome list sorted by name."""
-    sorted_rows = sorted(rows, key=lambda row: str(row["chrom"]))
-    overflow_chromosomes = [row["chrom"] for row in sorted_rows if row["needs_split"]]
+    pat_str, compiled = _resolve_contig_pattern(drop_pattern)
+    sorted_rows: list[dict[str, Any]] = []
+    for row in sorted(rows, key=lambda item: str(item["chrom"])):
+        enriched = dict(row)
+        chrom_name = str(enriched["chrom"]).strip()
+        enriched["excluded"] = (
+            bool(compiled.search(chrom_name)) if compiled is not None else False
+        )
+        sorted_rows.append(enriched)
+
+    overflow_chromosomes = [
+        row["chrom"]
+        for row in sorted_rows
+        if row["needs_split"] and not row["excluded"]
+    ]
+    excluded_rows = [row for row in sorted_rows if row["excluded"]]
+    excluded_contigs = {
+        "pattern": pat_str,
+        "contigs": len(excluded_rows),
+        "variants": sum(int(row["total_snp"]) for row in excluded_rows),
+        "single_marker_contigs": sum(
+            1 for row in excluded_rows if int(row["total_snp"]) == 1
+        ),
+        "examples": [str(row["chrom"]) for row in excluded_rows[:20]],
+    }
     return {
         "threshold_bp": threshold,
         "total_variants": sum(int(row["total_snp"]) for row in sorted_rows),
@@ -47,6 +111,7 @@ def _build_summary_payload(rows: list[dict[str, Any]], threshold: int) -> dict[s
         "overflow_chromosomes": overflow_chromosomes,
         "needs_split": bool(overflow_chromosomes),
         "chromosomes": sorted_rows,
+        "excluded_contigs": excluded_contigs,
     }
 
 
@@ -54,6 +119,7 @@ def summarize_chromosomes(
     vcf_path: str | Path,
     *,
     threshold_bp: int | None = None,
+    drop_pattern: str | re.Pattern[str] | None = None,
 ) -> dict[str, Any]:
     """Scan VCF CHROM/POS columns to detect >32-bit overflow and invalid positions."""
     path = Path(vcf_path)
@@ -113,7 +179,7 @@ def summarize_chromosomes(
         }
         for chrom, stats in sorted(per_chrom.items(), key=lambda item: item[0])
     ]
-    return _build_summary_payload(rows, threshold)
+    return _build_summary_payload(rows, threshold, drop_pattern=drop_pattern)
 
 
 def write_chromosome_summary(summary: dict[str, Any], out_path: str | Path) -> Path:
@@ -146,6 +212,7 @@ def load_chromosome_summary(
     path: str | Path,
     *,
     threshold_bp: int | None = None,
+    drop_pattern: str | re.Pattern[str] | None = None,
 ) -> dict[str, Any] | None:
     """Load chromosome_characteristics_summary.txt into a summary dict, or None if absent."""
     target = Path(path)
@@ -177,7 +244,7 @@ def load_chromosome_summary(
                 }
             )
 
-    return _build_summary_payload(rows, threshold)
+    return _build_summary_payload(rows, threshold, drop_pattern=drop_pattern)
 
 
 def _validate_contig_name(chrom: str) -> str:
@@ -278,14 +345,20 @@ def _build_split_plan(
     summary: dict[str, Any],
     contig_lengths: dict[str, int],
     unit_bp: int,
+    *,
+    drop_pattern: str | re.Pattern[str] | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any], dict[str, Any]]:
     """Build per-chromosome pseudo-contig layout for chromosomes exceeding threshold."""
+    _, compiled_drop = _resolve_contig_pattern(drop_pattern)
     split_specs: dict[str, list[dict[str, Any]]] = {}
     split_chroms_meta: dict[str, Any] = {}
     parts_map: dict[str, Any] = {}
 
     for row in summary.get("chromosomes", []):
-        orig_chr = _validate_contig_name(str(row["chrom"]))
+        raw_chr = str(row["chrom"]).strip()
+        if compiled_drop is not None and compiled_drop.search(raw_chr):
+            continue
+        orig_chr = _validate_contig_name(raw_chr)
         if not row.get("needs_split"):
             continue
         effective_len = max(int(contig_lengths.get(orig_chr, 0)), int(row["max_pos"]), 1)
@@ -326,8 +399,9 @@ def split_overflow_chromosomes(
     summary: dict[str, Any] | None = None,
     threshold_bp: int | None = None,
     unit_bp: int | None = None,
+    drop_pattern: str | re.Pattern[str] | None = None,
 ) -> dict[str, Any]:
-    """Split overflowing chromosomes into <chrom>_p<k> pseudo-contigs and filter POS <= 0."""
+    """Split overflowing chromosomes into <chrom>_p<k> pseudo-contigs and filter POS <= 0 / non-primary contigs."""
     in_path = Path(input_vcf)
     if not in_path.is_file():
         raise FileNotFoundError(f"Berkas VCF input tidak ditemukan: {in_path}")
@@ -339,17 +413,39 @@ def split_overflow_chromosomes(
     if threshold < unit:
         raise ValueError(f"threshold_bp ({threshold}) harus >= unit_bp ({unit})")
 
-    chr_summary = summary if summary is not None else summarize_chromosomes(in_path, threshold_bp=threshold)
+    pat_str, compiled_drop = _resolve_contig_pattern(drop_pattern)
+    chr_summary = (
+        summary
+        if summary is not None
+        else summarize_chromosomes(in_path, threshold_bp=threshold, drop_pattern=compiled_drop)
+    )
     contig_lengths = _scan_vcf_contig_lengths(in_path)
-    split_specs, split_chroms_meta, parts_map = _build_split_plan(chr_summary, contig_lengths, unit)
+    split_specs, split_chroms_meta, parts_map = _build_split_plan(
+        chr_summary,
+        contig_lengths,
+        unit,
+        drop_pattern=compiled_drop,
+    )
 
     out_path = Path(output_vcf)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
 
     emitted_split_contigs: set[str] = set()
+    excluded_cache: dict[str, bool] = {}
+    dropped_contigs: set[str] = set()
+    non_primary_removed_variants = 0
     invalid_pos_removed = 0
     kept_variants = 0
+
+    def _is_excluded(name: str) -> bool:
+        if compiled_drop is None or not name:
+            return False
+        cached = excluded_cache.get(name)
+        if cached is None:
+            cached = bool(compiled_drop.search(name))
+            excluded_cache[name] = cached
+        return cached
 
     with _open_vcf_text(in_path) as src, tmp_path.open("w", encoding="utf-8", newline="\n") as dst:
         for raw_line in src:
@@ -358,6 +454,8 @@ def split_overflow_chromosomes(
                 inner = line[len("##contig=<"):-1]
                 id_match = _CONTIG_ID_RE.search(inner)
                 contig_id = id_match.group(1).strip() if id_match else ""
+                if _is_excluded(contig_id):
+                    continue
                 if contig_id in split_specs:
                     if contig_id not in emitted_split_contigs:
                         for entry in split_specs[contig_id]:
@@ -384,7 +482,12 @@ def split_overflow_chromosomes(
             parts = line.split("\t", 2)
             if len(parts) < 3:
                 continue
-            chrom = _validate_contig_name(parts[0].strip())
+            raw_chrom = parts[0].strip()
+            if _is_excluded(raw_chrom):
+                non_primary_removed_variants += 1
+                dropped_contigs.add(raw_chrom)
+                continue
+            chrom = _validate_contig_name(raw_chrom)
             pos = int(parts[1])
             if pos <= 0:
                 invalid_pos_removed += 1
@@ -399,6 +502,12 @@ def split_overflow_chromosomes(
             else:
                 dst.write(line + "\n")
 
+    if kept_variants == 0 and non_primary_removed_variants > 0:
+        tmp_path.unlink(missing_ok=True)
+        raise ValueError(
+            "Semua varian berada di kontig non-utama; periksa NON_PRIMARY_CONTIG_REGEX"
+        )
+
     tmp_path.replace(out_path)
 
     return {
@@ -409,6 +518,9 @@ def split_overflow_chromosomes(
         "total_variants": int(chr_summary["total_variants"]),
         "kept_variants": kept_variants,
         "invalid_pos_removed": invalid_pos_removed,
+        "non_primary_removed_variants": non_primary_removed_variants,
+        "non_primary_removed_contigs": len(dropped_contigs),
+        "contig_filter_pattern": pat_str,
         "overflow_removed": 0,
         "summary": chr_summary,
         "split_map": {
