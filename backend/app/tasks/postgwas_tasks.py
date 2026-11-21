@@ -364,6 +364,9 @@ def run_postgwas_analysis(
             output_csv=peak_csv,
             output_json=peak_json,
             window_kb=int(clump_kb),
+            single_model_label=str(
+                ((job.parameters or {}).get("gwas") or {}).get("model_used") or "Single-Locus"
+            ).upper(),
         )
 
         # Sinkronkan juga ke direktori multilocus bila folder tersedia dan peak_data valid

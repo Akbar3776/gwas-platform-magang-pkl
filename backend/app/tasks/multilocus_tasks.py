@@ -62,28 +62,21 @@ def compute_snp_pve_pct(
     maf: float,
     nobs: int,
     p_val: float,
-    y_var: float | None = None,
 ) -> float:
     """
     Hitung Phenotype_Variance_Explained(%) (PVE%) untuk satu SNP.
-    Menggunakan 2 * p * (1 - p) * beta^2 / Var(Y) bila Var(Y) tersedia dan valid,
-    atau R^2 parsial t^2 / (t^2 + n - 2) dari statistik t = beta / se (atau chi2 isf dari p_val).
+    Gunakan R^2 parsial t^2 / (t^2 + n - 2) dari statistik t = beta / se
+    (atau chi2 isf dari p_val).
     """
     from scipy.stats import chi2
 
-    eff_maf = float(min(max(maf, 0.0), 0.5))
     n_eff = max(int(nobs), 3)
-    pve = 0.0
-    if y_var is not None and y_var > 1e-12 and eff_maf > 0.0 and abs(beta) > 0.0:
-        pve = (2.0 * eff_maf * (1.0 - eff_maf) * (beta ** 2) / y_var) * 100.0
-
-    if pve <= 0.0 or pve >= 100.0:
-        if se > 1e-12 and abs(beta) > 0.0:
-            t2 = (beta / se) ** 2
-        else:
-            clamped_p = min(max(float(p_val), 1e-300), 0.999999)
-            t2 = float(chi2.isf(clamped_p, df=1))
-        pve = (t2 / (t2 + max(n_eff - 2, 1))) * 100.0
+    if se > 1e-12 and abs(beta) > 0.0:
+        t2 = (beta / se) ** 2
+    else:
+        clamped_p = min(max(float(p_val), 1e-300), 0.999999)
+        t2 = float(chi2.isf(clamped_p, df=1))
+    pve = (t2 / (t2 + max(n_eff - 2, 1))) * 100.0
 
     return round(float(min(max(pve, 0.0), 99.99)), 6)
 
@@ -311,7 +304,6 @@ def _run_python_multilocus_engine(
     y_val = np.where(valid_pheno, pheno_vec, 0.0)
     y_mean = np.mean(y_val[valid_pheno])
     y_centered = np.where(valid_pheno, y_val - y_mean, 0.0)
-    y_var = float(np.var(y_val[valid_pheno])) if int(np.sum(valid_pheno)) >= 2 else 0.0
     trait_name = str(ctx.get("trait") or "Trait")
 
     # Hitung AF, MAF, dan nobs aktual per varian secara tervektorisasi
@@ -352,23 +344,71 @@ def _run_python_multilocus_engine(
     c_mat = np.where(valid_pheno[:, None], c_mat, 0.0)
     q_cov, _ = np.linalg.qr(c_mat)
 
+    # EMMAX transform and REML grid search for the MLMM approximation.
+    valid_indices = np.flatnonzero(valid_pheno)
+    kinship_valid = kinship_mat[np.ix_(valid_indices, valid_indices)]
+    eigenvalues, eigenvectors = np.linalg.eigh((kinship_valid + kinship_valid.T) / 2.0)
+    eigenvalues = np.maximum(eigenvalues, 0.0)
+    y_valid = y_centered[valid_indices]
+    cov_valid = c_mat[valid_indices]
+    best_h2 = 0.0
+    best_ll = -np.inf
+    best_transform = eigenvectors.T
+    n_valid_samples = len(valid_indices)
+    n_covariates = cov_valid.shape[1]
+    for h2 in np.arange(0.0, 1.0, 0.01):
+        d = h2 * eigenvalues + (1.0 - h2)
+        transform = eigenvectors.T / np.sqrt(np.maximum(d, 1e-12))[:, None]
+        y_rot = transform @ y_valid
+        x_rot = transform @ cov_valid
+        q_rot, _ = np.linalg.qr(x_rot)
+        residual = y_rot - q_rot @ (q_rot.T @ y_rot)
+        dof = max(n_valid_samples - n_covariates, 1)
+        rss = max(float(np.sum(residual ** 2)), 1e-12)
+        sign, logdet_x = np.linalg.slogdet(x_rot.T @ x_rot)
+        if sign <= 0:
+            continue
+        ll = -0.5 * (
+            dof * math.log(rss / dof)
+            + float(np.sum(np.log(np.maximum(d, 1e-12))))
+            + float(logdet_x)
+        )
+        if ll > best_ll:
+            best_ll = ll
+            best_h2 = float(h2)
+            best_transform = transform
+    append_log(log_file, f"  [MLMM] h2 null = {best_h2:.2f}")
+
     # Fungsi bantu regresi vektorisasi per chunk
-    def _scan_genome(cofactors_idx: list[int] | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _scan_genome(
+        cofactors_idx: list[int] | None = None,
+        transform: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Menjalankan pemindaian seluruh varian dengan matriks kofaktor tambahan secara tervektorisasi per chunk."""
+        if transform is not None:
+            valid_indices = np.flatnonzero(valid_pheno)
+            scan_g = G_mat[valid_indices]
+            scan_y = y_centered[valid_indices]
+            scan_c = c_mat[valid_indices]
+        else:
+            scan_g = G_mat
+            scan_y = y_centered
+            scan_c = c_mat
+
         if cofactors_idx:
-            x_cof = [c_mat]
+            x_cof = [scan_c]
             for c_i in cofactors_idx:
-                col = np.where(G_mat[:, c_i] >= 0, G_mat[:, c_i].astype(np.float64), 0.0)
-                col = np.where(valid_pheno, col - np.mean(col[valid_pheno]), 0.0)
+                col = np.where(scan_g[:, c_i] >= 0, scan_g[:, c_i].astype(np.float64), 0.0)
+                col = col - np.mean(col)
                 x_cof.append(col[:, None])
             full_c = np.column_stack(x_cof)
-            q_base, _ = np.linalg.qr(full_c)
+            q_base, _ = np.linalg.qr(transform @ full_c if transform is not None else full_c)
         else:
-            q_base = q_cov
+            q_base, _ = np.linalg.qr(transform @ scan_c if transform is not None else scan_c)
 
         n_cov_cols = q_base.shape[1]
-        y_p = y_centered - q_base @ (q_base.T @ y_centered)
-        y_p = np.where(valid_pheno, y_p, 0.0)
+        transformed_y = transform @ scan_y if transform is not None else scan_y
+        y_p = transformed_y - q_base @ (q_base.T @ transformed_y)
 
         p_vals = np.ones(n_variants, dtype=np.float64)
         betas = np.zeros(n_variants, dtype=np.float64)
@@ -379,9 +419,9 @@ def _run_python_multilocus_engine(
             _check_cancel()
             end = min(start + chunk_size, n_variants)
             k = end - start
-            g_chunk = G_mat[:, start:end]
+            g_chunk = scan_g[:, start:end]
 
-            valid_mask = (g_chunk >= 0) & valid_pheno[:, None]
+            valid_mask = g_chunk >= 0
             n_valid = np.sum(valid_mask, axis=0)
 
             x_float = np.where(valid_mask, g_chunk.astype(np.float64), 0.0)
@@ -390,8 +430,8 @@ def _run_python_multilocus_engine(
 
             # Imputasi mean untuk missing sebelum proyeksi ortogonal
             x_imp = np.where(valid_mask, x_float, x_mean[None, :])
-            x_imp = np.where(valid_pheno[:, None], x_imp, 0.0)
-            x_proj = x_imp - q_base @ (q_base.T @ x_imp)
+            transformed_x = transform @ x_imp if transform is not None else x_imp
+            x_proj = transformed_x - q_base @ (q_base.T @ transformed_x)
             x_proj = np.where(valid_mask, x_proj, 0.0)
 
             ssx = np.sum(x_proj ** 2, axis=0)
@@ -420,6 +460,25 @@ def _run_python_multilocus_engine(
 
         return p_vals, betas, ses
 
+    def _refit_qtn_statistics(
+        p_values: np.ndarray,
+        betas: np.ndarray,
+        ses: np.ndarray,
+        qtns: list[int],
+        transform: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Evaluate each selected QTN while excluding itself from the cofactors."""
+        final_p = p_values.copy()
+        final_b = betas.copy()
+        final_se = ses.copy()
+        for qtn in qtns:
+            other_qtns = [idx for idx in qtns if idx != qtn]
+            qtn_p, qtn_b, qtn_se = _scan_genome(other_qtns, transform=transform)
+            final_p[qtn] = qtn_p[qtn]
+            final_b[qtn] = qtn_b[qtn]
+            final_se[qtn] = qtn_se[qtn]
+        return final_p, final_b, final_se
+
     # Initial single-locus scan
     append_log(log_file, "[7.2] Menghitung baseline scan awal seluruh penanda...")
     p_base, beta_base, se_base = _scan_genome(None)
@@ -438,7 +497,7 @@ def _run_python_multilocus_engine(
             pseudo_qtns: list[int] = []
             cur_p, cur_b, cur_se = p_base, beta_base, se_base
             for it in range(3):
-                top_cand = int(np.argmin(cur_p))
+                top_cand = int(np.lexsort((-np.arange(n_variants), cur_p))[0])
                 if cur_p[top_cand] < 0.05 / max(n_variants, 1) or len(pseudo_qtns) == 0:
                     if top_cand not in pseudo_qtns:
                         pseudo_qtns.append(top_cand)
@@ -450,13 +509,19 @@ def _run_python_multilocus_engine(
                         cur_p, cur_b, cur_se = _scan_genome(pseudo_qtns)
                 else:
                     break
-            final_p, final_b, final_se = cur_p, cur_b, cur_se
+            final_p, final_b, final_se = _refit_qtn_statistics(
+                cur_p, cur_b, cur_se, pseudo_qtns
+            )
             out_tsv = workspace / "farmcpu_results.tsv"
 
         elif m_name == "BLINK":
             append_log(log_file, "\n--- Eksekusi Model Multi-Locus: BLINK ---")
             append_log(log_file, "Memfilter kandidat via LD Pruning & Bayesian Information Criterion (BIC)...")
-            cand_indices = [idx for idx, p in enumerate(p_base) if p < 0.05]
+            cand_indices = [
+                int(idx)
+                for idx in np.lexsort((-np.arange(n_variants), p_base))
+                if p_base[idx] < 0.05
+            ][:15]
             if not cand_indices:
                 cand_indices = list(np.argsort(p_base)[: min(5, n_variants)])
 
@@ -469,8 +534,16 @@ def _run_python_multilocus_engine(
             k0 = q_cov.shape[1]
             best_bic = n_valid_samples * np.log(max(rss0 / max(n_valid_samples, 1), 1e-9)) + k0 * np.log(max(n_valid_samples, 1))
 
-            for cand in cand_indices[:15]:
+            for cand in cand_indices:
                 _check_cancel()
+                if any(
+                    np.corrcoef(
+                        np.where(G_mat[valid_pheno, qtn] >= 0, G_mat[valid_pheno, qtn], np.mean(G_mat[valid_pheno, qtn][G_mat[valid_pheno, qtn] >= 0])),
+                        np.where(G_mat[valid_pheno, cand] >= 0, G_mat[valid_pheno, cand], np.mean(G_mat[valid_pheno, cand][G_mat[valid_pheno, cand] >= 0])),
+                    )[0, 1] ** 2 >= 0.7
+                    for qtn in bic_qtns
+                ):
+                    continue
                 trial = bic_qtns + [cand]
                 # Hitung residual sum of squares fenotipe sesungguhnya terhadap kovariat + trial QTNs
                 x_trial_cols = [c_mat]
@@ -498,7 +571,9 @@ def _run_python_multilocus_engine(
                 bic_qtns = [cand_indices[0]]
 
             # Jalankan pemindaian satu kali di akhir dengan pseudo-QTNs terpilih
-            final_p, final_b, final_se = _scan_genome(bic_qtns)
+            final_p, final_b, final_se = _refit_qtn_statistics(
+                *_scan_genome(bic_qtns), bic_qtns
+            )
             out_tsv = workspace / "blink_results.tsv"
 
         elif m_name == "MLMM":
@@ -507,7 +582,7 @@ def _run_python_multilocus_engine(
             mlmm_cofactors: list[int] = []
             cur_p, cur_b, cur_se = p_base, beta_base, se_base
             for step in range(5):
-                top_m = int(np.argmin(cur_p))
+                top_m = int(np.lexsort((-np.arange(n_variants), cur_p))[0])
                 if cur_p[top_m] < (0.05 / max(n_variants, 1)) or len(mlmm_cofactors) == 0:
                     if top_m not in mlmm_cofactors:
                         mlmm_cofactors.append(top_m)
@@ -516,10 +591,12 @@ def _run_python_multilocus_engine(
                             f"  [Forward Step {step + 1}] Menambahkan kofaktor: {variants_meta[top_m]['rs']} "
                             f"(Chr {variants_meta[top_m]['chr']}:{variants_meta[top_m]['ps']}, p={cur_p[top_m]:.2e})",
                         )
-                        cur_p, cur_b, cur_se = _scan_genome(mlmm_cofactors)
+                        cur_p, cur_b, cur_se = _scan_genome(mlmm_cofactors, transform=best_transform)
                 else:
                     break
-            final_p, final_b, final_se = cur_p, cur_b, cur_se
+            final_p, final_b, final_se = _refit_qtn_statistics(
+                cur_p, cur_b, cur_se, mlmm_cofactors, transform=best_transform
+            )
             out_tsv = workspace / "mlmm_results.tsv"
             out_tsv = workspace / "mlmm_results.tsv"
 
@@ -566,7 +643,6 @@ def _run_python_multilocus_engine(
                 maf=ti_maf,
                 nobs=ti_nobs,
                 p_val=ti_p,
-                y_var=y_var,
             )
             snp_entry = {
                 "trait": trait_name,
@@ -592,6 +668,9 @@ def _run_python_multilocus_engine(
 
         all_methods_results[m_name] = {
             "status": "completed",
+            "pseudo_qtns": [variants_meta[idx]["rs"] for idx in (
+                pseudo_qtns if m_name == "FARMCPU" else bic_qtns if m_name == "BLINK" else mlmm_cofactors
+            )],
             "tsv_file": str(out_tsv),
             "pve_csv_file": str(pve_csv),
             "total_snps": n_variants,
@@ -957,9 +1036,15 @@ def run_multilocus_gwas(
             )
             py_results = engine_output.get("methods_results", {})
             for m_key, m_entry in py_results.items():
-                m_entry["engine"] = "python"
+                m_entry["engine"] = "python-approx"
                 methods_results[m_key] = m_entry
             multi_lead_snps.extend(engine_output.get("lead_snps_multi", []))
+            append_log(
+                log_file,
+                "[WARN] Hasil multi-locus berasal dari aproksimasi Python (bukan GAPIT): "
+                "FarmCPU/BLINK = GLM bertahap + PC; MLMM = EMMAX + kofaktor bertahap. "
+                "Validasi dengan GAPIT sebelum publikasi.",
+            )
 
         # Pastikan lead SNPs & PVE CSV terisi untuk tiap model (khususnya keluaran GAPIT R)
         trait_label = str(
@@ -1005,6 +1090,10 @@ def run_multilocus_gwas(
             "n_lead_snps": len(multi_lead_snps),
             "lead_snps": multi_lead_snps,
         }
+        if any(engine == "python-approx" for engine in engines_used.values()):
+            summary_payload["approximation_note"] = (
+                "Hasil Python adalah aproksimasi; validasi dengan GAPIT sebelum publikasi."
+            )
         write_json(workspace / "multilocus_summary.json", summary_payload)
         upsert_result(
             db,
@@ -1031,6 +1120,7 @@ def run_multilocus_gwas(
             multi_lead_snps=multi_lead_snps,
             output_csv=summary_csv,
             output_json=peak_comp_file,
+            single_model_label=str(gwas_cfg.get("model_used") or ctx.get("model_used") or "Single-Locus").upper(),
         )
         upsert_result(
             db,
@@ -1097,13 +1187,14 @@ def generate_peak_comparison(
     output_csv: Path | str,
     output_json: Path | str,
     window_kb: int = 100,
+    single_model_label: str = "Single-Locus",
 ) -> dict[str, Any]:
     """
     Membandingkan puncak asosiasi Single-Locus (GEMMA/GLM) dengan Multi-Locus (FarmCPU, BLINK, MLMM).
     Mengelompokkan SNP menjadi:
     - consistent: terdeteksi oleh kedua pendekatan (konsisten & andal).
     - multi_only: terdeteksi HANYA oleh multi-locus (potensi efek minor).
-    - single_only: terdeteksi HANYA oleh single-locus (diduga false positive akibat LD).
+    - single_only: terdeteksi HANYA oleh single-locus dan perlu validasi.
     Menulis 'postgwas/Ringkasan_Puncak_GWAS.csv' dan 'peak_comparison.json'.
     """
     out_csv_path = Path(output_csv)
@@ -1117,6 +1208,7 @@ def generate_peak_comparison(
     single_only: list[dict[str, Any]] = []
     multi_only: list[dict[str, Any]] = []
 
+    significant_multi = [m for m in multi_lead_snps if m.get("is_significant", True)]
     matched_multi_indices: set[int] = set()
 
     for s in single_lead_snps:
@@ -1125,7 +1217,7 @@ def generate_peak_comparison(
 
         # Cari kecocokan di multi-locus
         matched_multi = None
-        for m_idx, m in enumerate(multi_lead_snps):
+        for m_idx, m in enumerate(significant_multi):
             m_chr = chr_label(m.get("chr", ""))
             m_pos = int(m.get("pos", 0))
             if s_chr == m_chr and abs(s_pos - m_pos) <= window_bp:
@@ -1147,7 +1239,10 @@ def generate_peak_comparison(
                 "pve_pct": matched_multi.get("pve_pct"),
                 "method": matched_multi.get("method", "Multi-Locus"),
                 "status": "Konsisten (Single + Multi-Locus)",
-                "keterangan": f"Sangat andal; terkonfirmasi oleh model LMM dan {matched_multi.get('method', 'Multi-Locus')}.",
+                "keterangan": (
+                    f"Sangat andal; terkonfirmasi oleh model {single_model_label} "
+                    f"dan {matched_multi.get('method', 'Multi-Locus')}."
+                ),
             })
         else:
             single_only.append({
@@ -1157,12 +1252,12 @@ def generate_peak_comparison(
                 "p_single": s.get("p"),
                 "p_multi": None,
                 "effect": s.get("beta"),
-                "method": "Single-Locus",
+                "method": single_model_label,
                 "status": "Hanya Single-Locus",
-                "keterangan": "Dicurigai akibat LD kuat atau false positive; perlu validasi.",
+                "keterangan": "Tidak terkonfirmasi multi-locus pada ambang Bonferroni; perlu validasi.",
             })
 
-    for m_idx, m in enumerate(multi_lead_snps):
+    for m_idx, m in enumerate(significant_multi):
         if m_idx not in matched_multi_indices:
             multi_only.append({
                 "snp": m.get("snp"),
