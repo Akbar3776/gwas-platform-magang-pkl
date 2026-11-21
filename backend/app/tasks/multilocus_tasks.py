@@ -17,6 +17,7 @@ from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, ResultType
 from app.services.assoc_normalizer import CANONICAL_COLUMNS, normalize_association_results
 from app.services.manhattan_parser import _build_chr_mapping
+from app.core.resource_limits import read_container_memory_limit_mb
 from app.tasks._common import (
     JobCancelledError,
     append_log,
@@ -37,6 +38,98 @@ logger = get_task_logger(__name__)
 SUPPORTED_MULTILOCUS_MODELS = ["FarmCPU", "BLINK", "MLMM"]
 METHOD_DISPLAY_NAMES = {"FARMCPU": "FarmCPU", "BLINK": "BLINK", "MLMM": "MLMM"}
 MULTILOCUS_TIMEOUT_SECONDS = int(os.getenv("MULTILOCUS_TIMEOUT_SECONDS", str(6 * 60 * 60)))
+GAPIT_MAX_SNPS = int(os.getenv("GAPIT_MAX_SNPS", "300000"))
+
+
+def _resolve_genotype_bfile(workspace: Path, ctx: dict[str, Any] | None = None) -> Path | None:
+    """Resolve one shared genotype source, preferring imputed data over QC data."""
+    ctx = ctx or {}
+    candidates = [
+        ctx.get("genotype_bfile_prefix"),
+        ctx.get("output_prefix"),
+        workspace.parent / "imputation" / "imputed",
+        workspace.parent / "qc" / "plink_qc",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        prefix = Path(str(candidate))
+        if prefix.suffix in {".bed", ".bim", ".fam"}:
+            prefix = prefix.with_suffix("")
+        if Path(f"{prefix}.bed").is_file():
+            return prefix
+    return None
+
+
+def _count_bfile_snps(prefix: Path) -> int:
+    bim_path = Path(f"{prefix}.bim")
+    if not bim_path.is_file():
+        return 0
+    with bim_path.open("r", encoding="utf-8", errors="replace") as bim:
+        return sum(1 for line in bim if line.strip())
+
+
+def _prune_gapit_bfile(
+    source_prefix: Path,
+    workspace: Path,
+    log_file: Path,
+    n_before: int,
+) -> tuple[Path, int, float]:
+    """LD-prune a large bfile and return the input prefix for GAPIT."""
+    plink = which_tool("plink")
+    if not plink:
+        append_log(log_file, f"[WARN] GAPIT dilewati: PLINK tidak tersedia untuk memangkas {n_before} SNP.")
+        raise RuntimeError("PLINK diperlukan untuk membatasi SNP GAPIT")
+
+    selected_prefix = source_prefix
+    selected_count = n_before
+    used_r2 = 0.8
+    for r2 in (0.8, 0.5):
+        if selected_count <= GAPIT_MAX_SNPS:
+            break
+        used_r2 = r2
+        ld_prefix = workspace / f"gapit_ld_r{str(r2).replace('.', '')}"
+        run_cli_command(
+            [
+                plink,
+                "--bfile", str(source_prefix),
+                "--indep-pairwise", "50", "5", str(r2),
+                "--out", str(ld_prefix),
+            ],
+            cwd=workspace,
+            log_file=log_file,
+            timeout=MULTILOCUS_TIMEOUT_SECONDS,
+        )
+        prune_file = ld_prefix.with_suffix(".prune.in")
+        if not prune_file.is_file():
+            raise RuntimeError(f"PLINK tidak menghasilkan daftar SNP terpilih: {prune_file}")
+        selected_count = sum(1 for line in prune_file.read_text(encoding="utf-8").splitlines() if line.strip())
+        append_log(log_file, f"[7.1] LD pruning r2={r2}: {n_before} -> {selected_count} SNP.")
+        if selected_count <= GAPIT_MAX_SNPS:
+            input_prefix = workspace / "gapit_input"
+            run_cli_command(
+                [
+                    plink,
+                    "--bfile", str(source_prefix),
+                    "--extract", str(prune_file),
+                    "--make-bed",
+                    "--out", str(input_prefix),
+                ],
+                cwd=workspace,
+                log_file=log_file,
+                timeout=MULTILOCUS_TIMEOUT_SECONDS,
+            )
+            selected_prefix = input_prefix
+            break
+
+    if selected_count > GAPIT_MAX_SNPS:
+        append_log(
+            log_file,
+            f"[WARN] GAPIT tidak dijalankan: LD pruning r2={used_r2} masih menghasilkan "
+            f"{selected_count} SNP (batas {GAPIT_MAX_SNPS}); beralih ke engine Python.",
+        )
+        raise RuntimeError("Jumlah SNP GAPIT tetap melebihi batas setelah LD pruning")
+    return selected_prefix, selected_count, used_r2
 
 
 def compute_bh_fdr(p_values: np.ndarray) -> np.ndarray:
@@ -223,19 +316,13 @@ def _run_python_multilocus_engine(
     _check_cancel()
     append_log(log_file, "[INFO] Menginisialisasi Python Native Engine untuk Multi-Locus GWAS...")
 
-    # 1. Muat Genotipe (utamakan bfile hasil imputasi / konteks daripada pra-imputasi QC)
-    ctx_bfile = ctx.get("genotype_bfile_prefix") or ctx.get("output_prefix") or ctx.get("qc_bfile_prefix")
-    if ctx_bfile and Path(f"{ctx_bfile}.bed").is_file():
-        candidate_bfile = Path(str(ctx_bfile))
-    elif (workspace.parent / "imputation" / "imputed.bed").is_file():
-        candidate_bfile = workspace.parent / "imputation" / "imputed"
-    else:
-        candidate_bfile = workspace.parent / "qc" / "plink_qc"
+    # 1. Muat Genotipe dari resolver bersama agar GAPIT dan engine Python identik.
+    candidate_bfile = _resolve_genotype_bfile(workspace, ctx)
     G_mat: np.ndarray | None = None
     variants_meta: list[dict[str, Any]] = []
     samples: list[str] = []
 
-    if Path(f"{candidate_bfile}.bed").is_file():
+    if candidate_bfile is not None:
         try:
             samples, plink_vars, G_mat = read_plink_binary(str(candidate_bfile))
             for pv in plink_vars:
@@ -251,7 +338,7 @@ def _run_python_multilocus_engine(
                 )
             append_log(
                 log_file,
-                f"[7.1] Genotipe QC termuat dari PLINK: {len(samples)} sampel, {len(variants_meta)} varian.",
+                f"[7.1] Sumber genotipe: {candidate_bfile}; {len(samples)} sampel, {len(variants_meta)} varian.",
             )
         except Exception as exc:
             logger.warning("Gagal membaca bfile PLINK di multilocus: %s", exc)
@@ -689,11 +776,28 @@ def _run_python_multilocus_engine(
     }
 
 
-def _write_gapit_inputs(workspace: Path, log_file: Path) -> tuple[Path, Path, Path, dict[int, str]]:
-    """Generate GAPIT Y, GD, and GM tab-delimited inputs from QC PLINK binary and inspection phenotype."""
+def _write_gapit_inputs(
+    workspace: Path,
+    log_file: Path,
+    ctx: dict[str, Any] | None = None,
+) -> tuple[Path, Path, Path, dict[int, str]]:
+    """Generate GAPIT inputs from the shared genotype source and inspection phenotype."""
     from app.services.structure_service import read_plink_binary
 
-    bfile_prefix = workspace.parent / "qc" / "plink_qc"
+    bfile_prefix = _resolve_genotype_bfile(workspace, ctx) or workspace.parent / "qc" / "plink_qc"
+    n_before = _count_bfile_snps(bfile_prefix)
+    append_log(log_file, f"[7.1] Sumber genotipe: {bfile_prefix} ({n_before} SNP sebelum pruning).")
+    n_after = n_before
+    pruning_r2 = None
+    if n_before > GAPIT_MAX_SNPS:
+        bfile_prefix, n_after, pruning_r2 = _prune_gapit_bfile(
+            bfile_prefix, workspace, log_file, n_before
+        )
+    append_log(
+        log_file,
+        f"[7.1] SNP GAPIT: sebelum={n_before}, sesudah={n_after}"
+        + (f", r2={pruning_r2}" if pruning_r2 is not None else ""),
+    )
     samples, variants, g_mat = read_plink_binary(bfile_prefix)
     if not samples or not variants or g_mat.size == 0:
         raise ValueError("Data genotipe PLINK kosong untuk input GAPIT.")
@@ -852,6 +956,8 @@ def _run_gapit_models(
     workspace: Path,
     log_file: Path,
     cancel_check: Callable[[], bool] | None = None,
+    ctx: dict[str, Any] | None = None,
+    n_pcs: int = 3,
 ) -> dict[str, dict[str, Any]]:
     """Run GAPIT via Rscript and normalize outputs only for models producing GAPIT CSV files."""
     for stale_file in workspace.glob("GAPIT.*"):
@@ -861,7 +967,7 @@ def _run_gapit_models(
         if stale_tsv.is_file():
             stale_tsv.unlink(missing_ok=True)
 
-    y_path, gd_path, gm_path, chr_idx_to_label = _write_gapit_inputs(workspace, log_file)
+    y_path, gd_path, gm_path, chr_idx_to_label = _write_gapit_inputs(workspace, log_file, ctx=ctx)
     cmd = [
         rscript,
         str(runner_script),
@@ -869,6 +975,7 @@ def _run_gapit_models(
         "--gd", str(gd_path),
         "--gm", str(gm_path),
         "--models", ",".join(methods),
+        "--pca", str(n_pcs),
         "--out", str(workspace),
     ]
     run_cli_command(
@@ -956,6 +1063,7 @@ def run_multilocus_gwas(
         has_rscript = bool(rscript_bin)
         runner_script = Path(__file__).resolve().parents[1] / "templates" / "gapit_runner.R"
         can_run_r = bool(rscript_bin) and runner_script.is_file()
+        n_pcs = int(gwas_cfg.get("n_pc_covariates") or (params or {}).get("n_pc_covariates") or 3)
 
         mark_job(
             db,
@@ -1009,6 +1117,8 @@ def run_multilocus_gwas(
                     workspace=workspace,
                     log_file=log_file,
                     cancel_check=lambda: is_job_cancelled(job_id, run_id=run_id),
+                    ctx=ctx,
+                    n_pcs=n_pcs,
                 )
                 methods_results.update(gapit_results)
                 if gapit_results:
@@ -1019,7 +1129,18 @@ def run_multilocus_gwas(
             except (JobCancelledError, CLICancelledError):
                 raise
             except Exception as r_err:
-                append_log(log_file, f"[WARN] Eksekusi Rscript/GAPIT gagal, beralih ke Python Native Engine: {r_err}")
+                returncode = getattr(r_err, "returncode", None)
+                if returncode in {-9, 137}:
+                    source = _resolve_genotype_bfile(workspace, ctx)
+                    snp_count = _count_bfile_snps(source) if source else 0
+                    limit_mb = read_container_memory_limit_mb()
+                    append_log(
+                        log_file,
+                        f"[WARN] GAPIT dihentikan OS (SIGKILL, kemungkinan kehabisan memori; "
+                        f"limit container {limit_mb or '?'} MB, SNP={snp_count})",
+                    )
+                else:
+                    append_log(log_file, f"[WARN] Eksekusi Rscript/GAPIT gagal, beralih ke Python Native Engine: {r_err}")
 
         # Model aktif yang belum dihasilkan GAPIT dijalankan dengan Python Native Engine
         remaining_methods = [m for m in active_methods if m.upper() not in methods_results]

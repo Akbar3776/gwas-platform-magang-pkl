@@ -1,11 +1,15 @@
 import csv
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
+from app.tasks import multilocus_tasks
 from app.tasks.multilocus_tasks import (
+    _run_gapit_models,
     _run_python_multilocus_engine,
+    _write_gapit_inputs,
     compute_snp_pve_pct,
     generate_peak_comparison,
 )
@@ -135,3 +139,110 @@ def test_peak_comparison_filters_non_significant_multi_and_uses_model_label(tmp_
     assert result["summary"]["n_multi_only"] == 1
     assert result["multi_only"][0]["snp"] == "multi-other"
     assert "GLM" in result["consistent"][0]["keterangan"]
+
+
+def test_gapit_inputs_prefer_imputed_bfile_and_prune_to_cap(tmp_path, monkeypatch):
+    job_dir = tmp_path / "jobs" / "gapit"
+    workspace = job_dir / "multilocus"
+    inspection = job_dir / "inspection"
+    imputation = job_dir / "imputation"
+    qc = job_dir / "qc"
+    for directory in (workspace, inspection, imputation, qc):
+        directory.mkdir(parents=True)
+    (inspection / "pheno_plink.txt").write_text(
+        "FID\tIID\tTRAIT\nS1\tS1\t1\nS2\tS2\t2\nS3\tS3\t3\n", encoding="utf-8"
+    )
+    for prefix in (imputation / "imputed", qc / "plink_qc"):
+        prefix.with_suffix(".bed").write_bytes(b"")
+        prefix.with_suffix(".bim").write_text(
+            "\n".join(f"1\trs{i}\t0\t{i + 1}\tA\tG" for i in range(5)) + "\n",
+            encoding="utf-8",
+        )
+        prefix.with_suffix(".fam").write_text("S1 S1 0 0 0 -9\nS2 S2 0 0 0 -9\nS3 S3 0 0 0 -9\n", encoding="utf-8")
+    source_samples = ["S1", "S2", "S3"]
+    source_variants = [
+        {"chrom": "1", "rsid": f"rs{i}", "pos": i + 1, "a1": "A", "a2": "G"}
+        for i in range(5)
+    ]
+    source_matrix = np.arange(15, dtype=np.int8).reshape(3, 5) % 3
+    pruned_variants = source_variants[:2]
+    pruned_matrix = source_matrix[:, :2]
+    read_calls = []
+
+    def fake_read(prefix):
+        read_calls.append(Path(prefix))
+        if str(prefix).endswith("gapit_input"):
+            return source_samples, pruned_variants, pruned_matrix
+        return source_samples, source_variants, source_matrix
+
+    def fake_run(cmd, **kwargs):
+        if "--indep-pairwise" in cmd:
+            out_prefix = Path(cmd[cmd.index("--out") + 1])
+            out_prefix.with_suffix(".prune.in").write_text("rs0\nrs1\n", encoding="utf-8")
+        elif "--extract" in cmd:
+            out_prefix = Path(cmd[cmd.index("--out") + 1])
+            out_prefix.with_suffix(".bed").write_bytes(b"")
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(multilocus_tasks, "GAPIT_MAX_SNPS", 2, raising=False)
+    monkeypatch.setattr(multilocus_tasks, "which_tool", lambda name: "plink" if name == "plink" else None)
+    monkeypatch.setattr(multilocus_tasks, "run_cli_command", fake_run)
+    monkeypatch.setattr("app.services.structure_service.read_plink_binary", fake_read)
+    log_file = workspace / "multilocus.log"
+
+    _write_gapit_inputs(workspace, log_file)
+
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "Sumber genotipe:" in log_text and "imputation" in log_text
+    assert "sebelum=5" in log_text
+    assert "sesudah=2" in log_text
+
+
+def test_gapit_models_passes_pca_and_runner_uses_fread(tmp_path, monkeypatch):
+    workspace = tmp_path / "jobs" / "gapit" / "multilocus"
+    inspection = workspace.parent / "inspection"
+    workspace.mkdir(parents=True)
+    inspection.mkdir()
+    imputation = workspace.parent / "imputation"
+    imputation.mkdir()
+    (imputation / "imputed.bed").write_bytes(b"")
+    (imputation / "imputed.bim").write_text("1\trs1\t0\t1\tA\tG\n", encoding="utf-8")
+    (imputation / "imputed.fam").write_text("S1 S1 0 0 0 -9\nS2 S2 0 0 0 -9\nS3 S3 0 0 0 -9\n", encoding="utf-8")
+    (inspection / "pheno_plink.txt").write_text(
+        "FID\tIID\tTRAIT\nS1\tS1\t1\nS2\tS2\t2\nS3\tS3\t3\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "app.services.structure_service.read_plink_binary",
+        lambda prefix: (
+            ["S1", "S2", "S3"],
+            [{"chrom": "1", "rsid": "rs1", "pos": 1, "a1": "A", "a2": "G"}],
+            np.array([[0], [1], [2]], dtype=np.int8),
+        ),
+    )
+    recorded = {}
+
+    def fake_run(cmd, **kwargs):
+        recorded["cmd"] = cmd
+        Path(workspace / "GAPIT.Association.GWAS_Results.FarmCPU.TRAIT.csv").write_text(
+            "SNP,Chromosome,Position,P.value,maf,nobs,Effect\nrs1,1,1,1e-6,0.3,3,0.4\n",
+            encoding="utf-8",
+        )
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(multilocus_tasks, "run_cli_command", fake_run)
+    runner = Path(__file__).resolve().parents[1] / "app" / "templates" / "gapit_runner.R"
+    _run_gapit_models(
+        rscript="Rscript",
+        runner_script=runner,
+        methods=["FarmCPU"],
+        workspace=workspace,
+        log_file=workspace / "multilocus.log",
+        n_pcs=7,
+    )
+
+    assert "--pca" in recorded["cmd"]
+    assert recorded["cmd"][recorded["cmd"].index("--pca") + 1] == "7"
+    runner_text = runner.read_text(encoding="utf-8")
+    assert "data.table::fread(opt$gd" in runner_text
+    assert "data.table::fread(opt$gm" in runner_text
+    assert "PCA.total = as.integer(opt$pca)" in runner_text

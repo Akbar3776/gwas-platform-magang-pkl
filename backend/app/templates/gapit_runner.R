@@ -12,6 +12,7 @@ parse_args <- function(args) {
     gm = NULL,
     cv = NULL,
     models = "FarmCPU,BLINK,MLMM",
+    pca = 3,
     out = "multilocus/"
   )
   i <- 1
@@ -65,8 +66,8 @@ if (is.null(opt$gd) || !file.exists(opt$gd)) {
 if (is.null(opt$gm) || !file.exists(opt$gm)) {
   stop(paste("Berkas peta genetik GM tidak ditemukan:", opt$gm))
 }
-myGD <- read.table(opt$gd, header = TRUE, sep = "\t", check.names = FALSE, stringsAsFactors = FALSE)
-myGM <- read.table(opt$gm, header = TRUE, sep = "\t", check.names = FALSE, stringsAsFactors = FALSE)
+myGD <- data.table::fread(opt$gd, data.table = FALSE, check.names = FALSE)
+myGM <- data.table::fread(opt$gm, data.table = FALSE, check.names = FALSE)
 
 # 3. Muat Kovariat bila ada
 myCV <- NULL
@@ -90,6 +91,7 @@ for (m in models_to_run) {
       CV = myCV,
       model = model_clean,
       memo = model_clean,
+      PCA.total = as.integer(opt$pca),
       Geno.View.output = FALSE
     )
     cat(sprintf("[GAPIT] Model %s selesai dieksekusi.\n", model_clean))
