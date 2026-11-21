@@ -345,6 +345,7 @@ def run_annotation(
     menggunakan file anotasi genom GFF3 referensi (Fase 5).
     Menghasilkan file GO enrichment dan menandai job sebagai COMPLETED.
     """
+    stage_started_at = datetime.now(timezone.utc)
     db = SessionLocal()
     ctx: dict[str, Any] = dict(prev_result or {})
     try:
@@ -571,6 +572,7 @@ def run_annotation(
                 "annotation",
                 {
                     "status": "skipped",
+                    "started_at": stage_started_at,
                     "reason": skip_reason,
                     "regions_status": (regions_fa_info or {}).get("status"),
                     "n_regions": int((candidate_regions_meta or {}).get("n_regions") or 0),
@@ -760,6 +762,7 @@ def run_annotation(
             "annotation",
             {
                 "status": "completed",
+                "started_at": stage_started_at,
                 "total_lead_snps": len(mapped_rows),
                 "n_candidate_genes": len(unique_go_genes),
                 "counts": category_counts,

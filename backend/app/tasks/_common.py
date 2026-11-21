@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+
+_DATETIME_TYPE = datetime
 import logging
 import os
 from pathlib import Path
@@ -489,7 +491,7 @@ def chr_label(raw: str) -> str:
 def _coerce_iso_timestamp(value: Any, fallback: str) -> str:
     if value is None:
         return fallback
-    if isinstance(value, datetime):
+    if isinstance(value, _DATETIME_TYPE):
         return value.isoformat()
     return str(value)
 
@@ -505,13 +507,21 @@ def write_stage_summary(
     """Tulis <stage>/stage_summary.json secara atomic dan gabungkan ke job.parameters['stage_summaries']."""
     now_iso = datetime.now(timezone.utc).isoformat()
     finished_at = _coerce_iso_timestamp(payload.get("finished_at"), now_iso)
-    started_at = _coerce_iso_timestamp(payload.get("started_at"), finished_at)
+    raw_started_at = payload.get("started_at")
+    if raw_started_at is None:
+        logger.warning(
+            "[WARN] write_stage_summary dipanggil tanpa started_at untuk tahap %s (job=%s); fallback ke finished_at",
+            stage,
+            job_id,
+        )
+    started_at = _coerce_iso_timestamp(raw_started_at, finished_at)
     raw_duration = payload.get("duration_s")
     if raw_duration is None:
         try:
             start_dt = datetime.fromisoformat(started_at)
             end_dt = datetime.fromisoformat(finished_at)
-            duration_s = round(max(0.0, (end_dt - start_dt).total_seconds()), 3)
+            elapsed = max(0.0, (end_dt - start_dt).total_seconds())
+            duration_s = round(elapsed, 6) if 0.0 < elapsed < 0.001 else round(elapsed, 3)
         except (ValueError, TypeError):
             duration_s = 0.0
     else:

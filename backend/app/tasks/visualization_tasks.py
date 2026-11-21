@@ -42,6 +42,7 @@ def run_visualization(
     Menghasilkan cache biner Parquet untuk Manhattan & QQ plot interaktif berperforma tinggi.
     Menyematkan data ambang signifikansi dan lead SNPs ke dalam metadata visualisasi.
     """
+    stage_started_at = datetime.now(timezone.utc)
     db = SessionLocal()
     ctx: dict[str, Any] = dict(prev_result or {})
     try:
@@ -135,6 +136,7 @@ def run_visualization(
             "visualization",
             {
                 "status": "completed",
+                "started_at": stage_started_at,
                 "lambda_gc": float(summary_stats.get("lambda_gc", 1.0)),
                 "counts": {
                     "total_snps": int(summary_stats.get("total_snps", 0)),

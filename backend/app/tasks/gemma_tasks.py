@@ -280,6 +280,7 @@ def run_gemma_gwas(
     run_id: str | None = None,
 ) -> dict[str, str]:
     """Run GEMMA kinship and association analysis for an imputed dataset."""
+    stage_started_at = datetime.now(timezone.utc)
     try:
         check_db = SessionLocal()
         try:
@@ -534,6 +535,7 @@ def run_gemma_gwas(
                     "gwas",
                     {
                         "status": "completed",
+                        "started_at": stage_started_at,
                         "model": model,
                         "engine": "gemma",
                         "lambda_gc": float(summary_stats.get("lambda_gc", 1.0)),

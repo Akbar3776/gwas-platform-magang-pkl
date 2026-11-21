@@ -60,6 +60,7 @@ def run_postgwas_analysis(
     - Penentuan ambang signifikansi dinamis (Bonferroni, FDR, LOD, Suggestive).
     - Clumping varian signifikan untuk mengekstrak Lead SNPs independen.
     """
+    stage_started_at = datetime.now(timezone.utc)
     db = SessionLocal()
     ctx: dict[str, Any] = dict(gwas_result or {})
     try:
@@ -407,6 +408,7 @@ def run_postgwas_analysis(
             "postgwas",
             {
                 "status": "completed",
+                "started_at": stage_started_at,
                 "lambda_gc": float(lambda_gc),
                 "selected_method": thresholds.get("selected_method"),
                 "selected_p": thresholds.get("selected_p"),

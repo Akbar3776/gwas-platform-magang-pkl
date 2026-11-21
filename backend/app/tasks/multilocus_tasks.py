@@ -1147,6 +1147,7 @@ def run_multilocus_gwas(
     Menjalankan analisis Multi-Locus GWAS (FarmCPU, BLINK, dan MLMM) bila diaktifkan;
     atau mencatat status SKIPPED dengan bersih jika tidak diaktifkan.
     """
+    stage_started_at = datetime.now(timezone.utc)
     db = SessionLocal()
     ctx: dict[str, Any] = dict(gwas_result or {})
     try:
@@ -1213,6 +1214,7 @@ def run_multilocus_gwas(
                 "multilocus",
                 {
                     "status": "skipped",
+                    "started_at": stage_started_at,
                     "reason": reason,
                     "models": [],
                     "engines": {},
@@ -1416,6 +1418,7 @@ def run_multilocus_gwas(
             "multilocus",
             {
                 "status": "completed",
+                "started_at": stage_started_at,
                 "models": list(active_methods),
                 "engines": engines_used,
                 "counts": {
