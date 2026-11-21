@@ -26,18 +26,6 @@ import numpy as np
 
 from app.schemas.pipeline import PopulationType, QCPipelineConfig
 
-# Batas mutlak integer bertanda 32-bit (2^31 - 1 = 2.147.483.647 bp)
-MAX_32BIT_RAW_POS = 2_147_483_647
-
-# Buffer margin window Beagle 5 (40 cM = 40.000.000 bp default + overlap margin).
-# Beagle menggunakan algoritma sliding-window yang memproyeksikan batas ujung window ke depan:
-# nextEndCm = currentEnd + (window - overlap).
-# Jika terdapat varian pada rentang 2.10 Gb - 2.147 Gb, estimasi koordinat basePos window Beagle
-# akan melewati 2.147.483.647 dan memicu java.lang.IllegalArgumentException pada vcf.PositionMap.basePos.
-# Oleh karena itu, batas aman posisi untuk tools GWAS dan sliding window adalah 2.100.000.000 bp (2.10 Gb).
-BEAGLE_WINDOW_BUFFER = 47_483_647
-MAX_32BIT_POS = 2_100_000_000
-
 
 def _is_gzip_file(path: Path) -> bool:
     """Periksa apakah file benar-benar terkompresi gzip melalui magic bytes 0x1f 0x8b."""
@@ -46,72 +34,6 @@ def _is_gzip_file(path: Path) -> bool:
             return fh.read(2) == b"\x1f\x8b"
     except OSError:
         return False
-
-
-def filter_vcf_32bit_overflow(
-    input_vcf: str | Path,
-    output_vcf: str | Path,
-    max_pos: int = MAX_32BIT_POS,
-    compress_output: bool | None = None,
-) -> dict[str, int]:
-    """
-    Fase 0. Additional (QC Overflowing):
-    Ekuivalen streaming lintas-platform untuk:
-        zcat namafile_vcf.gz | awk '/^#/ || $2 <= 2147483647' > clean.vcf
-
-    Mengekstrak berkas VCF dan menyaring varian genetik yang koordinat posisinya (POS / kolom ke-2)
-    melebihi batas bilangan bulat 32-bit bertanda (2,147,483,647) secara baris-demi-baris (O(1) RAM)
-    untuk mencegah tools GWAS (bcftools, PLINK, Beagle, GEMMA) mengalami overflow atau merusak data.
-    """
-    src = Path(input_vcf)
-    dst = Path(output_vcf)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-
-    if compress_output is None:
-        compress_output = dst.name.endswith(".gz")
-
-    in_open = gzip.open if _is_gzip_file(src) else open
-    out_open = gzip.open if compress_output else open
-
-    total_variants = 0
-    kept_variants = 0
-    overflow_removed = 0
-
-    with (
-        in_open(src, "rt", encoding="utf-8", errors="replace") as fin,
-        out_open(dst, "wt", encoding="utf-8") as fout,
-    ):
-        for line in fin:
-            if line.startswith("#"):
-                fout.write(line)
-                continue
-            if not line.strip():
-                continue
-
-            tab1 = line.find("\t")
-            if tab1 == -1:
-                continue
-            tab2 = line.find("\t", tab1 + 1)
-            pos_str = line[tab1 + 1:] if tab2 == -1 else line[tab1 + 1:tab2]
-
-            try:
-                pos = int(pos_str)
-            except ValueError:
-                continue
-
-            total_variants += 1
-            if 0 < pos <= max_pos:
-                fout.write(line)
-                kept_variants += 1
-            else:
-                overflow_removed += 1
-
-    return {
-        "total_variants": total_variants,
-        "kept_variants": kept_variants,
-        "overflow_removed": overflow_removed,
-        "max_pos": max_pos,
-    }
 
 
 def resolve_pheno_flags(
@@ -771,7 +693,7 @@ def run_python_fallback_qc(
         except ValueError:
             removed_counts["overflow_32bit"] += 1
             continue
-        if pos_int <= 0 or pos_int > MAX_32BIT_POS:
+        if pos_int <= 0 or pos_int > 2_100_000_000:
             removed_counts["overflow_32bit"] += 1
             continue
 

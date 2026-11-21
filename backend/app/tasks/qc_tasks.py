@@ -14,7 +14,6 @@ from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, 
 from app.schemas.pipeline import QCPipelineConfig
 from app.services.chromosome_service import load_split_map, save_split_map, split_overflow_chromosomes
 from app.services.qc_service import (
-    MAX_32BIT_POS,
     build_plink19_qc_commands,
     build_plink2_qc_commands,
     build_qc_comparison_from_plink_outputs,
@@ -212,7 +211,7 @@ def run_qc_pipeline(
             f"=== TAHAP 3: QUALITY CONTROL ({tool_name}) ===\n"
             f"Waktu mulai      : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
             f"Input VCF        : {input_vcf_path}\n"
-            f"Fase 0 Split Chr : {split_label} (invalid_pos={invalid_pos_removed}, overflow_removed={overflow_removed}, batas {MAX_32BIT_POS})\n"
+            f"Fase 0 Split Chr : {split_label} (invalid_pos={invalid_pos_removed}, overflow_removed={overflow_removed}, batas {settings.CHROM_SPLIT_THRESHOLD_BP})\n"
             f"Populasi         : {cfg.population_type.value} (HWE: {'Nonaktif' if cfg.population_type.value == 'inbred' else cfg.hwe})\n"
             f"Parameter        : MAF={cfg.maf}, GENO={'Nonaktif' if cfg.geno is None else cfg.geno}, MIND={cfg.mind}\n"
             f"SNP-only/Bi-all  : {cfg.snps_only} / max-alleles={cfg.max_alleles}\n"

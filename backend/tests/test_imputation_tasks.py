@@ -2,7 +2,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from app.tasks.imputation_tasks import _beagle_command, _prepare_beagle_safe_vcf, run_imputation
-from app.services.qc_service import MAX_32BIT_POS
+from app.tasks.imputation_tasks import MAX_32BIT_POS
 from app.utils.process import SubprocessFailed
 
 

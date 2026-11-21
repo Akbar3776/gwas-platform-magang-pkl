@@ -11,7 +11,7 @@ from typing import Any
 from app.core.resource_limits import read_container_memory_limit_mb, resolve_beagle_memory_flags
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, ResultType
-from app.services.qc_service import MAX_32BIT_POS, _is_gzip_file
+from app.services.qc_service import _is_gzip_file
 from app.tasks._common import (
     JobCancelledError,
     append_log,
@@ -29,6 +29,8 @@ from app.utils.process import CLICancelledError, CLIExecutionError, run_cli_comm
 
 logger = get_task_logger(__name__)
 
+# Batas aman proyeksi sliding window Beagle 5 (40 cM) sebelum melewati batas int32 bertanda (2.147.483.647 bp).
+MAX_32BIT_POS = 2_100_000_000
 
 BEAGLE_JAR_PATH = which_tool("beagle_jar") or "/opt/tools/beagle.jar"
 IMPUTATION_TIMEOUT_SECONDS = int(os.getenv("IMPUTATION_TIMEOUT_SECONDS", str(6 * 60 * 60)))
