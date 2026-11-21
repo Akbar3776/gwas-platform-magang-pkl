@@ -9,6 +9,8 @@ atau environment variable dari docker-compose.
 import os
 from pathlib import Path
 
+from pydantic import model_validator
+
 try:
     from pydantic_settings import BaseSettings, SettingsConfigDict
     _HAS_PYDANTIC_SETTINGS = True
@@ -81,6 +83,28 @@ class Settings(BaseSettings):
     BEAGLE_LIB_DIR: str = os.getenv("BEAGLE_LIB_DIR", "")
     BEAGLE_LIB_BIN_DIR: str = os.getenv("BEAGLE_LIB_BIN_DIR", "")
     R_BINARY_PATH: str = os.getenv("R_BINARY_PATH", "")
+
+    # -- Workflow 2026-11-21: Split Kromosom, Region Kandidat & KASP --
+    CHROM_SPLIT_THRESHOLD_BP: int = int(os.getenv("CHROM_SPLIT_THRESHOLD_BP", "2147483647"))
+    CHROM_SPLIT_UNIT_BP: int = int(os.getenv("CHROM_SPLIT_UNIT_BP", "1000000000"))
+    CANDIDATE_REGION_MAX_TOTAL_BP: int = int(os.getenv("CANDIDATE_REGION_MAX_TOTAL_BP", "50000000"))
+    KASP_FLANK_BP: int = int(os.getenv("KASP_FLANK_BP", "150"))
+
+    @model_validator(mode="after")
+    def validate_workflow_settings(self) -> "Settings":
+        if self.CHROM_SPLIT_THRESHOLD_BP <= 0:
+            raise ValueError("CHROM_SPLIT_THRESHOLD_BP harus lebih besar dari 0.")
+        if self.CHROM_SPLIT_UNIT_BP <= 0:
+            raise ValueError("CHROM_SPLIT_UNIT_BP harus lebih besar dari 0.")
+        if self.CANDIDATE_REGION_MAX_TOTAL_BP <= 0:
+            raise ValueError("CANDIDATE_REGION_MAX_TOTAL_BP harus lebih besar dari 0.")
+        if self.CHROM_SPLIT_UNIT_BP > self.CHROM_SPLIT_THRESHOLD_BP:
+            raise ValueError(
+                "CHROM_SPLIT_UNIT_BP tidak boleh melebihi CHROM_SPLIT_THRESHOLD_BP."
+            )
+        if self.KASP_FLANK_BP < 60:
+            raise ValueError("KASP_FLANK_BP minimal 60 bp per sisi (syarat EasyKASP).")
+        return self
 
     if _HAS_PYDANTIC_SETTINGS:
         model_config = SettingsConfigDict(

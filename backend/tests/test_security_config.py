@@ -55,3 +55,43 @@ def test_prod_compose_sets_env_production_for_api_and_workers():
         match = re.search(rf"(?ms)^\s{{2}}{service}:\n(.*?)(?=^\s{{2}}[a-z_]+:|\Z)", text)
         assert match is not None, f"Service {service} tidak ditemukan"
         assert "ENV: production" in match.group(1), f"{service} harus menyetel ENV: production"
+
+
+def test_workflow_settings_defaults(monkeypatch):
+    for key in (
+        "CHROM_SPLIT_THRESHOLD_BP",
+        "CHROM_SPLIT_UNIT_BP",
+        "CANDIDATE_REGION_MAX_TOTAL_BP",
+        "KASP_FLANK_BP",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    cfg = config.Settings()
+    assert cfg.CHROM_SPLIT_THRESHOLD_BP == 2_147_483_647
+    assert cfg.CHROM_SPLIT_UNIT_BP == 1_000_000_000
+    assert cfg.CANDIDATE_REGION_MAX_TOTAL_BP == 50_000_000
+    assert cfg.KASP_FLANK_BP == 150
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"CHROM_SPLIT_THRESHOLD_BP": 1000, "CHROM_SPLIT_UNIT_BP": 2000},
+        {"CHROM_SPLIT_THRESHOLD_BP": 0, "CHROM_SPLIT_UNIT_BP": 0},
+        {"CHROM_SPLIT_UNIT_BP": 0},
+        {"CANDIDATE_REGION_MAX_TOTAL_BP": 0},
+        {"KASP_FLANK_BP": 59},
+    ],
+)
+def test_workflow_settings_validation_rejects_invalid_values(overrides):
+    with pytest.raises(ValueError):
+        config.Settings(**overrides)
+
+
+def test_env_example_files_share_same_keys_except_compose_only():
+    repo_root = Path(__file__).resolve().parents[2]
+    root_text = (repo_root / ".env.example").read_text(encoding="utf-8")
+    backend_text = (repo_root / "backend" / ".env.example").read_text(encoding="utf-8")
+    root_keys = set(re.findall(r"(?m)^([A-Z0-9_]+)=", root_text))
+    backend_keys = set(re.findall(r"(?m)^([A-Z0-9_]+)=", backend_text))
+    assert root_keys - backend_keys == {"POSTGRES_HOST_PORT", "TLS_CERT_DIR", "ACME_WEBROOT"}
+    assert backend_keys - root_keys == set()
