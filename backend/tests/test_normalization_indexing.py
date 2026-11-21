@@ -339,10 +339,15 @@ def test_normalization_real_bcftools_on_overflow_dataset(
     assert Path(str(norm_gz) + ".tbi").is_file() or Path(str(norm_gz) + ".csi").is_file()
     assert res["chrom_split"]["overflow_chromosomes"] == ["chr7"]
     assert res["chrom_split"]["invalid_pos_removed"] == 1
+    assert res["contig_filter"]["removed_contigs"] == 2
+    assert res["contig_filter"]["removed_variants"] == 4
     assert load_split_map(str(job.id)) is not None
 
     with gzip.open(norm_gz, "rt", encoding="utf-8") as fh:
-        data_lines = [ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")]
+        all_lines = [ln.strip() for ln in fh if ln.strip()]
+    contig_headers = [ln for ln in all_lines if ln.startswith("##contig=")]
+    data_lines = [ln for ln in all_lines if not ln.startswith("#")]
+    assert not any("scaffold" in ln for ln in contig_headers)
     assert len(data_lines) == 17
     assert any(ln.startswith("chr7_p2\t1500\t") for ln in data_lines)
 

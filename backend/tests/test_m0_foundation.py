@@ -126,6 +126,8 @@ def test_overflow_dataset_fixture(overflow_dataset):
     assert len(header_samples) == 8
     assert max(pos_by_chr["chr7"]) > overflow_dataset["split_threshold_bp"]
     assert max(pos_by_chr["chr1"]) <= overflow_dataset["split_threshold_bp"]
+    assert len(pos_by_chr["scaffold10019"]) == 1
+    assert len(pos_by_chr["scaffold10098"]) == 3
     assert invalid_pos_count == overflow_dataset["invalid_pos_count"] == 1
 
     fasta_lines = overflow_dataset["fasta_path"].read_text(encoding="utf-8").splitlines()

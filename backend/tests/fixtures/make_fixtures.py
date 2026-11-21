@@ -247,6 +247,8 @@ def make_overflow_fixture(
         vcf.write("##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n")
         vcf.write(f"##contig=<ID=chr1,length={chr1_len}>\n")
         vcf.write(f"##contig=<ID=chr7,length={chr7_len}>\n")
+        vcf.write("##contig=<ID=scaffold10019,length=1000>\n")
+        vcf.write("##contig=<ID=scaffold10098,length=2000>\n")
         vcf.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(sample_ids) + "\n")
 
         variant_idx = 0
@@ -271,6 +273,19 @@ def make_overflow_fixture(
                 dosages = np.roll(causal_dosages, variant_idx % len(sample_ids)).tolist()
             gts = [gt_code[int(d)] for d in dosages]
             vcf.write(f"chr7\t{pos}\tchr7:{pos}\t{ref}\t{alt}\t100\tPASS\t.\tGT\t" + "\t".join(gts) + "\n")
+            variant_idx += 1
+
+        # Kontig non-utama (scaffold) untuk uji pembuangan di normalisasi: 1 marker tunggal + 3 marker
+        scaffold_variants = [
+            ("scaffold10019", 200, "A", "G"),
+            ("scaffold10098", 300, "C", "T"),
+            ("scaffold10098", 600, "G", "A"),
+            ("scaffold10098", 900, "T", "C"),
+        ]
+        for s_chrom, s_pos, s_ref, s_alt in scaffold_variants:
+            dosages = np.roll(causal_dosages, variant_idx % len(sample_ids)).tolist()
+            gts = [gt_code[int(d)] for d in dosages]
+            vcf.write(f"{s_chrom}\t{s_pos}\t{s_chrom}:{s_pos}\t{s_ref}\t{s_alt}\t100\tPASS\t.\tGT\t" + "\t".join(gts) + "\n")
             variant_idx += 1
 
     pheno_path = out_dir / "overflow_pheno.txt"
@@ -306,6 +321,11 @@ def make_overflow_fixture(
         "overflow_snp_pos": 5500,
         "nearby_snp_pos": 5540,
         "invalid_pos_count": 1,
+        "scaffold_contigs": ["scaffold10019", "scaffold10098"],
+        "scaffold_variant_count": 4,
+        "scaffold_single_marker_contigs": 1,
+        "total_variants": 22,
+        "kept_primary_variants": 17,
         "sample_ids": sample_ids,
     }
 

@@ -257,7 +257,10 @@ def test_run_inspection_populates_fase0_chromosome_summary_and_api_returns_it(
     summary_tsv = Path(res["chromosome_summary_path"])
     assert summary_tsv.is_file()
     assert summary_tsv.name == "chromosome_characteristics_summary.txt"
-    assert "chr7\t11\t0\t6500\t5\t1" in summary_tsv.read_text(encoding="utf-8")
+    tsv_text = summary_tsv.read_text(encoding="utf-8")
+    assert "chr7\t11\t0\t6500\t5\t1" in tsv_text
+    assert "scaffold10019\t1\t200\t200\t0\t0" in tsv_text
+    assert "scaffold10098\t3\t300\t900\t0\t0" in tsv_text
 
     stage_summary_file = tmp_path / "jobs" / job_id / "inspection" / "stage_summary.json"
     assert stage_summary_file.is_file()
@@ -266,6 +269,8 @@ def test_run_inspection_populates_fase0_chromosome_summary_and_api_returns_it(
     assert stage_payload["total_overflow"] == 5
     assert stage_payload["total_invalid_pos"] == 1
     assert stage_payload["needs_split"] is True
+    assert stage_payload["counts"]["non_primary_contigs"] == 2
+    assert stage_payload["counts"]["non_primary_variants"] == 4
 
     inspection_log = (tmp_path / "jobs" / job_id / "inspection" / "inspection.log").read_text(encoding="utf-8")
     assert "[Fase 0]" in inspection_log
@@ -275,6 +280,9 @@ def test_run_inspection_populates_fase0_chromosome_summary_and_api_returns_it(
         api_payload = get_inspection_data(uuid.UUID(job_id), db=verify_db)
         assert api_payload["chromosome_summary"]["overflow_chromosomes"] == ["chr7"]
         assert api_payload["chromosome_summary"]["total_invalid_pos"] == 1
+        assert [row["chrom"] for row in api_payload["chromosome_summary"]["chromosomes"]] == ["chr1", "chr7"]
+        assert api_payload["chromosome_summary"]["excluded_contigs"]["contigs"] == 2
+        assert api_payload["chromosome_summary"]["excluded_contigs"]["variants"] == 4
         assert api_payload["blocking_errors"] == []
         assert any("INVALID_POS" in w for w in api_payload["warnings"])
         db_job = verify_db.get(AnalysisJob, uuid.UUID(job_id))

@@ -33,14 +33,21 @@ def test_summarize_chromosomes_on_overflow_dataset(overflow_dataset: dict):
 
     assert SIGNED_32BIT_MAX == 2_147_483_647
     assert summary["threshold_bp"] == 5_000
-    assert summary["total_variants"] == 18
+    assert summary["total_variants"] == 22
     assert summary["total_overflow"] == 5
     assert summary["total_invalid_pos"] == 1
     assert summary["needs_split"] is True
     assert summary["overflow_chromosomes"] == ["chr7"]
+    assert summary["excluded_contigs"] == {
+        "pattern": settings.NON_PRIMARY_CONTIG_REGEX,
+        "contigs": 2,
+        "variants": 4,
+        "single_marker_contigs": 1,
+        "examples": ["scaffold10019", "scaffold10098"],
+    }
 
     by_chr = {row["chrom"]: row for row in summary["chromosomes"]}
-    assert list(by_chr.keys()) == ["chr1", "chr7"]
+    assert list(by_chr.keys()) == ["chr1", "chr7", "scaffold10019", "scaffold10098"]
     assert by_chr["chr1"] == {
         "chrom": "chr1",
         "total_snp": 7,
@@ -61,6 +68,8 @@ def test_summarize_chromosomes_on_overflow_dataset(overflow_dataset: dict):
         "needs_split": True,
         "excluded": False,
     }
+    assert by_chr["scaffold10019"]["excluded"] is True
+    assert by_chr["scaffold10098"]["excluded"] is True
 
 
 def test_write_chromosome_summary_matches_awk_reference_tsv(
@@ -78,12 +87,14 @@ def test_write_chromosome_summary_matches_awk_reference_tsv(
         "CHROM\tTOTAL_SNP\tMIN_POS\tMAX_POS\tOVERFLOW\tINVALID_POS\n"
         "chr1\t7\t500\t3500\t0\t0\n"
         "chr7\t11\t0\t6500\t5\t1\n"
+        "scaffold10019\t1\t200\t200\t0\t0\n"
+        "scaffold10098\t3\t300\t900\t0\t0\n"
     )
     assert out_file.read_text(encoding="utf-8") == expected_tsv
 
     reloaded = load_chromosome_summary(out_file)
     assert reloaded is not None
-    assert reloaded["total_variants"] == 18
+    assert reloaded["total_variants"] == 22
     assert reloaded["total_overflow"] == 5
     assert reloaded["total_invalid_pos"] == 1
     assert reloaded["overflow_chromosomes"] == ["chr7"]
@@ -109,6 +120,8 @@ def test_split_overflow_chromosomes_roundtrip_header_and_invalid_pos(
     assert result["split_applied"] is True
     assert result["overflow_chromosomes"] == ["chr7"]
     assert result["invalid_pos_removed"] == 1
+    assert result["non_primary_removed_variants"] == 4
+    assert result["non_primary_removed_contigs"] == 2
     assert result["kept_variants"] == 17
     assert result["overflow_removed"] == 0
 
@@ -116,6 +129,7 @@ def test_split_overflow_chromosomes_roundtrip_header_and_invalid_pos(
     contig_lines = [ln for ln in lines if ln.startswith("##contig=")]
     assert "##contig=<ID=chr1,length=4000>" in contig_lines
     assert not any("##contig=<ID=chr7," in ln for ln in contig_lines)
+    assert not any("scaffold" in ln for ln in contig_lines)
     assert "##contig=<ID=chr7_p0,length=2000>" in contig_lines
     assert "##contig=<ID=chr7_p2,length=2000>" in contig_lines
     assert "##contig=<ID=chr7_p3,length=1000>" in contig_lines

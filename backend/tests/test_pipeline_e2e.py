@@ -477,15 +477,25 @@ def test_full_gwas_pipeline_overflow_dataset_end_to_end(monkeypatch, tmp_path: P
     assert status_resp.overall_status == "completed"
     assert job_obj.overall_status == JobStatus.COMPLETED
 
-    # 2. Normalization splits overflow chr7 and retains all 17 valid variants (18 - 1 INVALID_POS)
+    # 2. Normalization splits overflow chr7, drops non-primary scaffolds, and retains all 17 valid variants (22 - 1 INVALID_POS - 4 scaffold)
     norm_gz = job_root / "normalization" / "normalized.vcf.gz"
     assert norm_gz.is_file()
     with gzip.open(norm_gz, "rt", encoding="utf-8") as nf:
-        norm_lines = [ln.strip() for ln in nf if ln.strip() and not ln.startswith("#")]
+        norm_all_lines = [ln.strip() for ln in nf if ln.strip()]
+    norm_contig_headers = [ln for ln in norm_all_lines if ln.startswith("##contig=")]
+    norm_lines = [ln for ln in norm_all_lines if not ln.startswith("#")]
+    assert not any("scaffold" in ln.lower() for ln in norm_contig_headers)
     assert len(norm_lines) == 17
+    assert not any("scaffold" in ln.split("\t", 1)[0].lower() for ln in norm_lines)
     assert any(ln.startswith("chr7_p2\t1500\tchr7:5500\t") for ln in norm_lines)
     assert (job_root / "normalization" / "chrom_split_map.json").is_file()
     assert job_obj.parameters.get("qc_overflow_removed") == 0
+    norm_sum = json.loads((job_root / "normalization" / "stage_summary.json").read_text(encoding="utf-8"))
+    assert norm_sum["counts"]["variants_in"] == 22
+    assert norm_sum["counts"]["variants_out"] == 17
+    assert norm_sum["counts"]["invalid_pos_removed"] == 1
+    assert norm_sum["counts"]["non_primary_removed_contigs"] == 2
+    assert norm_sum["counts"]["non_primary_removed_variants"] == 4
 
     # 3. Lead SNP on chr7 preserves orig_chr='chr7' and orig_pos=5500
     lead_data = json.loads((job_root / "postgwas" / "lead_snps.json").read_text(encoding="utf-8"))
@@ -549,12 +559,42 @@ def test_full_gwas_pipeline_overflow_dataset_end_to_end(monkeypatch, tmp_path: P
     assert FAM_TAIL not in no_tail_txt
     assert HEX_TAIL not in no_tail_txt
 
-    # 7. All 10 stage summaries written both on disk and in job.parameters
+    # 7. All 10 stage summaries written both on disk and in job.parameters with started_at < finished_at and duration_s > 0
     for stage in STAGE_SEQUENCE:
-        assert (job_root / stage / "stage_summary.json").is_file()
-        assert stage in job_obj.parameters.get("stage_summaries", {})
+        sf = job_root / stage / "stage_summary.json"
+        assert sf.is_file()
+        disk_sum = json.loads(sf.read_text(encoding="utf-8"))
+        param_sum = job_obj.parameters.get("stage_summaries", {})[stage]
+        assert datetime.fromisoformat(disk_sum["started_at"]) < datetime.fromisoformat(disk_sum["finished_at"])
+        assert disk_sum["duration_s"] > 0
+        assert param_sum["duration_s"] > 0
 
     # 8. Manhattan endpoint restores int64/original chr7 coordinate
     manhattan_resp = get_manhattan_data(job_id=str(job_uuid), db=db)
     assert manhattan_resp.total_points == 17
     assert overflow_dataset["overflow_snp_pos"] in manhattan_resp.bp
+
+    # 9. Zero scaffolds across all downstream artifacts & Beagle single-marker guard sees 0 singles
+    import pandas as pd
+
+    for downstream_file in (
+        job_root / "qc" / "plink_qc.bim",
+        job_root / "gwas" / "output" / "association.assoc.txt",
+        job_root / "gwas" / "gwas_results.normalized.tsv",
+        job_root / "visualization" / "manhattan_chr_labels.json",
+        job_root / "annotation" / "candidate_regions.csv",
+        job_root / "annotation" / "candidate_regions.bed",
+        job_root / "annotation" / "kasp_input.tsv",
+    ):
+        assert downstream_file.is_file(), f"Missing downstream file {downstream_file}"
+        assert "scaffold" not in downstream_file.read_text(encoding="utf-8").lower()
+
+    m_df = pd.read_parquet(job_root / "visualization" / "manhattan_cache.parquet")
+    assert not m_df["CHR"].astype(str).str.lower().str.contains("scaffold").any()
+    assert not m_df["SNP"].astype(str).str.lower().str.contains("scaffold").any()
+
+    _, _, beagle_singles_count = imputation_tasks._prepare_beagle_safe_vcf(
+        str(job_root / "qc" / "plink_qc.vcf.gz"),
+        tmp_path / "beagle_scaffold_check",
+    )
+    assert beagle_singles_count == 0
