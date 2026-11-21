@@ -11,7 +11,7 @@
 
 Analisis **Genome-Wide Association Study (GWAS)** bertujuan menemukan asosiasi statistik antara varian genetik (*Single Nucleotide Polymorphisms* / SNPs) dan sifat fenotipe atau penyakit tertentu. Secara tradisional, alur kerja ini terfragmentasi di berbagai *command-line tools* (**bcftools**, **PLINK 2 / 1.9**, **Beagle 5.4**, **GEMMA**, **GAPIT/R**, parser **GFF3**) dengan format input/output yang berbeda-beda serta tuntutan memori (RAM) dan CPU yang tinggi.
 
-Platform ini mengintegrasikan seluruh metodologi dari panduan standar `Pipeline_Gwas.md` ke dalam satu sistem berbasis web yang modern, modular, dan transparan:
+Platform ini dibangun di atas panduan rujukan [`Pipeline_Gwas.md`](../Pipeline_Gwas.md) (dipertahankan utuh; perubahan perilaku dicatat pada [`ADR-010`](./decisions/ADR-010-gwas-workflow-2026-11-21.md)) dalam satu sistem berbasis web yang modern, modular, dan transparan:
 
 1. **Filosofi "Inspect $\rightarrow$ Validate $\rightarrow$ Run"**:
    - Memastikan integritas data dan rekonsiliasi ID sampel antara file VCF dan file fenotipe pada tahap awal (Fase 1) sebelum proses komputasi berat dimulai.
@@ -53,16 +53,16 @@ flowchart TB
     end
 
     subgraph WorkerLayer["🚀 Celery Asynchronous Workers (10 Tahap)"]
-        T1["Fase 1: Inspeksi Fenotipe & ID\n(phenotype_service)"]
-        T2["Fase 1B: Normalisasi VCF\n(bcftools norm/sort/index, fail-fast)"]
-        T3["Fase 2: Quality Control\n(PLINK 2 / 1.9: Inbred vs Outcross)"]
-        T4["Fase Imputasi: Beagle 5.4\n(None / Ref / Ref-Free)"]
-        T5["Fase 3+4D: Struktur & LD Decay\n(PCA, Kinship K, KING, LD curve)"]
-        T6["Fase 4A/4B: Asosiasi GWAS\n(GEMMA LMM/GLM + Covariates)"]
+        T1["Fase 1 + Fase 0: Inspeksi Fenotipe, ID & Ringkasan Kromosom\n(phenotype_service + chromosome_service)"]
+        T2["Fase 1B: Normalisasi VCF\n(split kontig semu + maps JSON, bcftools sort/index)"]
+        T3["Fase 2: Quality Control\n(PLINK 2 / 1.9: Inbred vs Outcross, --mind 0.1)"]
+        T4["Fase Imputasi: Beagle 5.4\n(None / Ref / Ref-Free + Jaring Pengaman 2.10 Gb)"]
+        T5["Fase 3+4D: Struktur & LD Decay Non-Prune\n(PCA, Kinship K, KING BLAS, LD blok kontigu)"]
+        T6["Fase 4A/4B: Asosiasi GWAS\n(GEMMA LMM/GLM + Covariates + Orig Pos)"]
         T7["Fase 4C: Multi-Locus GWAS\n(GAPIT3 FarmCPU/BLINK/MLMM + Python Engine)"]
         T8["Fase 4E/4F: Pasca-GWAS & Clumping\n(Lambda GC, Dynamic Thresh, Lead SNPs)"]
-        T9["Fase 4G: Visualisasi & Parquet Cache\n(Parquet Engine + Lead Annotation)"]
-        T10["Fase 5: Anotasi GFF3, GO Enrichment & Primer3\n(Genik/Near-gen/Intergenik + GO + FASTA Primer3)"]
+        T9["Fase 4G: Visualisasi & Parquet Cache\n(Parquet Engine + Orig Pos & Lead Annotation)"]
+        T10["Fase 5 + 5.4: Anotasi GFF3, GO, Region, Primer3 & KASP\n(GFF3, GO, Region FASTA, primer3-py, EasyKASP)"]
     end
 
     subgraph DataLayer["💾 Persistence Layer"]
@@ -103,18 +103,18 @@ flowchart TB
   4. Histogram otomatis menggunakan aturan **Freedman-Diaconis**:
      $$h = 2 \frac{\text{IQR}}{n^{1/3}}, \quad k = \left\lceil \frac{\max(x) - \min(x)}{h} \right\rceil$$
   5. Boxplot dengan identifikasi outlier berbasis aturan Tukey ($< Q_1 - 1.5\text{IQR}$ atau $> Q_3 + 1.5\text{IQR}$).
-  6. Ekspor artefak: `keep_ids.txt` (daftar sampel lolos sinkronisasi) dan `pheno_plink.txt` (format PLINK 3 kolom `FID IID PHENO`).
+  6. Ekspor artefak: `keep_ids.txt`, `pheno_plink.txt`, dan pemindaian Fase 0 ke `chromosome_characteristics_summary.txt` (serta `inspection_report.json["chromosome_summary"]`) secara streaming $O(\text{kromosom})$ RAM via `chromosome_service.py`.
 
 ### Fase 1B: Normalisasi VCF ([`normalization_tasks.py`](../backend/app/tasks/normalization_tasks.py))
-- **Tujuan**: Memastikan file VCF terurut secara koordinat kromosom (*sorted*), indel terstandarisasi, dan terindeks Tabix.
-- **Perintah CLI**:
+- **Tujuan**: Memecah kromosom yang melampaui batas integer 32-bit tanpa kehilangan varian valid (`POS > 0`), memastikan file VCF terurut secara koordinat (*sorted*), dan terindeks `.tbi`/`.csi`.
+- **Perintah CLI & Split**:
   ```bash
-  bcftools view -h <vcf>
-  bcftools sort -Oz -o sorted.vcf.gz <vcf>
-  bcftools norm -f <fasta> -Oz -o normalized.vcf.gz sorted.vcf.gz  # jika FASTA tersedia
-  bcftools index -t normalized.vcf.gz
+  bcftools view --no-version -h <vcf>
+  # Streaming Python: split kontig overflow ke <chrom>_p<k> + tulis chrom_split_map.json, saring POS <= 0
+  bcftools sort -Oz -o normalized.vcf.gz split_input.vcf
+  bcftools index -t normalized.vcf.gz  # fallback otomatis ke bcftools index -c bila koordinat >512 Mb
   ```
-- **Fail-fast**: Tahap normalisasi wajib memakai biner `bcftools` (`normalization_tasks.py`); bila tidak ditemukan atau gagal memvalidasi/mengurutkan/mengindeks VCF, proses langsung gagal cepat (*fail-fast*) tanpa fallback Python diam-diam.
+- **Fail-fast**: Tahap normalisasi wajib memakai biner `bcftools` (`normalization_tasks.py`); bila tidak ditemukan atau gagal memvalidasi/mengurutkan VCF, proses langsung gagal cepat (*fail-fast*) tanpa fallback Python diam-diam.
 
 ### Fase 2: Quality Control / QC ([`qc_tasks.py`](../backend/app/tasks/qc_tasks.py) & [`qc_service.py`](../backend/app/services/qc_service.py))
 - **Tujuan**: Mengeliminasi artefak genotipe dan varian langka dengan membedakan mode organisme.
@@ -125,12 +125,12 @@ flowchart TB
   ```bash
   plink2 --vcf normalized.vcf.gz --snps-only just-acgt --max-alleles 2 \
          --set-all-var-ids @:# --keep keep_ids.txt \
-         --maf 0.05 --geno 0.05 --mind 0.05 \
+         --maf 0.05 --geno 0.05 --mind 0.1 \
          [--hwe 1e-6 bila outcross] \
          --make-bed --out plink_qc
-  plink2 --bfile plink_qc --export vcf bgz --out plink_qc
+  plink2 --bfile plink_qc --export vcf-4.2 bgz id-paste=iid --out plink_qc
   ```
-- **Hasil & Evaluasi**: Menghasilkan `qc_comparison.json` yang membandingkan metrik sebelum vs sesudah filter, serta memberikan peringatan jika kehilangan SNP $> 50\%$.
+- **Hasil & Evaluasi**: Menghasilkan `qc_comparison.json` yang membandingkan metrik sebelum vs sesudah filter (beserta metadata kromosom dipecah), serta memberikan peringatan jika kehilangan SNP $> 50\%$.
 
 ### Fase Imputasi Genotipe Opsional ([`imputation_tasks.py`](../backend/app/tasks/imputation_tasks.py))
 - **Tujuan**: Mengestimasi alel yang tidak terukur menggunakan **Beagle 5.4**.
@@ -138,17 +138,17 @@ flowchart TB
   1. `none`: Dilewati secara sadar dengan pencatatan status `[SKIPPED]`.
   2. `reference`: Imputasi terpandu menggunakan panel referensi populasi (1000 Genomes).
   3. `reference_free`: Phasing dan imputasi mandiri tanpa panel luar.
-- **Batas Memori & Pra-Filter Contig**: JVM `-Xmx` dialokasikan maksimal 75% dari kuota memori container (`HEAP_FRACTION_OF_CONTAINER_LIMIT = 0.75`, ditambah headroom `RLIMIT_AS` +30% di Unix atau override `BEAGLE_MAX_MEMORY`) dengan proteksi `-XX:+ExitOnOutOfMemoryError`, serta penyaringan streaming `_prepare_beagle_safe_vcf` terhadap contig melampaui `BEAGLE_WINDOW_BUFFER` / tanpa SNP pembanding. Jika Java atau panel tidak tersedia, task menghasilkan status `[SKIPPED]` yang bersih dan melanjutkan analisis menggunakan genotipe hasil QC.
+- **Batas Memori & Pra-Filter Contig**: JVM heap dialokasikan maksimal 75% limit cgroup (`MaxRAMPercentage=75%` / override `-XmxN` dipotong 75%, `RLIMIT_AS` tidak dipakai untuk JVM) dengan proteksi `-XX:+ExitOnOutOfMemoryError`, serta penyaringan streaming `_prepare_beagle_safe_vcf` terhadap kontig tidak dipecah yang melewati `MAX_32BIT_POS` (`2.100.000.000` bp — proteksi *sliding window* Beagle 40 cM) / tanpa SNP pembanding. Jika Java atau panel tidak tersedia, task menghasilkan status `[SKIPPED]` yang bersih dan melanjutkan analisis menggunakan genotipe hasil QC.
 
 ### Fase 3 + 4D: Struktur Populasi, Kinship & LD Decay ([`structure_tasks.py`](../backend/app/tasks/structure_tasks.py) & [`structure_service.py`](../backend/app/services/structure_service.py))
 - **Tujuan**: Mengukur stratifikasi populasi, kekerabatan antar-sampel, dan laju peluruhan LD untuk rekomendasi model statistik.
 - **Langkah-langkah Komputasi**:
-  1. **LD Pruning**: `--indep-pairwise 50 5 0.2` untuk membuang redundansi korelasi antar-varian.
+  1. **LD Pruning**: `--indep-pairwise 50 5 0.2` untuk membuang redundansi korelasi antar-varian sebelum PCA & Kinship.
   2. **PCA (Principal Component Analysis)**: Dekomposisi 10 PC utama, perhitungan PVE (*Proportion of Variance Explained*), dan pengelompokan k-means.
   3. **Centered Kinship Matrix ($K$)**:
      $$K = \frac{1}{p} W W^T, \quad w_{ik} = \frac{g_{ik} - 2p_k}{\sqrt{2p_k(1 - p_k)}}$$
-  4. **KING Kinship Matrix**: Menghitung koefisien kekerabatan robust $\phi_{ij}$ untuk mendeteksi sampel kembar/duplikat ($\phi > 0.354$) dan kerabat tingkat pertama ($\phi > 0.177$).
-  5. **LD Decay Curve**: Menghitung $r^2$ berpasangan dalam jendela jarak fisik (bp), mengestimasi titik *half-decay* dan jarak saat $r^2 < 0.2$.
+  4. **KING Kinship Matrix**: Menghitung koefisien kekerabatan robust $\phi_{ij}$ menggunakan operasi matriks BLAS tervektorisasi per-potongan (*chunked*) untuk mendeteksi sampel kembar/duplikat ($\phi > 0.354$) dan kerabat tingkat pertama ($\phi > 0.177$).
+  5. **LD Decay Curve**: Menghitung $r^2$ *unphased* berpasangan dari **bfile QC/imputasi non-prune** (dibatasi blok kontigu hingga `ld_decay_max_snps` default `20.000`), mencatat `method` serta `source_bfile`, dan mengestimasi titik *half-decay* serta jarak saat $r^2 < 0.2$.
   6. **Rekomendasi Model Otomatis**: Menentukan penggunaan **GLM** (jika tidak ada stratifikasi & tidak ada kekerabatan) vs **LMM** (jika terdeteksi struktur populasi atau kekerabatan signifikan).
   7. **Ekspor Kovariat**: Menghasilkan `covariates.txt` untuk GEMMA (kolom pertama bernilai 1 sebagai intercept) dan `covariates_plink.txt` untuk PLINK 2.
 
@@ -191,17 +191,18 @@ flowchart TB
 - **Tujuan**: Membandingkan konsistensi lokus puncak antara Single-Locus (GEMMA GLM/LMM) dan Multi-Locus (FarmCPU, BLINK, MLMM).
 - **Output**: Menghasilkan `Ringkasan_Puncak_GWAS.csv` dan `peak_comparison.json` yang mengelompokkan puncak menjadi *Consistent*, *Single-Only*, dan *Multi-Only*.
 
-### Fase 5: Anotasi Gen Kandidat GFF3, GO Enrichment & Primer3 ([`annotation_tasks.py`](../backend/app/tasks/annotation_tasks.py), [`annotation_service.py`](../backend/app/services/annotation_service.py), [`go_enrichment_service.py`](../backend/app/services/go_enrichment_service.py), [`primer_service.py`](../backend/app/services/primer_service.py))
-- **Tujuan**: Menghubungkan varian signifikan secara statistik ke fungsi genetik biologis, pengayaan jalur fungsional (*Gene Ontology*), dan rancangan primer validasi basah (PCR).
+### Fase 5 + Fase 5.4: Anotasi Gen, Region Kandidat, GO Enrichment, Primer3 & KASP ([`annotation_tasks.py`](../backend/app/tasks/annotation_tasks.py), [`annotation_service.py`](../backend/app/services/annotation_service.py), [`flanking_service.py`](../backend/app/services/flanking_service.py), [`go_enrichment_service.py`](../backend/app/services/go_enrichment_service.py), [`primer_service.py`](../backend/app/services/primer_service.py), [`kasp_service.py`](../backend/app/services/kasp_service.py))
+- **Tujuan**: Menghubungkan varian signifikan secara statistik ke fungsi genetik biologis, region kandidat FASTA, pengayaan jalur fungsional (*Gene Ontology*), dan rancangan primer validasi basah (PCR konvensional + marker KASP).
 - **Logika Pemetaan & Desain Primer**:
-  1. Parser streaming GFF3 dengan normalisasi penamaan kromosom (`Chr1`, `chr01`, `1`, `NC_...`).
-  2. Pemetaan Lead SNPs ke fitur gen dalam jendela LD decay ($\pm \text{window\_bp}$).
+  1. Parser streaming GFF3 dengan normalisasi penamaan kromosom dan pemulihan koordinat asli (`restore_coord`).
+  2. Pemetaan Lead SNPs gabungan Single+Multi-locus (kolom `Engine`) ke fitur gen dalam jendela LD decay ($\pm \text{window\_bp}$).
   3. Klasifikasi biologis varian:
      - **Genik**: Varian berada persis di dalam badan gen ($\text{start} \le \text{pos} \le \text{end}$).
      - **Near-gen**: Varian berada di luar gen tetapi masih dalam jarak $\le \text{window\_bp}$ (daerah promotor/regulatori).
      - **Intergenik**: Jarak varian ke gen terdekat $> \text{window\_bp}$.
-  4. Ekspor daftar gen kandidat unik ke `Daftar_Gen_Untuk_GO.txt` serta analisis GO Enrichment nyata dari atribut `Ontology_term` pada GFF3 atau berkas pemetaan GO eksternal (TSV/GAF).
-  5. Ekstraksi sekuens flanking 201 bp melalui indeks FASTA (`.fai`) secara *streaming* ($O(1)$ memori) dan desain pasangan primer PCR oleh `primer3-py`; mode sintetis tidak dijalankan kecuali diizinkan eksplisit dengan `ALLOW_SYNTHETIC_ANNOTATION=true`.
+  4. **Fase 5.4 Region Kandidat**: Penulisan `candidate_regions.csv`, `candidate_regions.bed`, dan `candidate_regions.fa` via indeks `.fai` streaming Python tanpa `bedtools`, dengan batas ketat `CANDIDATE_REGION_MAX_TOTAL_BP = 50.000.000`.
+  5. Ekspor daftar gen kandidat unik ke `Daftar_Gen_Untuk_GO.txt` serta analisis GO Enrichment nyata dari atribut `Ontology_term` GFF3 atau berkas pemetaan GO eksternal (TSV/GAF).
+  6. Ekstraksi sekuens flanking beranotasi `REF`/`ALT` & varian tetangga `.bim` melalui indeks FASTA `.fai` ($O(1)$ memori) untuk desain primer PCR (`primer3-py`), serta desain **KASP** (port Python *EasyKASP* ber-flank default `KASP_FLANK_BP = 150` dengan masking `N` tetangga, analisis hairpin/dimer `primer3-py` bertail FAM/HEX, dan ekspor `kasp_input.tsv`/`kasp_primers.tsv`/`kasp_primers_no_tail.fa`; *Fase 8 BLAST ditunda* sesuai [**ADR-010**](./decisions/ADR-010-gwas-workflow-2026-11-21.md)). Mode sintetis tidak dijalankan kecuali `ALLOW_SYNTHETIC_ANNOTATION=true`.
 
 ---
 
@@ -228,8 +229,8 @@ Antarmuka hasil menyajikan 7 tab navigasi interaktif:
 6. **🌿 Anotasi Gen GFF3 & GO**:
    - Tabel pemetaan Lead SNPs ke fitur gen terdekat dengan badge kategori biologis (Genik, Near-gen, Intergenik) serta hasil analisis **Gene Ontology (GO) Enrichment**.
    - Tombol unduh satu klik untuk file `Daftar_Gen_Untuk_GO.txt`.
-7. **🧪 Flanking & Primer3**:
-   - Pratinjau sekuens DNA flanking 201 bp di sekitar varian Lead SNP serta tabel pasangan primer PCR (`LEFT`/`RIGHT` primer, Tm, GC%, ukuran produk amplicon).
+7. **🧪 Flanking & Primer3 / KASP**:
+   - Sub-tab PCR konvensional (flank dinamis, `REF`/`ALT`, varian tetangga `.bim`, Region Kandidat BED/FASTA, serta primer `primer3-py`) dan sub-tab **KASP** (tail FAM/HEX bertanda teks aksesibel, peringatan struktur sekunder bertail, serta 3 ekspor `.tsv`/`.fa`).
 
 ---
 
@@ -242,7 +243,7 @@ Antarmuka hasil menyajikan 7 tab navigasi interaktif:
 | `POST` | `/api/v1/pipeline/{dataset_id}/start` | Memicu eksekusi pipeline GWAS secara asinkron. |
 | `POST` | `/api/v1/upload/init` / `chunk` / `finalize` | Sesi unggah bertahap VCF (chunk 10 MiB) serta endpoint unggah terpisah untuk fenotipe, anotasi GFF3, anotasi GO (TSV/GAF), dan FASTA referensi. |
 | `GET` | `/api/v1/reference-panels` | Daftar panel referensi imputasi terkurasi yang tersedia. |
-| `GET` | `/api/v1/jobs/{job_id}/status` | Mengambil status keseluruhan, tahap aktif, waktu berjalan, dan log per tahap. |
+| `GET` | `/api/v1/jobs/{job_id}/status` | Mengambil status keseluruhan, tahap aktif, waktu berjalan, `step_logs`, dan `stage_summaries` 10 tahap. |
 | `GET` | `/api/v1/jobs/{job_id}/logs` | Mengambil teks log eksekusi lengkap dari seluruh tahapan. |
 | `GET` | `/api/v1/jobs/{job_id}/files` | Daftar seluruh file input, intermediate, dan output dari sebuah job. |
 | `GET` | `/api/v1/jobs/{job_id}/files/content` | Pratinjau teks atau unduhan file fisik dari job. |
@@ -262,6 +263,6 @@ Antarmuka hasil menyajikan 7 tab navigasi interaktif:
 | `GET` | `/api/v1/results/{job_id}/multilocus-results` | Hasil detail analisis Multi-Locus GWAS (FarmCPU, BLINK, MLMM) beserta label engine (R GAPIT3 / Python Engine). |
 | `GET` | `/api/v1/results/{job_id}/candidate-genes` | Pemetaan Lead SNPs ke fitur gen GFF3 dan daftar gen untuk GO enrichment (Fase 5). |
 | `GET` | `/api/v1/results/{job_id}/go-enrichment` | Hasil analisis Gene Ontology (GO) Enrichment berbasis GFF3 `Ontology_term` atau pemetaan TSV/GAF (Fase 5.3). |
-| `GET` | `/api/v1/results/{job_id}/primers` | Sekuens flanking 201 bp (via `.fai` streaming) & pasangan primer PCR Primer3 (`primer3-py`) (Fase 5.4). |
+| `GET` | `/api/v1/results/{job_id}/primers` | Sekuens flanking dinamis + primer `primer3-py`, `regions_status`, `candidate_regions`, `nearby_variants`, dan blok `kasp` (*EasyKASP* + struktur sekunder). |
 | `GET` | `/api/v1/results/{job_id}/export` | Aliran *streaming* unduhan berkas arsip `.zip` seluruh artefak job. |
 | `GET` | `/api/v1/results/{job_id}/report` | Unduhan dokumen laporan ilmiah resmi berformat PDF. |

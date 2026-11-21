@@ -18,7 +18,7 @@ gwas-platform/
 │
 ├── docs/                                   # Dokumentasi Desain Sistem & Rekaman Keputusan Arsitektur
 │   ├── design.md                           # Dokumen Desain Sistem (System Design Document) & spesifikasi teknis
-│   ├── PLAN_INTEGRASI_PIPELINE_GWAS.md     # Rencana kerja historis integrasi 10 fase GWAS
+│   ├── PLAN_INTEGRASI_PIPELINE_GWAS.md     # Rencana kerja historis integrasi 10 fase GWAS (SUPERSEDED; lihat ADR-010)
 │   ├── presentation/                       # Materi presentasi arsitektur & laporan progres HTML
 │   │   ├── gwas-architecture.html
 │   │   └── progress-report.html
@@ -32,7 +32,8 @@ gwas-platform/
 │       ├── ADR-006-real-time-streaming-and-state-synchronization.md # Adaptive REST Polling & Log Tail Retrieval
 │       ├── ADR-007-data-validation-and-serialization.md          # Skema Validasi Pydantic v2 Rust Core
 │       ├── ADR-008-frontend-big-data-plotting-engine.md          # Visualisasi Big Data Manhattan Canvas 2D
-│       └── ADR-009-frontend-architecture-and-build-toolchain.md  # Vite + React 18 SPA Toolchain
+│       ├── ADR-009-frontend-architecture-and-build-toolchain.md  # Vite + React 18 SPA Toolchain
+│       └── ADR-010-gwas-workflow-2026-11-21.md                   # Migrasi Alur Kerja 2026-11-21 (Split, LD, Region, KASP)
 │
 ├── infra/                                  # Konfigurasi Infrastruktur & Orkestrasi Kontainer
 │   ├── docker-compose.yml                  # Compose Development (backend, db, redis, celery_worker, celery_beat, flower)
@@ -102,31 +103,34 @@ gwas-platform/
 │   │   ├── services/                       # Logika bisnis domain & algoritma bioinformatika/ilmiah
 │   │   │   ├── annotation_service.py       # Fase 5: Streaming parser GFF3, normalisasi chr, & pemetaan gen kandidat
 │   │   │   ├── assoc_normalizer.py         # Fase 4A/4B: Normalisasi GEMMA/PLINK2 ke TSV kanonikal 10 kolom (inkl. n `.fam`)
+│   │   │   ├── chromosome_service.py       # Fase 0: Ringkasan karakteristik kromosom, split >32-bit + peta JSON, & restore_coord
 │   │   │   ├── export_service.py           # Pengemasan streaming ZIP artefak hasil analisis tanpa muat penuh ke RAM
+│   │   │   ├── flanking_service.py         # Fase 5.4 & 6: Enrichment REF/ALT .bim, region kandidat BED/FASTA, & input KASP
 │   │   │   ├── go_enrichment_service.py    # Fase 5.3: Parser GAF/TSV/GFF3 & uji hipergeometrik GO nyata (opt-in sintetik)
+│   │   │   ├── kasp_service.py             # Fase 5.4-KASP: Port Python EasyKASP (Primer X/Y/C) & analisis struktur sekunder bertail
 │   │   │   ├── manhattan_parser.py         # Streaming chunked & Apache Parquet Snappy + jaminan 100% Lead SNPs
 │   │   │   ├── phenotype_service.py        # Fase 1: Rekonsiliasi sampel, histogram Freedman-Diaconis, boxplot Tukey
 │   │   │   ├── postgwas_service.py         # Fase 4E/4F: Lambda GC tanpa clamping, threshold dinamis, & clumping O(N log N)
-│   │   │   ├── primer_service.py           # Fase 5.4/6-8: Pengindeksan .fai streaming, flanking 201 bp, & desain primer3-py
+│   │   │   ├── primer_service.py           # Fase 5.4/6-8: Pengindeksan .fai streaming, flanking dinamis, & desain primer3-py
 │   │   │   ├── qc_service.py               # Fase 2: Pembangun perintah PLINK 2/1.9 (inbred/outcross) & metrik QC
 │   │   │   ├── report_generator.py         # Pembuat laporan ilmiah PDF (WeasyPrint + status per tahap)
-│   │   │   ├── structure_service.py        # Fase 3+4D: LD pruning PLINK, SVD PCA, Kinship K, KING eksak, & LD decay
+│   │   │   ├── structure_service.py        # Fase 3+4D: LD pruning PLINK, SVD PCA, Kinship K, KING BLAS vektorial, & LD non-prune
 │   │   │   └── upload_service.py           # Manajemen chunk biner, perakitan atomik, & checksum SHA-256
 │   │   │
 │   │   ├── tasks/                          # Lapisan eksekusi asinkron Celery Tasks & Chaining
 │   │   │   ├── celery_app.py               # Konfigurasi Celery, Beat retention schedule, local fallback, & hook cleanup
-│   │   │   ├── _common.py                  # Helper pembatalan job, `chr_label`, proteksi storage, & `which_tool`
+│   │   │   ├── _common.py                  # Helper pembatalan, `chr_label`, proteksi storage, `which_tool`, & `write_stage_summary`
 │   │   │   ├── pipeline_orchestrator.py    # Perangkai 10 tahap Celery chain, revoke multi-task, & Smart Retry/Resume
-│   │   │   ├── annotation_tasks.py         # Task Fase 5: GFF3, daftar GO gen tervalidasi, GO enrichment, & Primer3
+│   │   │   ├── annotation_tasks.py         # Task Fase 5: GFF3, GO enrichment, region kandidat BED/FASTA, Primer3, & KASP
 │   │   │   ├── gemma_tasks.py              # Task Fase 4A/4B: GEMMA LMM/GLM fail-fast & streaming count
-│   │   │   ├── imputation_tasks.py         # Task Fase 4: Beagle 5.4 JVM dengan pra-filter 32-bit/single-marker
-│   │   │   ├── inspection_tasks.py         # Task Fase 1: Rekonsiliasi ID duplikat/hilang & statistik fenotipe
+│   │   │   ├── imputation_tasks.py         # Task Fase 4: Beagle 5.4 JVM dengan jaring pengaman 2.10 Gb & single-marker
+│   │   │   ├── inspection_tasks.py         # Task Fase 1 + Fase 0: Rekonsiliasi ID, statistik fenotipe, & ringkasan kromosom VCF
 │   │   │   ├── multilocus_tasks.py         # Task Fase 4C/4H: FarmCPU/BLINK/MLMM via GAPIT3 atau Python Native Engine
-│   │   │   ├── normalization_tasks.py      # Task Fase 1B: Normalisasi bcftools, filter >2.10 Gb, & indeks TBI/CSI
+│   │   │   ├── normalization_tasks.py      # Task Fase 1B: Split kontig semu + chrom_split_map.json, bcftools sort, & TBI/CSI
 │   │   │   ├── postgwas_tasks.py           # Task Fase 4E/4F: Lambda GC, threshold dinamis, clumping & suggestive peaks
 │   │   │   ├── qc_tasks.py                 # Task Fase 2: Quality Control PLINK 2 / 1.9 fail-fast
 │   │   │   ├── retention_tasks.py          # Periodic cron Celery & guard anti-wipe untuk retensi storage
-│   │   │   ├── structure_tasks.py          # Task Fase 3+4D: LD pruning, PCA (`n_pc_covariates`), Kinship, KING, & LD decay
+│   │   │   ├── structure_tasks.py          # Task Fase 3+4D: LD pruning, PCA, Kinship, KING, & LD decay blok kontigu non-prune
 │   │   │   ├── upload_tasks.py             # Perakitan & verifikasi SHA-256 VCF serta pengindeksan .fai FASTA referensi
 │   │   │   └── visualization_tasks.py      # Task Fase 4G: Pembuatan cache Apache Parquet utama & per-model multi-locus
 │   │   │
@@ -137,35 +141,43 @@ gwas-platform/
 │   │   └── utils/
 │   │       └── process.py                  # Eksekutor subprocess CLI aman (`shell=False`, process group kill, & log tail)
 │   │
-│   └── tests/                              # Suite Pengujian Otomatis Komprehensif (28 modul uji pytest)
-│       ├── conftest.py                     # Fixture pytest: DB lokal, in-process DirectTestClient, & isolasi Env
-│       ├── fixtures/                       # Generator dataset uji deterministik & contoh TSV pemetaan GO
+│   └── tests/                              # Suite Pengujian Otomatis Komprehensif (36 modul uji pytest)
+│       ├── conftest.py                     # Fixture pytest: DB lokal, DirectTestClient, `overflow_dataset`, & isolasi Env
+│       ├── fixtures/                       # Generator dataset (`make_fixtures.py`), `plink_fixture.py`, & contoh TSV GO
 │       ├── test_access_control.py          # Uji isolasi kepemilikan dataset/job (IDOR) & admin guard
 │       ├── test_annotation_service.py      # Uji streaming GFF3 parser, normalisasi chr, & zero-match fail-fast
 │       ├── test_assoc_normalizer.py        # Uji normalisasi GEMMA/PLINK2 & pemetaan sample count `n`
-│       ├── test_cancellation.py            # Uji pencabutan seluruh rantai task Celery saat cancel/delete
+│       ├── test_cancellation.py            # Uji pencabutan rantai Celery saat cancel/delete & cancel di tengah split
 │       ├── test_celery_routing.py          # Uji konsistensi queue Celery vs docker-compose dev/prod
+│       ├── test_chromosome_service.py      # Uji Fase 0 summary, split kontig semu, peta JSON, & restore_coord
 │       ├── test_database_engine.py         # Uji PostgreSQL default & opt-in ALLOW_SQLITE_FALLBACK
+│       ├── test_dependency_pins.py         # Uji sinkronisasi pin Celery/Kombu/Redis terhadap image container
+│       ├── test_flanking_service.py        # Uji region kandidat BED/FASTA, REF/ALT .bim, & input KASP N-masking
 │       ├── test_gapit_integration.py       # Uji integrasi R GAPIT3 nyata & fallback Python Native
 │       ├── test_gemma_tasks.py             # Uji fail-fast GEMMA CLI & pembacaan log streaming
-│       ├── test_go_and_primers.py          # Uji GO TSV/GAF/Ontology_term, indeks .fai streaming, & primer3-py
-│       ├── test_imputation_tasks.py        # Uji argumen Beagle, filter overflow/single-marker, & heap JVM
+│       ├── test_go_and_primers.py          # Uji GO TSV/GAF/Ontology_term, indeks .fai streaming, KASP, & primer3-py
+│       ├── test_imputation_tasks.py        # Uji argumen Beagle, jaring pengaman MAX_32BIT_POS/single-marker, & heap JVM
 │       ├── test_job_storage_cleanup.py     # Uji guard retensi anti-wipe, staging sweep, & post-task cleanup
-│       ├── test_jobs_api.py                # Uji endpoint job, QC job_id kwarg, Smart Retry/Resume, & hapus job
-│       ├── test_m0_foundation.py           # Uji helper bersama, pembatalan, & Lambda GC tanpa clamping
+│       ├── test_jobs_api.py                # Uji endpoint job, `stage_summaries`, `/results/{id}/primers`, & hapus job
+│       ├── test_kasp_service.py             # Uji port EasyKASP (golden SNP_74098) & struktur sekunder oligo bertail
+│       ├── test_m0_foundation.py           # Uji helper bersama, `write_stage_summary`, & Lambda GC tanpa clamping
 │       ├── test_m1_models_schemas.py       # Uji integritas skema Pydantic v2 & enum relasional Alembic
-│       ├── test_manhattan_chr.py           # Uji label kromosom non-numerik & retensi 100% Lead SNPs di Parquet
-│       ├── test_multilocus_models.py       # Uji FarmCPU/BLINK/MLMM PVE(%), FDR, & label engine
-│       ├── test_normalization_indexing.py  # Uji filter overflow 32-bit (>2.10 Gb), atomic write, & indeks TBI/CSI
+│       ├── test_manhattan_chr.py           # Uji label kromosom non-numerik, restore orig_pos, & retensi 100% Lead SNPs
+│       ├── test_multilocus_correctness.py  # Uji koreksi engine Multi-Locus Python (p QTN, BLINK/MLMM, PVE, mask NA)
+│       ├── test_multilocus_models.py       # Uji FarmCPU/BLINK/MLMM PVE(%), FDR, label engine, & peak comparison
+│       ├── test_normalization_indexing.py  # Uji split kromosom sebelum bcftools sort, atomic write, & indeks TBI/CSI
 │       ├── test_phenotype_service.py       # Uji rekonsiliasi ID, deteksi duplikat, & Freedman-Diaconis
-│       ├── test_pipeline_e2e.py            # Uji integrasi end-to-end 10 tahap pipeline tersinkronisasi
-│       ├── test_pipeline_paths.py          # Uji discover_resume_state & artifact guard multilocus/imputation
+│       ├── test_pipeline_e2e.py            # Uji integrasi E2E 10 tahap (`toy` & `overflow_dataset` lengkap dengan KASP)
+│       ├── test_pipeline_paths.py          # Uji discover_resume_state, split map resume/from_scratch, & job legacy
 │       ├── test_postgwas_service.py        # Uji Lambda GC, threshold dinamis, p1 signifikan, & suggestive peaks
 │       ├── test_prepare_reference_fasta.py # Uji CLI prepare_reference_fasta.py (split chr7, TSV map, --vcf, RAM)
 │       ├── test_process.py                 # Uji keamanan subprocess CLI & streaming tail log
-│       ├── test_qc_commands.py             # Uji argumen PLINK 2/1.9 inbred vs outcross & histogram QC
-│       ├── test_security_config.py         # Uji PyJWT, resolve_jwt_secret prod, & pinned requirements
-│       ├── test_structure_service.py       # Uji LD pruning, PCA, Kinship, rumus KING eksak, & LD decay
+│       ├── test_qc_commands.py             # Uji argumen PLINK 2/1.9 inbred vs outcross, `--mind 0.1`, & histogram QC
+│       ├── test_resource_limits.py         # Uji pembatasan memori JVM Beagle berbasis cgroup
+│       ├── test_security_config.py         # Uji PyJWT, resolve_jwt_secret prod, & validator env pipeline baru
+│       ├── test_stage_summaries.py         # Uji penulisan & skema `stage_summary.json` untuk tahap 1–10
+│       ├── test_storage_isolation.py       # Uji isolasi direktori storage & pencegahan path traversal
+│       ├── test_structure_service.py       # Uji LD pruning, PCA, Kinship, KING vektorial vs loop ref, & LD non-prune
 │       ├── test_upload_security.py         # Uji validasi chunked upload, SHA-256, & tolak dataset terhapus
 │       └── test_which_tool.py              # Uji isolasi lookup `plink2` vs `plink` & biner sistem
 │
@@ -227,7 +239,7 @@ gwas-platform/
         │   ├── BoxPlotChart.jsx            # Boxplot deteksi outlier Tukey (+ role="img" aria-label)
         │   ├── CandidateGenesTable.jsx     # Tabel pemetaan gen GFF3 berpaginasi & ekspor CSV aman injeksi
         │   ├── ChartsAccessibilityA.test.jsx & ChartsAccessibilityB.test.jsx # Uji teks alternatif 8 grafik canvas
-        │   ├── DataInspectionPanel.jsx     # Panel Fase 1: Rekonsiliasi sampel & statistik fenotipe
+        │   ├── DataInspectionPanel.jsx     # Panel Fase 1 + Fase 0: Rekonsiliasi sampel, statistik fenotipe, & tabel kromosom
         │   ├── ErrorBoundary.jsx           # Penangkap error render global dengan tombol muat ulang
         │   ├── ErrorBoundary.test.jsx      # Uji fallback ErrorBoundary & simulasi error 422 array
         │   ├── GoEnrichmentPanel.jsx       # Dotplot & tabel Gene Ontology nyata (atau pesan unavailable)
@@ -250,7 +262,7 @@ gwas-platform/
         │   ├── PcaScatterPlot.jsx          # Plot sebaran PCA (+ role="img" aria-label)
         │   ├── PeakComparisonTable.jsx     # Tabel komparasi Single vs Multi-Locus + pilih plot model
         │   ├── PhenotypeUploader.jsx       # Pengunggah fenotipe aksesibel keyboard & sinkron state stabil
-        │   ├── PrimerDesignPanel.jsx       # Panel sekuens flanking 201 bp & primer `primer3-py` (.txt/.csv)
+        │   ├── PrimerDesignPanel.jsx       # Panel Region Kandidat 5.4, PCR Primer3, & KASP (FAM/HEX tails + oligo QC)
         │   ├── QQPlot.jsx                  # Quantile-Quantile Plot interaktif (+ role="img" aria-label)
         │   ├── QcComparisonPanel.jsx & QcComparisonPanel.test.jsx # Komparasi metrik & histogram QC
         │   ├── ReferenceUploader.jsx       # Pengunggah bertahap FASTA referensi (.fa/.fna/.gz) + progress indeks .fai

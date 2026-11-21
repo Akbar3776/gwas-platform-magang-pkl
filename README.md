@@ -1,6 +1,6 @@
 # 🧬 Automated End-to-End GWAS Web Platform (10-Phase Pipeline)
 
-Platform bioinformatika berbasis web (*full-stack*) untuk mengotomatisasi analisis **Genome-Wide Association Study (GWAS)** dari hulu ke hilir (*end-to-end*). Mengimplementasikan panduan ilmiah komprehensif **`Pipeline_Gwas.md`** dengan prinsip utama **"Inspect $\rightarrow$ Validate $\rightarrow$ Run"**, platform ini mengubah alur kerja CLI bioinformatika yang kompleks (**bcftools**, **PLINK 2 / 1.9**, **Beagle 5.4**, **GEMMA**, **GAPIT/R**, **Primer3**, dan parser **GFF3**) menjadi antarmuka web modern yang interaktif, transparan, berkinerja tinggi, dan siap direproduksi (*reproducible*).
+Platform bioinformatika berbasis web (*full-stack*) untuk mengotomatisasi analisis **Genome-Wide Association Study (GWAS)** dari hulu ke hilir (*end-to-end*). Berakar pada panduan ilmiah **`Pipeline_Gwas.md`** (dipertahankan utuh; penyimpangan perilaku aktual dicatat pada [**ADR-010**](docs/decisions/ADR-010-gwas-workflow-2026-11-21.md)) dengan prinsip utama **"Inspect $\rightarrow$ Validate $\rightarrow$ Run"**, platform ini mengubah alur kerja CLI bioinformatika yang kompleks (**bcftools**, **PLINK 2 / 1.9**, **Beagle 5.4**, **GEMMA**, **GAPIT/R**, **Primer3** / **KASP EasyKASP**, dan parser **GFF3**) menjadi antarmuka web modern yang interaktif, transparan, berkinerja tinggi, dan siap direproduksi (*reproducible*).
 
 ---
 
@@ -113,9 +113,9 @@ Backend dapat dijalankan dengan **SQLite lokal** tanpa perlu memasang PostgreSQL
 
 ---
 
-### Menyiapkan Genom Referensi & Pemetaan GO
+### Menyiapkan Genom Referensi, Pemetaan GO & Konfigurasi Workflow
 
-1. **Menyiapkan Genom Referensi FASTA (untuk Ekstraksi Flanking 201 bp & Primer3)**:
+1. **Menyiapkan Genom Referensi FASTA (untuk Ekstraksi Flanking, Region Kandidat, Primer3 & KASP)**:
    - Jika berkas FASTA referensi dari NCBI masih memakai aksesi contig (mis. `CM0315xx.1`) atau memecah kromosom (mis. `chromosome 7_1` + `chromosome 7_2`), gunakan skrip streaming [`backend/scripts/prepare_reference_fasta.py`](backend/scripts/prepare_reference_fasta.py) untuk menamai ulang ke `chrN`/`scaffoldM`, menggabungkan bagian kromosom secara berurutan tanpa menyisipkan huruf `N`, membungkus ulang baris (`--wrap 80`), dan memvalidasi panjang terhadap header `##contig` VCF:
      ```bash
      python backend/scripts/prepare_reference_fasta.py \
@@ -126,13 +126,19 @@ Backend dapat dijalankan dengan **SQLite lokal** tanpa perlu memasang PostgreSQL
      ```
      Skrip ini keluar dengan kode status non-nol bila ada contig atau panjang di header `##contig` VCF yang tidak cocok (atau gunakan `--map mapping.tsv` untuk pemetaan kustom `old_name<TAB>new_name`).
    - **Perkiraan waktu pengindeksan `.fai`**: untuk berkas FASTA berukuran ~16,4 GB (`wrap 80`), pembuatan indeks `.fai` streaming oleh worker memerlukan **±30 menit** (aman berada di bawah batas `visibility_timeout` broker Celery selama 8 jam).
-   - Tanpa FASTA referensi (dan tanpa `ALLOW_SYNTHETIC_ANNOTATION=true`), Tahap 10 melaporkan status `"no_reference"` tanpa membuat sekuens palsu.
+   - Tanpa FASTA referensi (dan tanpa `ALLOW_SYNTHETIC_ANNOTATION=true`), Tahap 10 melaporkan status `"no_reference"` / `"skipped"` pada KASP tanpa membuat sekuens palsu.
 
 2. **Menyiapkan Berkas Pemetaan Gene Ontology (GO) Terpisah**:
    - Banyak berkas GFF3 genom non-model (seperti `Garlic.gff3.gz`) tidak menyertakan atribut `Ontology_term=GO:...`. Agar analisis **GO Enrichment (Tab 6)** menghasilkan uji hipergeometrik dan daftar istilah GO yang nyata, unggah berkas pemetaan GO terpisah melalui panel **File Pemetaan GO** (`/api/v1/upload/{file_id}/go-annotation`) dengan salah satu format berikut:
      - **TSV/TXT** (2–4 kolom dipisahkan tab): `gene_id<TAB>GO:xxxxxxx[<TAB>term_name[<TAB>BP|MF|CC]]`
      - **GAF 2.x** (`.gaf` atau `.gaf.gz`): kolom ke-2 = ID gen, kolom ke-5 = `GO:xxxxxxx`, kolom ke-9 = aspek (`P`/`F`/`C`).
    - Jika tidak ada `Ontology_term` di GFF3 maupun berkas pemetaan GO (dengan `ALLOW_SYNTHETIC_ANNOTATION=false`), GO Enrichment jujur melaporkan status `"unavailable"`.
+
+3. **Variabel Lingkungan Tambahan (Alur Kerja 2026-11-21 — `.env.example`)**:
+   - `CHROM_SPLIT_THRESHOLD_BP=2147483647` — ambang panjang kromosom (`> 32-bit`) untuk memicu pemecahan kontig semu `<chrom>_p<k>` pada Fase 0/Normalisasi.
+   - `CHROM_SPLIT_UNIT_BP=1000000000` — ukuran satuan pecahan pseudo-kromosom (default `1 Gb`, harus `> 0` dan `<= CHROM_SPLIT_THRESHOLD_BP`).
+   - `CANDIDATE_REGION_MAX_TOTAL_BP=50000000` — batas total panjang FASTA region kandidat yang diekspor pada Fase 5.4 (`candidate_regions.fa`).
+   - `KASP_FLANK_BP=150` — panjang sekuens flanking per sisi untuk masukan desain KASP (minimal `60` bp).
 
 ---
 
@@ -147,12 +153,12 @@ Berikut adalah daftar perintah utama yang sering digunakan dalam pengembangan, p
 | **Docker** | `docker compose -f infra/docker-compose.yml logs -f backend` | Memantau log aplikasi FastAPI secara *real-time*. |
 | **Docker** | `docker compose -f infra/docker-compose.yml logs -f celery_worker` | Memantau log eksekusi tugas antrean Celery worker. |
 | **Backend** | `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload` | Menjalankan FastAPI development server dengan fitur *auto-reload*. |
-| **Backend** | `cd backend && python -m pytest tests -q` | Menjalankan seluruh rangkaian pengujian unit dan integrasi e2e backend (`251 passed, 6 skipped` pada host Windows; `257 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`). |
+| **Backend** | `cd backend && python -m pytest tests -q` | Menjalankan seluruh rangkaian pengujian unit dan integrasi e2e backend (`310 passed, 6 skipped` pada host Windows; `316 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`). |
 | **Backend** | `pytest backend/tests/test_qc_commands.py -v` | Menjalankan pengujian logika QC, filtering PLINK, dan histogram komparasi. |
-| **Backend** | `pytest backend/tests/test_normalization_indexing.py -v` | Menjalankan pengujian normalisasi VCF, penanganan overflow 32-bit, dan index Tabix. |
+| **Backend** | `pytest backend/tests/test_normalization_indexing.py backend/tests/test_chromosome_service.py -v` | Menjalankan pengujian Fase 0 karakteristik kromosom, split kontig semu + `chrom_split_map.json`, dan index Tabix/CSI. |
 | **Backend** | `alembic upgrade head` | Menjalankan migrasi skema database relasional ke versi terbaru (untuk DB lama tanpa `alembic_version`, jalankan `alembic stamp head` sekali sebelumnya). |
 | **Frontend** | `npm --prefix frontend run dev` | Menjalankan Vite development server frontend pada `http://localhost:5173`. |
-| **Frontend** | `npm --prefix frontend run test` | Menjalankan seluruh pengujian unit Jest frontend (`29 test suites, 88 passed` dengan `--runInBand`). |
+| **Frontend** | `npm --prefix frontend run test` | Menjalankan seluruh pengujian unit Jest frontend (`29 test suites, 98 passed` dengan `--runInBand`). |
 | **Frontend** | `npm --prefix frontend run lint` | Menjalankan pemeriksaan kualitas kode ESLint (0 errors, 0 warnings). |
 | **Frontend** | `npm --prefix frontend run build` | Melakukan kompilasi aset frontend siap produksi (*production bundle*). |
 | **Git** | `git status` | Memeriksa integritas dan status *working tree* git lokal. |
@@ -185,16 +191,16 @@ flowchart TB
     end
 
     subgraph PipelineTasks["🧬 Engine Komputasi 10 Tahap"]
-        T1["1. Inspeksi Fenotipe\n(Freedman-Diaconis & Tukey Boxplot)"]
-        T2["2. Normalisasi VCF\n(bcftools sort/norm & filter pos >2.10Gb)"]
-        T3["3. Quality Control\n(PLINK 2 / 1.9 Inbred vs Outcross)"]
-        T4["4. Imputasi Genotipe\n(Beagle 5.4 JVM)"]
-        T5["5. Struktur & LD Decay\n(PCA 10 PCs, Kinship K, KING, Half-Decay)"]
+        T1["1. Inspeksi + Fase 0\n(Freedman-Diaconis, Tukey & Karakteristik Chr)"]
+        T2["2. Normalisasi VCF\n(Split Chr >32-bit + Peta JSON, bcftools sort/index)"]
+        T3["3. Quality Control\n(PLINK 2 / 1.9 Inbred vs Outcross, --mind 0.1)"]
+        T4["4. Imputasi Genotipe\n(Beagle 5.4 JVM + Jaring Pengaman 2.10 Gb)"]
+        T5["5. Struktur & LD Decay\n(PCA 10 PCs, Kinship K, KING Vectorized, LD Non-Prune)"]
         T6["6. Asosiasi GWAS\n(GEMMA LMM -lmm 4 / GLM -lm 1 + PC Covariates)"]
         T7["7. Multi-Locus GWAS\n(FarmCPU / BLINK / MLMM via GAPIT3 atau Python Native Engine)"]
         T8["8. Pasca-GWAS & Clumping\n(Unclamped Lambda GC, Dynamic Thresh, Lead SNPs)"]
-        T9["9. Visualisasi & Cache\n(Parquet Snappy Columnar Cache)"]
-        T10["10. Anotasi Gen & Primer\n(GFF3 Streaming Parser, GO TSV/GAF, & primer3-py + .fai)"]
+        T9["9. Visualisasi & Cache\n(Parquet Snappy Columnar Cache + Orig Pos)"]
+        T10["10. Anotasi, Region, Primer3 & KASP\n(GFF3, GO TSV/GAF, Region BED/FASTA, EasyKASP)"]
     end
 
     subgraph Storage["💾 Lapisan Penyimpanan (Persistence)"]
@@ -243,6 +249,7 @@ Seluruh keputusan teknis penting dan kompromi arsitektural (*trade-offs*) didoku
 | [ADR-007](docs/decisions/ADR-007-data-validation-and-serialization.md) | **Validasi Skema Data & Serialisasi API (Pydantic v2 Rust Core)** | `Accepted` | Menjamin validasi parameter biologis yang ketat (*fail-fast*) pada level HTTP gateway sebelum meneruskan payload ke engine komputasi. |
 | [ADR-008](docs/decisions/ADR-008-frontend-big-data-plotting-engine.md) | **Mesin Visualisasi Data Genomik Skala Besar (HTML5 2D Canvas)** | `Accepted` | Menggantikan DOM SVG berat (D3/Plotly) dengan canvas HTML5 2D berteknologi *pixel decimation* untuk visualisasi Manhattan & QQ plot anti-freeze. |
 | [ADR-009](docs/decisions/ADR-009-frontend-architecture-and-build-toolchain.md) | **Arsitektur Frontend & Perangkat Pembundel (Vite + React 18 SPA)** | `Accepted` | Membangun Single Page Application statis tanpa kebutuhan runtime Node.js di server produksi, dilayani langsung oleh Nginx reverse proxy. |
+| [ADR-010](docs/decisions/ADR-010-gwas-workflow-2026-11-21.md) | **Migrasi Alur Kerja GWAS 2026-11-21 (Split Kromosom, LD Decay, Region, & KASP)** | `Accepted` | Menjelaskan 9 keputusan migrasi alur kerja (split pseudo-kromosom + peta JSON, ambang 32-bit/Beagle, LD non-prune blok kontigu, GLM `-lm 1`, region tanpa bedtools, `--mind 0.1`, batas LD split, KASP EasyKASP + tunda BLAST, retensi `Pipeline_Gwas.md`). |
 
 ---
 
@@ -271,32 +278,32 @@ sequenceDiagram
     User->>API: POST /api/v1/pipeline/{dataset_id}/start
     API->>Orch: Inisialisasi Job & Dispatch Task Chain (HTTP 202)
     Orch->>P1: Rekonsiliasi Sampel & Histogram Freedman-Diaconis
-    P1->>P2: Teruskan keep_ids.txt & pheno_plink.txt
-    P2->>P3: Teruskan normalized.vcf.gz (sort, norm, filter >2.10Gb)
-    P3->>P4: Teruskan plink_qc (.bed/.bim/.fam & .vcf.gz)
+    P1->>P2: Teruskan keep_ids.txt & pheno_plink.txt + ringkasan Fase 0
+    P2->>P3: Teruskan normalized.vcf.gz (split chr >32-bit, bcftools sort/index) + chrom_split_map.json
+    P3->>P4: Teruskan plink_qc (.bed/.bim/.fam & .vcf.gz, default --mind 0.1)
     P4->>P5: Teruskan imputed.vcf.gz (atau bypass SKIPPED)
-    P5->>P6: Teruskan covariates.txt, kinship.cXX.txt, & ld_decay_kb
+    P5->>P6: Teruskan covariates.txt, kinship.cXX.txt, & ld_decay_kb (non-prune)
     P6->>P7: Teruskan gwas_results.normalized.tsv (GEMMA LMM -lmm 4 / GLM -lm 1)
     P7->>P8: Teruskan hasil asosiasi (GAPIT3 R atau Python Native Engine)
-    P8->>P9: Teruskan lead_snps.json & thresholds.json
+    P8->>P9: Teruskan lead_snps.json & thresholds.json (orig_chr/orig_pos)
     P9->>P10: Teruskan manhattan_cache.parquet & summary_stats
-    P10->>API: Pemetaan Gen GFF3, Uji GO Nyata, & primer3-py (.fai) (COMPLETED)
+    P10->>API: GFF3, GO, Region BED/FASTA, Primer3 & KASP EasyKASP (COMPLETED)
     User->>API: Akses Hasil Lengkap (7 Tab Interaktif) & Adaptive Polling Status
 ```
 
 ### Rincian Fase Komputasi:
-1. **Fase 1: Fenotipe & Inspeksi Data**: Rekonsiliasi ID sampel antara VCF vs Fenotipe, penanganan missing values, statistik deskriptif, histogram aturan **Freedman-Diaconis**, boxplot outlier Tukey, serta pembuatan `keep_ids.txt` dan `pheno_plink.txt`.
-2. **Fase 1B: Normalisasi VCF (`bcftools`)**: Validasi header `#CHROM POS ID REF ALT`, penyaringan posisi $> 2.10\text{ Gb}$ (`MAX_32BIT_POS = 2.100.000.000` untuk mencegah *integer overflow* 32-bit pada library C & Beagle sliding window), pengurutan koordinat (`sort`), *left-alignment* (`norm`), dan pembuatan indeks Tabix (`.tbi`, dengan fallback otomatis ke `.csi` untuk kromosom $> 512\text{ Mb}$).
-3. **Fase 2: Quality Control Lanjutan (`PLINK 2 / 1.9`)**: Dukungan mode organisme (`inbred` galur murni tanpa filter HWE vs `outcross` dengan filter HWE), `--snps-only just-acgt`, `--max-alleles 2`, penataan ID varian `@:#`, serta kalkulasi riil metrik komparasi before/after QC beserta histogram MAF & missingness.
-4. **Fase Imputasi Genotipe Opsional (`Beagle 5.4`)**: Mode `none` (bypass dengan status transparan `[SKIPPED]`), `reference` (menggunakan panel referensi), dan `reference_free` dengan heap JVM berbasis limit cgroup (`MaxRAMPercentage=75%`); override `-XmxN` dipotong maksimal 75% dan `RLIMIT_AS` tidak dipakai.
-5. **Fase 3 + 4D: Struktur Populasi, Kinship & LD Decay**: LD pruning pairwise nyata (`plink`/`plink2 --indep-pairwise`), analisis PCA 10 komponen (dengan parameter UI `n_pc_covariates`) + PVE + k-means, Centered Kinship Matrix ($K = \frac{1}{p}WW^T$), tabel kekerabatan robust KING eksak, kurva peluruhan LD decay ($r^2$ vs jarak pasangan basa), serta rekomendasi otomatis GLM vs LMM.
-6. **Fase 4A/4B: Analisis Asosiasi GWAS (GEMMA LMM & GLM)**: Pengujian Linear Mixed Model (`gemma -lmm 4 -c covariates.txt`) dan General Linear Model (`gemma -lm 1`) langsung via biner GEMMA (*fail-fast*), sinkronisasi format baris WSL, dan normalisasi output ke format kanonikal TSV 10 kolom.
-7. **Fase 4C: Multi-Locus GWAS (`FarmCPU`, `BLINK`, & `MLMM`)**: Analisis multi-lokus iteratif menggunakan **GAPIT3** (`gapit_runner.R`) di R, atau fallback **Python Native Engine** (`ALLOW_PYTHON_MULTILOCUS=true`) bila R/GAPIT tidak terpasang, lengkap dengan label engine sumber, perhitungan `PVE(%)`, `H&B.P.Value`, serta Manhattan/QQ Plot per model.
+1. **Fase 1 & Fase 0 (Karakteristik Kromosom & Fenotipe)**: Rekonsiliasi ID sampel VCF vs Fenotipe, statistik deskriptif, histogram **Freedman-Diaconis**, boxplot Tukey, ekspor `keep_ids.txt` dan `pheno_plink.txt`, serta pemindaian *streaming* $O(\text{kromosom})$ seluruh kromosom VCF ke `inspection/chromosome_characteristics_summary.txt` (mendeteksi varian `> CHROM_SPLIT_THRESHOLD_BP` dan peringatan `INVALID_POS <= 0`).
+2. **Fase 1B: Normalisasi VCF (`bcftools` + Split Kromosom >32-bit)**: Validasi header `#CHROM POS ID REF ALT`, pemecahan kromosom overflow ke kontig semu `<chrom>_p<k>` (`CHROM_SPLIT_UNIT_BP = 1.000.000.000`) dengan penyimpanan peta terbalik `normalization/chrom_split_map.json` agar **tidak ada varian berposisi valid (`POS > 0`) yang hilang** (hanya `INVALID_POS <= 0` yang disaring), pengurutan koordinat (`bcftools sort`), serta pengindeksan `.tbi` dengan fallback otomatis ke `.csi` untuk koordinat $> 512\text{ Mb}$ (tanpa `bcftools norm -f`; rujuk [**ADR-010**](docs/decisions/ADR-010-gwas-workflow-2026-11-21.md)).
+3. **Fase 2: Quality Control Lanjutan (`PLINK 2 / 1.9`)**: Dukungan mode organisme (`inbred` galur murni tanpa filter HWE vs `outcross` dengan filter HWE), `--snps-only just-acgt`, `--max-alleles 2`, penataan ID varian `@:#`, default `--mind 0.1`, serta kalkulasi riil metrik komparasi before/after QC (termasuk info kromosom terpecah) beserta histogram MAF & missingness.
+4. **Fase Imputasi Genotipe Opsional (`Beagle 5.4`)**: Mode `none` (bypass dengan status transparan `[SKIPPED]`), `reference` (panel referensi), dan `reference_free` dengan heap JVM berbasis limit cgroup (`MaxRAMPercentage=75%`); jaring pengaman `MAX_32BIT_POS = 2.100.000.000` menjaga kontig tak terpecah di rentang `2,10–2,147 Gb` dari kegagalan batas *window* Beagle 40 cM.
+5. **Fase 3 + 4D: Struktur Populasi, Kinship & LD Decay Non-Prune**: LD pruning pairwise nyata (`plink`/`plink2 --indep-pairwise`), analisis PCA 10 komponen + PVE + k-means, Centered Kinship Matrix ($K = \frac{1}{p}WW^T$), tabel kekerabatan KING-robust eksak **tervektorisasi BLAS**, kurva peluruhan LD decay $r^2$ pada **blok kontigu non-prune** (maks 20.000 SNP dari bfile QC/imputasi, mencatat `method` & `source_bfile`), serta rekomendasi otomatis GLM vs LMM.
+6. **Fase 4A/4B: Analisis Asosiasi GWAS (GEMMA LMM & GLM)**: Pengujian Linear Mixed Model (`gemma -lmm 4 -c covariates.txt`) dan General Linear Model (`gemma -lm 1`) langsung via biner GEMMA (*fail-fast*), serta normalisasi output 10 kolom yang turut menyertakan koordinat asli (`orig_chr`, `orig_pos`) berbasis `chrom_split_map.json`.
+7. **Fase 4C: Multi-Locus GWAS (`FarmCPU`, `BLINK`, & `MLMM`)**: Analisis multi-lokus iteratif menggunakan **GAPIT3** (`gapit_runner.R`) di R, atau fallback **Python Native Engine** (`ALLOW_PYTHON_MULTILOCUS=true`) bila R/GAPIT tidak terpasang, lengkap dengan label engine sumber, perhitungan `PVE(%)`, `H&B.P.Value`, serta Manhattan/QQ Plot per model (masing-masing memulihkan koordinat asli lewat `chrom_split_map.json`).
 
    Untuk panel besar, input GAPIT3 memprioritaskan hasil imputasi dan membatasi jumlah penanda maksimal `GAPIT_MAX_SNPS` (default `300000`) melalui pruning LD otomatis PLINK (`r² = 0,8`, lalu `0,5`) dengan dukungan kontig non-numerik (`--allow-extra-chr`). Model yang gagal atau dijalankan oleh engine cadangan Python diberi label `python-approx` (`multilocus_summary.json`), dan hasil aproksimasi tersebut perlu divalidasi dengan GAPIT sebelum publikasi.
-8. **Fase 4E/4F: Pasca-GWAS, Lambda GC, Dynamic Thresholds & Clumping**: Estimasi faktor inflasi genomik $\lambda_{GC}$ tanpa batas semu (*unclamped*), kalkulasi ambang dinamis (Bonferroni, Suggestive, FDR Benjamini-Hochberg, LOD), dan LD-aware clumping untuk mengekstrak **Lead SNPs** signifikan independen (serta field terpisah `suggestive_peaks` bila ada kandidat sub-ambang).
-9. **Fase 4G: Visualisasi & Caching Berkinerja Tinggi**: Pembentukan cache kolumnar berformat **Apache Parquet (Snappy)** dengan metadata ambang batas, label kromosom, dan 100% Lead SNPs terjamin ikut di cache.
-10. **Fase 5: Anotasi Gen Kandidat GFF3, GO Enrichment & Primer3**: Parser GFF3 streaming (gagal cepat bila 0 nama kromosom cocok), pemetaan Lead SNPs gabungan Single+Multi-locus dalam jendela LD decay, ekstraksi `Daftar_Gen_Untuk_GO.txt` (dari gen tervalidasi), analisis hipergeometrik Gene Ontology nyata dari `Ontology_term` GFF3 atau unggahan TSV/GAF (`ALLOW_SYNTHETIC_ANNOTATION=false` secara bawaan), serta ekstraksi sekuens flanking 201 bp dari FASTA terindeks `.fai` dan perancangan primer PCR menggunakan **`primer3-py`**.
+8. **Fase 4E/4F: Pasca-GWAS, Lambda GC, Dynamic Thresholds & Clumping**: Estimasi faktor inflasi genomik $\lambda_{GC}$ tanpa batas semu (*unclamped*), kalkulasi ambang dinamis (Bonferroni, Suggestive, FDR Benjamini-Hochberg, LOD), LD-aware clumping untuk mengekstrak **Lead SNPs** independen + `suggestive_peaks` dengan koordinat asli (`orig_chr`, `orig_pos`), dan perbandingan puncak Single vs Multi-Locus.
+9. **Fase 4G: Visualisasi & Parquet Caching Berkinerja Tinggi**: Pembentukan cache kolumnar berformat **Apache Parquet (Snappy)** memakai koordinat asli genomik, metadata ambang batas, label kromosom, dan 100% Lead SNPs terjamin ikut di cache.
+10. **Fase 5 + Fase 5.4: Anotasi GFF3, GO Enrichment, Region Kandidat, Primer3 & KASP**: Parser GFF3 streaming (gagal cepat bila 0 nama kromosom cocok), pemetaan Lead SNPs gabungan Single+Multi-locus (kolom `Engine` dan posisi terpulihkan) dalam jendela LD decay, ekspor `candidate_regions.csv`/`.bed`/`.fa` (dibatasi `CANDIDATE_REGION_MAX_TOTAL_BP = 50.000.000` tanpa `bedtools`), analisis hipergeometrik GO nyata (`Ontology_term` GFF3 atau unggahan TSV/GAF), desain primer PCR konvensional (`primer3-py`) beranotasi `REF`/`ALT` & varian tetangga `.bim`, serta **desain KASP (port Python *EasyKASP*)** beserta masking tetangga `N`, skor struktur sekunder bertail FAM/HEX, dan ekspor `kasp_input.tsv`/`kasp_primers.tsv`/`kasp_primers_no_tail.fa` (*Fase 8 BLAST spesifisitas ditunda*; rujuk [**ADR-010**](docs/decisions/ADR-010-gwas-workflow-2026-11-21.md)). Seluruh 10 tahap menulis ringkasan `stage_summary.json` yang terekspos di `/jobs/{id}/status`.
 
 ---
 
@@ -316,15 +323,16 @@ Halaman visualisasi hasil ([`GwasResultsPanel.jsx`](frontend/src/components/Gwas
    - Plot sebaran PCA (PC1 vs PC2) dengan klaster k-means dan Scree Plot (PVE).
    - Heatmap matriks kekerabatan (Centered Kinship) dan kurva peluruhan LD decay dengan penanda garis *half-decay*.
 4. **🔍 Inspeksi & QC**:
-   - Panel inspeksi fenotipe dengan histogram Freedman-Diaconis, boxplot outlier Tukey, dan metrik rekonsiliasi sampel.
-   - Panel perbandingan QC sebelum vs sesudah filter varian dan sampel dilengkapi histogram MAF dan missingness.
+   - Panel inspeksi fenotipe dengan histogram Freedman-Diaconis, boxplot outlier Tukey, metrik rekonsiliasi sampel, serta tabel **Karakteristik Kromosom (Fase 0)**.
+   - Panel perbandingan QC sebelum vs sesudah filter varian dan sampel (termasuk ringkasan kromosom dipecah & `INVALID_POS`), histogram MAF, dan missingness.
 5. **🔬 Multi-Locus GWAS**:
    - Tabel perbandingan lokus puncak asosiasi antara Single-Locus vs Multi-Locus (`FarmCPU`, `BLINK`, `MLMM`) beserta label engine (`GAPIT` atau `Python Native`), metrik `PVE(%)`, `H&B.P.Value`, serta Manhattan & QQ plot per model.
 6. **🌿 Anotasi Gen GFF3 & GO**:
    - Tabel berpaginasi pemetaan Lead SNPs ke fitur gen terdekat dengan badge kategori biologis (Genik, Near-gen, Intergenik).
    - Panel pengayaan Gene Ontology (GO) berbasis uji hipergeometrik nyata (atau status `unavailable` bila tidak ada pemetaan) dan tombol unduh berkas `Daftar_Gen_Untuk_GO.txt`.
-7. **🧪 Flanking & Primer3**:
-   - Panel ekstraksi sekuens flanking 201 bp dari FASTA referensi terindeks `.fai` dan desain primer PCR menggunakan `primer3-py` asli (atau status `no_reference` bila FASTA belum diunggah).
+7. **🧪 Flanking & Primer3 / KASP**:
+   - Sub-tab **PCR Konvensional**: sekuens flanking dinamis (`±flank_bp`) dari FASTA terindeks `.fai`, kolom `REF/ALT`, varian tetangga `.bim`, unduhan Region Kandidat (`.csv`/`.bed`/`.fa`), dan pasangan primer `primer3-py`.
+   - Sub-tab **KASP**: desain *EasyKASP* (`Primer_X` FAM biru, `Primer_Y` HEX merah dengan label aksesibel, `Primer_C`), ringkasan analisis struktur sekunder oligo bertail, serta unduhan `kasp_input.tsv`, `kasp_primers.tsv`, dan `kasp_primers_no_tail.fa`.
 
 ---
 
@@ -354,7 +362,7 @@ Seluruh endpoint backend berada di bawah prefix `/api/v1` (kecuali `/health`). D
 | **Pipeline**| `POST` | `/api/v1/pipeline/{dataset_id}/start` | Memulai eksekusi pipeline 10 tahap secara asinkron (`HTTP 202 Accepted`). |
 | **RefPanels** | `GET` | `/api/v1/reference-panels` | Mengambil daftar panel referensi imputasi yang aktif. |
 | **Jobs** | `GET` | `/api/v1/jobs` | Mengambil daftar riwayat job analisis milik pengguna. |
-| **Jobs** | `GET` | `/api/v1/jobs/{job_id}/status` | Mengambil status eksekusi terkini, tahap aktif, dan `step_logs`. |
+| **Jobs** | `GET` | `/api/v1/jobs/{job_id}/status` | Mengambil status eksekusi terkini, tahap aktif, `step_logs`, dan `stage_summaries` (10 tahap). |
 | **Jobs** | `GET` | `/api/v1/jobs/{job_id}/logs` | Mengambil teks log eksekusi lengkap dari seluruh tahapan. |
 | **Jobs** | `GET` | `/api/v1/jobs/{job_id}/files` | Menjelajahi berkas input, intermediate, dan output dari sebuah job. |
 | **Jobs** | `GET` | `/api/v1/jobs/{job_id}/files/content` | Pratinjau teks (`?preview=true`) atau mengunduh berkas spesifik job. |
@@ -374,7 +382,7 @@ Seluruh endpoint backend berada di bawah prefix `/api/v1` (kecuali `/health`). D
 | **Results** | `GET` | `/api/v1/results/{job_id}/multilocus-results` | Rincian SNP signifikan, `PVE(%)`, `H&B.P.Value`, dan label engine Multi-Locus. |
 | **Results** | `GET` | `/api/v1/results/{job_id}/candidate-genes` | Pemetaan Lead SNPs ke fitur gen GFF3 & daftar gen untuk pengayaan GO. |
 | **Results** | `GET` | `/api/v1/results/{job_id}/go-enrichment` | Hasil uji hipergeometrik Gene Ontology (GO) & tabel GO nyata. |
-| **Results** | `GET` | `/api/v1/results/{job_id}/primers` | Data sekuens flanking 201 bp dan pasangan primer PCR `primer3-py`. |
+| **Results** | `GET` | `/api/v1/results/{job_id}/primers` | Data flanking + primer PCR `primer3-py`, `regions_status`, `candidate_regions`, `nearby_variants`, dan blok `kasp` (`EasyKASP` + struktur sekunder). |
 | **Results** | `GET` | `/api/v1/results/{job_id}/export` | Aliran *streaming* unduhan berkas arsip `.zip` seluruh artefak job. |
 | **Results** | `GET` | `/api/v1/results/{job_id}/report` | Unduhan dokumen laporan ilmiah resmi berformat PDF. |
 
@@ -385,22 +393,22 @@ Seluruh endpoint backend berada di bawah prefix `/api/v1` (kecuali `/health`). D
 Platform memiliki cakupan pengujian otomatis pada lapisan backend dan frontend:
 
 ### A. Backend Unit & E2E Testing (`pytest`)
-Seluruh suite pengujian backend (`251 passed, 6 skipped` di host Python Windows; `257 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`) berada di `backend/tests/`:
+Seluruh suite pengujian backend (`310 passed, 6 skipped` di host Python Windows; `316 passed, 0 skipped` pada reproduksi CI Linux non-root di image Docker `gwas-backend-gapit`) berada di `backend/tests/`:
 ```powershell
 cd backend
 python -m flake8 app scripts tests --ignore=E501,E402,W503 --max-line-length=120
 python -m pytest tests -q -p no:cacheprovider
 ```
 
-Cakupan pengujian backend meliputi 32 modul uji (`backend/tests/test_*.py`), antara lain:
-- `test_which_tool.py`, `test_security_config.py`, `test_access_control.py`, `test_database_engine.py`, `test_upload_security.py`: Isolasi biner tool, konfigurasi JWT produksi, IDOR/access control, opt-in SQLite fallback, sanitasi upload.
-- `test_qc_commands.py`, `test_normalization_indexing.py`, `test_imputation_tasks.py`, `test_structure_service.py`: Filter QC `inbred`/`outcross`, overflow $>2.10\text{ Gb}$ & fallback indeks `.csi`, limit heap Beagle, LD pruning, PCA/Kinship/KING.
-- `test_assoc_normalizer.py`, `test_gemma_tasks.py`, `test_multilocus_models.py`, `test_multilocus_correctness.py`, `test_gapit_integration.py`, `test_postgwas_service.py`, `test_manhattan_chr.py`: Normalisasi kolom, streaming GEMMA, Multi-Locus GAPIT3/Python, clumping `p1`, dan cache Parquet.
-- `test_annotation_service.py`, `test_go_and_primers.py`, `test_prepare_reference_fasta.py`: Streaming GFF3, uji hipergeometrik GO TSV/GAF/Ontology_term, indeks `.fai` + `primer3-py`, serta skrip `prepare_reference_fasta.py`.
-- `test_pipeline_e2e.py`, `test_pipeline_paths.py`, `test_jobs_api.py`, `test_cancellation.py`, `test_celery_routing.py`, `test_job_storage_cleanup.py`: Alur 10 tahap e2e, Smart Retry/Resume, revoke chain penuh, routing antrean Celery, dan retensi storage.
+Cakupan pengujian backend meliputi 36 modul uji (`backend/tests/test_*.py`), antara lain:
+- `test_which_tool.py`, `test_security_config.py`, `test_access_control.py`, `test_database_engine.py`, `test_upload_security.py`, `test_dependency_pins.py`, `test_resource_limits.py`, `test_storage_isolation.py`: Isolasi biner tool, konfigurasi JWT produksi, IDOR/access control, opt-in SQLite fallback, sanitasi upload, serta pin dependensi & limit memori.
+- `test_chromosome_service.py`, `test_qc_commands.py`, `test_normalization_indexing.py`, `test_imputation_tasks.py`, `test_structure_service.py`: Fase 0 karakteristik kromosom, split kontig semu + `restore_coord`, filter QC `inbred`/`outcross`, fallback indeks `.csi`, limit heap Beagle, LD pruning, PCA/Kinship, KING-robust tervektorisasi, dan LD decay non-prune blok kontigu.
+- `test_assoc_normalizer.py`, `test_gemma_tasks.py`, `test_multilocus_models.py`, `test_multilocus_correctness.py`, `test_gapit_integration.py`, `test_postgwas_service.py`, `test_manhattan_chr.py`: Normalisasi kolom + pemulihan `orig_chr`/`orig_pos`, streaming GEMMA, Multi-Locus GAPIT3/Python, clumping `p1`, dan cache Parquet.
+- `test_annotation_service.py`, `test_flanking_service.py`, `test_kasp_service.py`, `test_go_and_primers.py`, `test_prepare_reference_fasta.py`: Streaming GFF3, region kandidat 5.4, masukan & desain KASP (*EasyKASP* golden `SNP_74098` + struktur sekunder bertail `primer3-py`), uji hipergeometrik GO, indeks `.fai`, serta `prepare_reference_fasta.py`.
+- `test_pipeline_e2e.py`, `test_pipeline_paths.py`, `test_stage_summaries.py`, `test_jobs_api.py`, `test_cancellation.py`, `test_celery_routing.py`, `test_job_storage_cleanup.py`: Alur 10 tahap e2e (`toy` & `overflow_dataset`), ringkasan `stage_summary.json`, Smart Retry/Resume, pembatalan di tengah split, routing antrean Celery, dan retensi storage.
 
 ### B. Frontend Unit Testing (`jest`)
-Seluruh pengujian unit frontend (**`29` test suites, `88 passed`**) berjalan dengan `--runInBand`:
+Seluruh pengujian unit frontend (**`29` test suites, `98 passed`**) berjalan dengan `--runInBand`:
 ```powershell
 npm --prefix frontend test
 ```

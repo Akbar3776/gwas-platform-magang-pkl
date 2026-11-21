@@ -1,5 +1,7 @@
 # 🧭 Rencana Integrasi `Pipeline_Gwas.md` → `gwas-platform`
 
+> **SUPERSEDED (2026-11-21):** Dokumen ini merupakan rencana kerja historis (2026-10-28) dan **sudah digantikan** oleh implementasi pasca-migrasi alur kerja 2026-11-21. Rujuk [`ADR-010`](./decisions/ADR-010-gwas-workflow-2026-11-21.md) untuk daftar keputusan perubahan (split kromosom >32-bit, LD decay non-prune, region kandidat Fase 5.4, KASP EasyKASP) serta [`README.md`](../README.md) dan [`docs/design.md`](./design.md) untuk perilaku platform aktual.
+
 > **Dokumen ini adalah instruksi eksekusi untuk AI coding agent.**
 > Baca seluruh dokumen sebelum mulai. Kerjakan milestone **secara berurutan** (M0 → M10). Setiap milestone memiliki *Acceptance Criteria* dan *Verifikasi* yang **wajib lulus** sebelum lanjut ke milestone berikutnya.
 >
