@@ -22,6 +22,7 @@ from app.services.chromosome_service import _is_gzip_file, load_split_map
 from app.services.flanking_service import (
     attach_ref_alt_from_bim,
     collect_significant_snps,
+    extract_regions_fasta,
     write_candidate_regions,
 )
 from app.services.go_enrichment_service import run_go_enrichment_analysis
@@ -118,6 +119,20 @@ def _resolve_bim_candidate(workspace: Path, ctx: dict[str, Any]) -> Path | None:
         if cand.is_file():
             return cand
     return None
+
+
+def _attach_region_metadata(
+    primers_data: dict[str, Any] | None,
+    regions_fa_info: dict[str, Any] | None,
+    candidate_regions_meta: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Attach candidate region summary metadata onto primers.json payload."""
+    if primers_data is None or regions_fa_info is None:
+        return primers_data
+    primers_data["regions_status"] = regions_fa_info["status"]
+    if candidate_regions_meta is not None:
+        primers_data["candidate_regions"] = candidate_regions_meta
+    return primers_data
 
 
 @celery_app.task(
@@ -276,13 +291,42 @@ def run_annotation(
                 ],
             )
 
+        regions_fa_info: dict[str, Any] | None = None
+        candidate_regions_meta: dict[str, Any] | None = None
         if lead_snps:
-            write_candidate_regions(
+            region_info = write_candidate_regions(
                 lead_snps,
                 window_bp,
                 workspace / "candidate_regions.csv",
                 workspace / "candidate_regions.bed",
             )
+            regions_fa_info = extract_regions_fasta(
+                region_info["bed_path"],
+                fasta_candidate,
+                workspace / "candidate_regions.fa",
+            )
+            region_log = (
+                f"[5.4] region kandidat: {regions_fa_info['written_regions']}/{region_info['n_regions']} SNP, "
+                f"total {regions_fa_info['total_bp']} bp (batas {regions_fa_info['max_total_bp']} bp)"
+            )
+            if regions_fa_info.get("truncated"):
+                region_log += f" — dipotong ({regions_fa_info['truncated_count']} region melewati batas)"
+            elif regions_fa_info.get("status") == "no_reference":
+                region_log += " — FASTA tidak tersedia"
+            append_log(log_file, region_log)
+            candidate_regions_meta = {
+                "csv": "candidate_regions.csv",
+                "bed": "candidate_regions.bed",
+                "fasta": "candidate_regions.fa" if regions_fa_info.get("fasta_path") else None,
+                "n_regions": region_info["n_regions"],
+                "written_regions": regions_fa_info["written_regions"],
+                "total_bp": regions_fa_info["total_bp"],
+                "max_total_bp": regions_fa_info["max_total_bp"],
+                "truncated": bool(regions_fa_info.get("truncated")),
+                "truncated_count": int(regions_fa_info.get("truncated_count") or 0),
+                "window_bp": window_bp,
+                "reason": regions_fa_info.get("reason"),
+            }
 
         primers_data: dict[str, Any] | None = None
         if len(lead_snps) > 0:
@@ -294,6 +338,7 @@ def run_annotation(
                     fasta_path=fasta_candidate,
                     output_dir=workspace,
                 )
+                _attach_region_metadata(primers_data, regions_fa_info, candidate_regions_meta)
                 write_json(workspace / "primers.json", primers_data)
                 append_log(
                     log_file,
@@ -410,6 +455,7 @@ def run_annotation(
                 fasta_path=fasta_candidate,
                 output_dir=workspace,
             )
+            _attach_region_metadata(primers_data, regions_fa_info, candidate_regions_meta)
             write_json(workspace / "primers.json", primers_data)
 
         candidate_data = {

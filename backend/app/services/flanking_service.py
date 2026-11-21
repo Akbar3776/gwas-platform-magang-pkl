@@ -6,6 +6,7 @@ import csv
 from pathlib import Path
 from typing import Any
 
+from app.core.config import settings
 from app.services.annotation_service import merge_annotation_input_snps
 from app.services.chromosome_service import _validate_contig_name, restore_coord
 from app.tasks._common import chr_label
@@ -235,4 +236,114 @@ def write_candidate_regions(
         "n_regions": len(csv_rows),
         "total_bp": total_bp,
         "window_bp": win,
+    }
+
+
+def extract_regions_fasta(
+    bed_path: str | Path,
+    fasta_path: str | Path | None,
+    out_fa: str | Path,
+    *,
+    max_total_bp: int | None = None,
+) -> dict[str, Any]:
+    """Extract FASTA sequences for candidate BED intervals with a strict total bp budget."""
+    from app.services.primer_service import _lookup_contig, _read_fasta_region, load_fasta_index
+
+    max_bp = int(max_total_bp if max_total_bp is not None else settings.CANDIDATE_REGION_MAX_TOTAL_BP)
+    if fasta_path is None or not Path(fasta_path).is_file():
+        return {
+            "status": "no_reference",
+            "reason": "FASTA referensi tidak tersedia",
+            "written_regions": 0,
+            "truncated": False,
+            "truncated_count": 0,
+            "total_bp": 0,
+            "max_total_bp": max_bp,
+            "fasta_path": None,
+        }
+
+    bed_file = Path(bed_path)
+    if not bed_file.is_file():
+        return {
+            "status": "empty",
+            "reason": "Berkas BED region kandidat tidak ditemukan",
+            "written_regions": 0,
+            "truncated": False,
+            "truncated_count": 0,
+            "total_bp": 0,
+            "max_total_bp": max_bp,
+            "fasta_path": None,
+        }
+
+    bed_entries: list[tuple[str, int, int, str]] = []
+    for raw_line in bed_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        cols = line.split("\t")
+        if len(cols) < 4:
+            continue
+        chrom = _validate_contig_name(cols[0].strip())
+        bed_entries.append((chrom, max(0, int(cols[1])), int(cols[2]), cols[3].strip()))
+
+    fasta_file = Path(fasta_path)
+    fasta_index = load_fasta_index(fasta_file)
+
+    fasta_blocks: list[str] = []
+    total_bp = 0
+    written_regions = 0
+    truncated = False
+    truncated_count = 0
+
+    for idx, (chrom, start0, end_req, snp_name) in enumerate(bed_entries):
+        rec = _lookup_contig(fasta_index, chrom)
+        if rec is None:
+            continue
+        end_clamped = min(end_req, int(rec["length"]))
+        region_len = end_clamped - start0
+        if region_len <= 0:
+            continue
+
+        if total_bp + region_len > max_bp:
+            truncated = True
+            truncated_count = len(bed_entries) - idx
+            break
+
+        seq = _read_fasta_region(fasta_file, chrom, start0 + 1, end_clamped, index=fasta_index) or ""
+        if not seq:
+            continue
+
+        header = f">{snp_name}::{chrom}:{start0}-{end_clamped}"
+        wrapped = [seq[i:i + 80] for i in range(0, len(seq), 80)]
+        fasta_blocks.append("\n".join([header, *wrapped]))
+        total_bp += len(seq)
+        written_regions += 1
+
+    out_target = Path(out_fa)
+    if written_regions == 0:
+        return {
+            "status": "empty",
+            "reason": "Tidak ada region kandidat yang cocok dengan kontig FASTA" if bed_entries else "Daftar region kosong",
+            "written_regions": 0,
+            "truncated": truncated,
+            "truncated_count": truncated_count,
+            "total_bp": 0,
+            "max_total_bp": max_bp,
+            "fasta_path": None,
+        }
+
+    out_target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_target.with_suffix(out_target.suffix + ".tmp")
+    tmp_path.write_text("\n".join(fasta_blocks) + "\n", encoding="utf-8")
+    tmp_path.replace(out_target)
+
+    return {
+        "status": "completed",
+        "reason": None,
+        "written_regions": written_regions,
+        "truncated": truncated,
+        "truncated_count": truncated_count,
+        "total_bp": total_bp,
+        "max_total_bp": max_bp,
+        "fasta_path": str(out_target),
     }
