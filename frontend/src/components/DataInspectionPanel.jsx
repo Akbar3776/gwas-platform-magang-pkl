@@ -4,10 +4,18 @@ import { BoxPlotChart } from "./BoxPlotChart";
 import { downloadInspectionFile } from "../api/jobsApi";
 import { downloadJobFileByName } from "../utils/jobFiles";
 
+const BEAGLE_SAFE_MAX_BP = 2100000000;
+
 function formatStat(val) {
   if (val === null || val === undefined) return "-";
   const num = Number(val);
   return isNaN(num) ? String(val) : num.toFixed(3);
+}
+
+function formatInt(val) {
+  if (val === null || val === undefined || val === "") return "-";
+  const num = Number(val);
+  return Number.isNaN(num) ? String(val) : num.toLocaleString("id-ID");
 }
 
 export function DataInspectionPanel({ report, fileId, jobId }) {
@@ -35,6 +43,7 @@ export function DataInspectionPanel({ report, fileId, jobId }) {
     boxplot = {},
     warnings = [],
     blocking_errors = [],
+    chromosome_summary = null,
   } = report;
 
   const handleDownload = async (filename) => {
@@ -52,6 +61,15 @@ export function DataInspectionPanel({ report, fileId, jobId }) {
   const hasStats = stats && typeof stats === "object" && (Number(stats.N) > 0 || stats.mean !== undefined);
   const hasHist = histogram && Array.isArray(histogram.edges) && histogram.edges.length > 1;
   const hasBox = boxplot && typeof boxplot === "object" && (boxplot.median !== undefined || boxplot.q1 !== undefined || boxplot.whisker_low !== undefined);
+  const hasChromosomeSummary = Boolean(chromosome_summary && typeof chromosome_summary === "object");
+  const chromRows = hasChromosomeSummary && Array.isArray(chromosome_summary.chromosomes)
+    ? chromosome_summary.chromosomes
+    : [];
+  const thresholdBp = hasChromosomeSummary ? Number(chromosome_summary.threshold_bp || 2147483647) : 2147483647;
+  const hasOverflowChroms = hasChromosomeSummary && (
+    Boolean(chromosome_summary.needs_split)
+    || chromRows.some((c) => Boolean(c?.needs_split) || Number(c?.overflow_count || 0) > 0)
+  );
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
@@ -250,6 +268,141 @@ export function DataInspectionPanel({ report, fileId, jobId }) {
           >
             📥 pheno_plink.txt
           </button>
+        </div>
+      )}
+
+      {/* Chromosome Characteristics Table (Fase 0) */}
+      {hasChromosomeSummary && (
+        <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: 14, display: "grid", gap: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <h4 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+                Karakteristik Kromosom (Fase 0)
+              </h4>
+              <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+                Ambang split: {formatInt(thresholdBp)} bp
+              </div>
+            </div>
+            {jobId && (
+              <button
+                type="button"
+                onClick={() => handleDownload("chromosome_characteristics_summary.txt")}
+                style={{
+                  padding: "5px 12px",
+                  fontSize: 12,
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  background: "#fff",
+                  cursor: "pointer",
+                  fontWeight: 600,
+                  color: "#334155",
+                }}
+              >
+                📥 chromosome_characteristics_summary.txt
+              </button>
+            )}
+          </div>
+
+          {!hasOverflowChroms && (
+            <div
+              role="status"
+              style={{
+                padding: "8px 12px",
+                borderRadius: 6,
+                background: "#f0fdf4",
+                border: "1px solid #bbf7d0",
+                color: "#166534",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+            >
+              Tidak ada kromosom melebihi ambang
+            </div>
+          )}
+
+          {chromRows.length > 0 && (
+            <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: 6 }}>
+              <table
+                aria-label="Karakteristik Kromosom (Fase 0)"
+                style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, textAlign: "left" }}
+              >
+                <thead>
+                  <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
+                    <th scope="col" style={{ padding: "8px 10px" }}>Kromosom</th>
+                    <th scope="col" style={{ padding: "8px 10px", textAlign: "right" }}>Total SNP</th>
+                    <th scope="col" style={{ padding: "8px 10px", textAlign: "right" }}>Min POS</th>
+                    <th scope="col" style={{ padding: "8px 10px", textAlign: "right" }}>Max POS</th>
+                    <th scope="col" style={{ padding: "8px 10px", textAlign: "right" }}>Overflow</th>
+                    <th scope="col" style={{ padding: "8px 10px", textAlign: "right" }}>Invalid POS</th>
+                    <th scope="col" style={{ padding: "8px 10px" }}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {chromRows.map((row) => {
+                    const isSplit = Boolean(row.needs_split) || Number(row.overflow_count || 0) > 0;
+                    const maxPosNum = Number(row.max_pos || 0);
+                    const isBeagleRange = !isSplit && maxPosNum > BEAGLE_SAFE_MAX_BP && maxPosNum <= thresholdBp;
+                    return (
+                      <tr key={row.chrom} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                        <th scope="row" style={{ padding: "7px 10px", fontWeight: 700, color: "#0f172a" }}>
+                          {row.chrom}
+                        </th>
+                        <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace" }}>
+                          {formatInt(row.total_snp)}
+                        </td>
+                        <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace" }}>
+                          {formatInt(row.min_pos)}
+                        </td>
+                        <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace" }}>
+                          {formatInt(row.max_pos)}
+                        </td>
+                        <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace" }}>
+                          {formatInt(row.overflow_count)}
+                        </td>
+                        <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace" }}>
+                          {formatInt(row.invalid_pos_count)}
+                        </td>
+                        <td style={{ padding: "7px 10px" }}>
+                          {isSplit ? (
+                            <span
+                              style={{
+                                display: "inline-block",
+                                padding: "2px 8px",
+                                borderRadius: 999,
+                                background: "#fee2e2",
+                                color: "#991b1b",
+                                fontSize: 11,
+                                fontWeight: 700,
+                              }}
+                            >
+                              Dipecah
+                            </span>
+                          ) : isBeagleRange ? (
+                            <span
+                              title="Posisi > 2,1 Gb hingga ambang split disaring oleh jaring pengaman Beagle jika imputasi aktif"
+                              style={{
+                                display: "inline-block",
+                                padding: "2px 8px",
+                                borderRadius: 999,
+                                background: "#fef3c7",
+                                color: "#92400e",
+                                fontSize: 11,
+                                fontWeight: 700,
+                              }}
+                            >
+                              Rentang Beagle
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 11, color: "#475569", fontWeight: 600 }}>Normal</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </div>

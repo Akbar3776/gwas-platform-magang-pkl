@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
+import { DataInspectionPanel } from "./DataInspectionPanel";
 import { LeadSnpTable } from "./LeadSnpTable";
 import { PeakComparisonTable } from "./PeakComparisonTable";
 
@@ -49,5 +50,117 @@ describe("Tables accessibility (A36)", () => {
 
     fireEvent.click(consistentCard);
     expect(consistentCard).toHaveAttribute("aria-pressed", "true");
+  });
+});
+
+describe("DataInspectionPanel Fase 0 chromosome summary (W22)", () => {
+  const baseReport = {
+    trait: "Clove_Weight",
+    id_column: "IID",
+    n_vcf_samples: 50,
+    n_pheno_rows: 50,
+    n_matched: 48,
+    missing_count: 2,
+    non_numeric_count: 0,
+    only_in_vcf_count: 2,
+    only_in_pheno_count: 0,
+    stats: { N: 48, mean: 1.5 },
+    histogram: {},
+    boxplot: {},
+  };
+
+  test("renders chromosome table with thousands formatting, split badge, Beagle range badge, and accessible scopes", () => {
+    render(
+      <DataInspectionPanel
+        jobId="job-w22"
+        report={{
+          ...baseReport,
+          chromosome_summary: {
+            threshold_bp: 2147483647,
+            needs_split: true,
+            chromosomes: [
+              {
+                chrom: "chr1",
+                total_snp: 4500,
+                min_pos: 100,
+                max_pos: 1800000000,
+                overflow_count: 0,
+                invalid_pos_count: 0,
+                needs_split: false,
+              },
+              {
+                chrom: "chr5",
+                total_snp: 3200,
+                min_pos: 500,
+                max_pos: 2120000000,
+                overflow_count: 0,
+                invalid_pos_count: 0,
+                needs_split: false,
+              },
+              {
+                chrom: "chr7",
+                total_snp: 12000,
+                min_pos: 100,
+                max_pos: 2300000000,
+                overflow_count: 12,
+                invalid_pos_count: 1,
+                needs_split: true,
+              },
+            ],
+          },
+        }}
+      />
+    );
+
+    expect(screen.getByText("Karakteristik Kromosom (Fase 0)")).toBeInTheDocument();
+    const table = screen.getByRole("table", { name: /Karakteristik Kromosom \(Fase 0\)/i });
+
+    const colHeaders = within(table).getAllByRole("columnheader");
+    expect(colHeaders).toHaveLength(7);
+    colHeaders.forEach((th) => expect(th).toHaveAttribute("scope", "col"));
+
+    const rowHeaders = within(table).getAllByRole("rowheader");
+    expect(rowHeaders.map((th) => th.textContent)).toEqual(["chr1", "chr5", "chr7"]);
+    rowHeaders.forEach((th) => expect(th).toHaveAttribute("scope", "row"));
+
+    expect(within(table).getByText(Number(2300000000).toLocaleString("id-ID"))).toBeInTheDocument();
+    expect(within(table).getByText(Number(12000).toLocaleString("id-ID"))).toBeInTheDocument();
+    expect(within(table).getByText("Dipecah")).toBeInTheDocument();
+    expect(within(table).getByText("Rentang Beagle")).toBeInTheDocument();
+    expect(screen.queryByText(/Tidak ada kromosom melebihi ambang/i)).not.toBeInTheDocument();
+  });
+
+  test("renders empty overflow status banner when no chromosomes exceed threshold", () => {
+    render(
+      <DataInspectionPanel
+        report={{
+          ...baseReport,
+          chromosome_summary: {
+            threshold_bp: 2147483647,
+            needs_split: false,
+            chromosomes: [
+              {
+                chrom: "chr1",
+                total_snp: 1000,
+                min_pos: 50,
+                max_pos: 150000,
+                overflow_count: 0,
+                invalid_pos_count: 0,
+                needs_split: false,
+              },
+            ],
+          },
+        }}
+      />
+    );
+
+    expect(screen.getByText(/Tidak ada kromosom melebihi ambang/i)).toBeInTheDocument();
+  });
+
+  test("handles legacy payload without chromosome_summary gracefully without crashing", () => {
+    render(<DataInspectionPanel report={baseReport} />);
+
+    expect(screen.getByText("Sampel VCF")).toBeInTheDocument();
+    expect(screen.queryByText("Karakteristik Kromosom (Fase 0)")).not.toBeInTheDocument();
   });
 });

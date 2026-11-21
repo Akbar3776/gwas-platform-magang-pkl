@@ -23,7 +23,7 @@ export const PIPELINE_STAGES = [
     logKey: "normalization",
     runningStatus: "RUNNING_NORMALIZATION",
     label: "Normalisasi VCF",
-    detail: "Fase 0 (QC Overflow) & bcftools",
+    detail: "Fase 0 (Split kromosom) & bcftools",
     runningText: "Tahap 2/10: Normalisasi VCF sedang berjalan",
     logLabel: "Normalisasi VCF",
     tool: "bcftools",
