@@ -15,6 +15,7 @@ Workflow:
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import uuid
@@ -35,6 +36,8 @@ from app.tasks.postgwas_tasks import run_postgwas_analysis
 from app.tasks.qc_tasks import run_qc_pipeline
 from app.tasks.structure_tasks import run_structure_analysis
 from app.tasks.visualization_tasks import run_visualization
+
+logger = logging.getLogger(__name__)
 
 STAGE_SEQUENCE: list[str] = [
     "inspection",
@@ -190,8 +193,26 @@ def discover_resume_state(
     split_map_file = norm_dir / "chrom_split_map.json"
     requires_split_map = "chrom_split" in params
     has_split_map = split_map_file.is_file()
+    requires_contig_filter = "contig_filter" in params
+    norm_vcf_file = norm_dir / "normalized.vcf.gz"
+    stats_file = norm_dir / "qc_overflow_stats.json"
+    has_contig_filter_marker = False
+    if stats_file.is_file():
+        try:
+            norm_stats = json.loads(stats_file.read_text(encoding="utf-8"))
+            has_contig_filter_marker = (
+                isinstance(norm_stats, dict)
+                and norm_stats.get("contig_filter_pattern") is not None
+            )
+        except Exception:
+            has_contig_filter_marker = False
+    if norm_vcf_file.is_file() and not requires_contig_filter and not has_contig_filter_marker:
+        logger.info(
+            "[INFO] Job lama: scaffold tidak disaring; jalankan ulang dari awal (from_scratch) untuk menerapkan (job_id=%s)",
+            job_id,
+        )
     norm_ctx: dict[str, Any] = {
-        "normalized_vcf_path": str((norm_dir / "normalized.vcf.gz").resolve()),
+        "normalized_vcf_path": str(norm_vcf_file.resolve()),
         "log_file": str((norm_dir / "bcftools.log").resolve()),
     }
     if has_split_map:
@@ -211,7 +232,9 @@ def discover_resume_state(
         ),
         (
             "normalization",
-            (norm_dir / "normalized.vcf.gz").is_file() and (not requires_split_map or has_split_map),
+            norm_vcf_file.is_file()
+            and (not requires_split_map or has_split_map)
+            and (not requires_contig_filter or has_contig_filter_marker),
             norm_ctx,
         ),
         (

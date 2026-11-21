@@ -555,3 +555,114 @@ def test_legacy_job_without_split_map_resumes_and_restores_identically(tmp_path,
     assert res_omitted == res_none
     assert (tmp_path / "omitted.csv").read_text(encoding="utf-8") == (tmp_path / "none.csv").read_text(encoding="utf-8")
     assert (tmp_path / "omitted.json").read_text(encoding="utf-8") == (tmp_path / "none.json").read_text(encoding="utf-8")
+
+
+def test_discover_resume_state_requires_contig_filter_marker_when_recorded(tmp_path, monkeypatch):
+    import json
+    from app.core.config import settings
+    from app.tasks import pipeline_orchestrator
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = "job-w47-filter"
+    job_root = tmp_path / "jobs" / job_id
+    (job_root / "inspection").mkdir(parents=True)
+    (job_root / "inspection" / "pheno_plink.txt").write_text("FID\tIID\tT\n", encoding="utf-8")
+    (job_root / "inspection" / "keep_ids.txt").write_text("S1 S1\n", encoding="utf-8")
+    (job_root / "normalization").mkdir(parents=True)
+    (job_root / "normalization" / "normalized.vcf.gz").write_bytes(b"gz")
+    (job_root / "normalization" / "chrom_split_map.json").write_text('{"parts": {}}', encoding="utf-8")
+    (job_root / "normalization" / "qc_overflow_stats.json").write_text(
+        json.dumps({"total_variants": 100, "kept_variants": 100}),
+        encoding="utf-8",
+    )
+
+    params = {
+        "chrom_split": {"applied": False},
+        "contig_filter": {"pattern": settings.NON_PRIMARY_CONTIG_REGEX, "removed_contigs": 2, "removed_variants": 4},
+    }
+
+    _, start_stage, _ = pipeline_orchestrator.discover_resume_state(
+        job_id=job_id,
+        dataset_id="ds-w47",
+        job_parameters=params,
+    )
+    assert start_stage == "normalization"
+
+    (job_root / "normalization" / "qc_overflow_stats.json").write_text(
+        json.dumps({
+            "total_variants": 100,
+            "kept_variants": 96,
+            "contig_filter_pattern": settings.NON_PRIMARY_CONTIG_REGEX,
+        }),
+        encoding="utf-8",
+    )
+    _, start_stage_ok, _ = pipeline_orchestrator.discover_resume_state(
+        job_id=job_id,
+        dataset_id="ds-w47",
+        job_parameters=params,
+    )
+    assert start_stage_ok == "qc"
+
+
+def test_discover_resume_state_legacy_logs_info_about_from_scratch_for_scaffold_filter(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    import json
+    import logging
+    from app.core.config import settings
+    from app.tasks import pipeline_orchestrator
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = "job-w47-legacy"
+    job_root = tmp_path / "jobs" / job_id
+    (job_root / "inspection").mkdir(parents=True)
+    (job_root / "inspection" / "pheno_plink.txt").write_text("FID\tIID\tT\n", encoding="utf-8")
+    (job_root / "inspection" / "keep_ids.txt").write_text("S1 S1\n", encoding="utf-8")
+    (job_root / "normalization").mkdir(parents=True)
+    (job_root / "normalization" / "normalized.vcf.gz").write_bytes(b"gz")
+    (job_root / "normalization" / "qc_overflow_stats.json").write_text(
+        json.dumps({"total_variants": 100, "kept_variants": 100}),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.INFO, logger=pipeline_orchestrator.__name__):
+        _, start_stage, _ = pipeline_orchestrator.discover_resume_state(
+            job_id=job_id,
+            dataset_id="ds-w47-legacy",
+            job_parameters={},
+        )
+
+    assert start_stage == "qc"
+    assert any(
+        "[INFO] Job lama: scaffold tidak disaring; jalankan ulang dari awal (from_scratch) untuk menerapkan"
+        in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_retry_from_scratch_clears_legacy_stats_for_fresh_scaffold_filtering(tmp_path, monkeypatch):
+    from app.core.config import settings
+    from app.tasks import pipeline_orchestrator
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = "job-w47-scratch"
+    job_root = tmp_path / "jobs" / job_id
+    norm_dir = job_root / "normalization"
+    norm_dir.mkdir(parents=True)
+    (norm_dir / "normalized.vcf.gz").write_bytes(b"legacy-with-scaffolds")
+    (norm_dir / "qc_overflow_stats.json").write_text('{"kept_variants": 100}', encoding="utf-8")
+
+    _patch_fake_retry_chain(monkeypatch, pipeline_orchestrator)
+    _, start_idx, start_stage = pipeline_orchestrator.trigger_retry_pipeline(
+        job_id=job_id,
+        dataset_id="ds-w47-scratch",
+        job_parameters={},
+        from_scratch=True,
+        run_id="w47-run",
+    )
+    assert start_idx == 0
+    assert start_stage == "inspection"
+    assert not (norm_dir / "qc_overflow_stats.json").exists()
+    assert not (norm_dir / "normalized.vcf.gz").exists()
