@@ -22,6 +22,7 @@ from app.tasks._common import (
     upsert_result,
     which_tool,
     write_json,
+    write_stage_summary,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
 from app.utils.process import CLICancelledError, CLIExecutionError, run_cli_command
@@ -171,6 +172,31 @@ def _beagle_command(
     return command
 
 
+def _record_imputation_stage_summary(
+    job_id: str,
+    job: AnalysisJob,
+    db: Any,
+    *,
+    status: str,
+    beagle_guard_removed: int,
+    singles_count: int,
+    reason: str | None = None,
+) -> None:
+    """Persist Beagle guard counts on job.parameters and write imputation/stage_summary.json."""
+    job.parameters = {
+        **(job.parameters or {}),
+        "beagle_guard_removed": int(beagle_guard_removed),
+    }
+    payload: dict[str, Any] = {
+        "status": status,
+        "beagle_guard_removed": int(beagle_guard_removed),
+        "singles_count": int(singles_count),
+    }
+    if reason:
+        payload["reason"] = reason
+    write_stage_summary(job_id, "imputation", payload, db=db)
+
+
 @celery_app.task(
     bind=True,
     name="app.tasks.imputation_tasks.run_imputation",
@@ -227,6 +253,15 @@ def run_imputation(
                 "reason": "Imputasi tidak diminta (mode=none)",
             })
 
+            _record_imputation_stage_summary(
+                job_id,
+                job,
+                db,
+                status="skipped",
+                beagle_guard_removed=0,
+                singles_count=0,
+                reason="Imputasi tidak diminta (mode=none)",
+            )
             mark_job(
                 db,
                 job,
@@ -268,7 +303,8 @@ def run_imputation(
         if overflow_filtered > 0:
             append_log(
                 log_file,
-                f"[INFO] Terdeteksi {overflow_filtered:,} varian dengan POS > {MAX_32BIT_POS:,} bp.\n"
+                f"[WARN] Terdeteksi {overflow_filtered:,} varian pada rentang koordinat batas "
+                f"(2.100.000.001-2.147.483.647 bp atau > {MAX_32BIT_POS:,} bp pada kromosom yang tidak dipecah).\n"
                 f"Varian disaring ke berkas aman ({Path(effective_vcf_path).name}) untuk mencegah "
                 f"Java 32-bit sliding window overflow pada Beagle (vcf.PositionMap.basePos).\n"
             )
@@ -342,6 +378,15 @@ def run_imputation(
                         "status": "skipped",
                         "reason": reason,
                     })
+                    _record_imputation_stage_summary(
+                        job_id,
+                        job,
+                        db,
+                        status="skipped",
+                        beagle_guard_removed=overflow_filtered,
+                        singles_count=singles_count,
+                        reason=reason,
+                    )
                     mark_job(
                         db,
                         job,
@@ -396,6 +441,14 @@ def run_imputation(
             append_log(log_file, f"[SUCCESS] Imputasi selesai: {output_vcf} ({output_vcf.stat().st_size} bytes).\n")
             upsert_result(db, job_id, ResultType.IMPUTED_VCF, str(output_vcf))
 
+            _record_imputation_stage_summary(
+                job_id,
+                job,
+                db,
+                status="completed",
+                beagle_guard_removed=overflow_filtered,
+                singles_count=singles_count,
+            )
             mark_job(
                 db,
                 job,
@@ -407,6 +460,7 @@ def run_imputation(
                 **ctx,
                 "status": "completed",
                 "imputation_skipped": False,
+                "beagle_guard_removed": int(overflow_filtered),
                 "output_vcf": str(output_vcf),
                 "genotype_vcf_path": str(output_vcf),
                 "genotype_bfile_prefix": str(output_prefix),
@@ -424,6 +478,15 @@ def run_imputation(
                 "reason": "Beagle JAR/Java atau reference panel tidak tersedia di host",
             })
 
+            _record_imputation_stage_summary(
+                job_id,
+                job,
+                db,
+                status="skipped",
+                beagle_guard_removed=overflow_filtered,
+                singles_count=singles_count,
+                reason="Beagle JAR/Java atau reference panel tidak tersedia di host",
+            )
             mark_job(
                 db,
                 job,
@@ -435,6 +498,7 @@ def run_imputation(
                 **ctx,
                 "status": "skipped",
                 "imputation_skipped": True,
+                "beagle_guard_removed": int(overflow_filtered),
                 "output_vcf": str(qc_vcf_path),
                 "genotype_vcf_path": str(qc_vcf_path),
                 "genotype_bfile_prefix": str(qc_bfile_prefix) if qc_bfile_prefix else None,

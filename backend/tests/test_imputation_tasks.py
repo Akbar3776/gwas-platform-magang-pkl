@@ -439,3 +439,76 @@ def test_resume_from_structure_uses_imputed_bfile_and_multilocus_engine_reads_it
     farmcpu_tsv = (ml_dir / "farmcpu_results.tsv").read_text(encoding="utf-8")
     assert "\t300\t" in farmcpu_tsv and "\t400\t" in farmcpu_tsv
     assert "\t100\t" not in farmcpu_tsv and "\t200\t" not in farmcpu_tsv
+
+
+def test_prepare_beagle_safe_vcf_keeps_split_pseudochromosomes_intact(tmp_path):
+    import gzip
+
+    vcf_file = tmp_path / "split_chr7.vcf.gz"
+    with gzip.open(vcf_file, "wt", encoding="utf-8") as gz:
+        gz.write(
+            "##fileformat=VCFv4.2\n"
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+            "chr7_p0\t500000\tchr7:500000\tA\tG\t.\tPASS\t.\tGT\t0/0\n"
+            "chr7_p0\t900000\tchr7:900000\tC\tT\t.\tPASS\t.\tGT\t0/1\n"
+            "chr7_p2\t160284371\tchr7:2160284371\tG\tA\t.\tPASS\t.\tGT\t1/1\n"
+            "chr7_p2\t165000000\tchr7:2165000000\tT\tC\t.\tPASS\t.\tGT\t0/1\n"
+        )
+
+    safe_path, removed, singles_count = _prepare_beagle_safe_vcf(
+        str(vcf_file),
+        tmp_path,
+        max_pos=MAX_32BIT_POS,
+    )
+    assert removed == 0
+    assert singles_count == 0
+    assert safe_path == str(vcf_file)
+
+
+def test_imputation_unsplit_edge_range_triggers_beagle_guard_warning_and_summary(tmp_path, monkeypatch):
+    import gzip
+    import json
+    import uuid
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = str(uuid.uuid4())
+    qc_dir = tmp_path / "jobs" / job_id / "qc"
+    qc_dir.mkdir(parents=True)
+    qc_vcf = qc_dir / "plink_qc.vcf.gz"
+    with gzip.open(qc_vcf, "wt", encoding="utf-8") as gz:
+        gz.write(
+            "##fileformat=VCFv4.2\n"
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n"
+            "7\t1000\trs_safe_a\tA\tG\t.\tPASS\t.\tGT\t0/0\t0/1\n"
+            "7\t2000\trs_safe_b\tC\tT\t.\tPASS\t.\tGT\t0/1\t1/1\n"
+            "7\t2120000000\trs_edge_2_12b\tG\tA\t.\tPASS\t.\tGT\t0/0\t1/1\n"
+        )
+
+    mock_db = MagicMock()
+    mock_job = MagicMock()
+    mock_job.parameters = {"imputation": {"mode": "reference_free"}}
+    mock_db.get.return_value = mock_job
+
+    with (
+        patch("app.tasks.imputation_tasks.SessionLocal", return_value=mock_db),
+        patch("app.tasks.imputation_tasks.which_tool", return_value=None),
+    ):
+        res = run_imputation(
+            {"qc_vcf_path": str(qc_vcf), "qc_bfile_prefix": str(qc_dir / "plink_qc")},
+            job_id=job_id,
+            params={"mode": "reference_free"},
+        )
+
+    assert res["beagle_guard_removed"] == 1
+    assert mock_job.parameters["beagle_guard_removed"] == 1
+
+    imp_dir = tmp_path / "jobs" / job_id / "imputation"
+    beagle_log = (imp_dir / "beagle.log").read_text(encoding="utf-8")
+    assert "[WARN]" in beagle_log
+    assert "2.100.000.001-2.147.483.647" in beagle_log
+    assert "PositionMap.basePos" in beagle_log
+
+    stage_summary = json.loads((imp_dir / "stage_summary.json").read_text(encoding="utf-8"))
+    assert stage_summary["beagle_guard_removed"] == 1
+    assert mock_job.parameters["stage_summaries"]["imputation"]["beagle_guard_removed"] == 1
