@@ -308,7 +308,11 @@ def run_postgwas_analysis(
             )
 
         # 5. Buat Ringkasan Puncak GWAS (Perbandingan Single vs Multi-Locus)
-        from app.tasks.multilocus_tasks import _single_model_label, generate_peak_comparison
+        from app.tasks.multilocus_tasks import (
+            _single_model_label,
+            extract_multilocus_leads_from_tsv,
+            generate_peak_comparison,
+        )
 
         peak_csv = workspace / "Ringkasan_Puncak_GWAS.csv"
         peak_json = workspace / "peak_comparison.json"
@@ -340,23 +344,20 @@ def run_postgwas_analysis(
 
         if not multi_leads:
             ml_dir = workspace.parent / "multilocus"
+            trait_label = str(
+                ((job.parameters or {}).get("phenotype") or {}).get("trait")
+                or ctx.get("trait")
+                or "Trait"
+            )
             for method_name in ["farmcpu", "blink", "mlmm"]:
                 m_tsv = ml_dir / f"{method_name}_results.tsv"
                 if m_tsv.is_file():
-                    try:
-                        with m_tsv.open("r", encoding="utf-8") as tf:
-                            t_reader = csv.DictReader(tf, delimiter="\t")
-                            rows = sorted(t_reader, key=lambda x: float(x.get("p", 1.0)))[:5]
-                            for r in rows:
-                                multi_leads.append({
-                                    "snp": r.get("rs"),
-                                    "chr": chr_label(r.get("chr", "")),
-                                    "pos": int(r.get("pos", 0)),
-                                    "p": float(r.get("p", 1.0)),
-                                    "method": method_name.upper(),
-                                })
-                    except Exception:
-                        pass
+                    extracted = extract_multilocus_leads_from_tsv(
+                        m_tsv,
+                        method_name=method_name.upper(),
+                        trait_name=trait_label,
+                    )
+                    multi_leads.extend(s for s in extracted if s.get("is_significant"))
 
         peak_data = generate_peak_comparison(
             single_lead_snps=lead_snps,

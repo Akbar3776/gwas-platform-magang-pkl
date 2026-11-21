@@ -1399,20 +1399,24 @@ def generate_peak_comparison(
                 "h_b_p_value": m.get("h_b_p_value"),
                 "pve_pct": m.get("pve_pct"),
                 "method": m.get("method", "Multi-Locus"),
-                "status": "Hanya Multi-Locus",
+                "status": "Minor-Effect (Hanya Multi-Locus)",
                 "keterangan": f"Potensi varian efek minor ({m.get('method', 'Multi-Locus')}) yang tersembunyi pada model univariat.",
             })
+
+    summary: dict[str, Any] = {
+        "n_consistent": len(consistent),
+        "n_single_only": len(single_only),
+        "n_multi_only": len(multi_only),
+        "total_peaks": len(consistent) + len(single_only) + len(multi_only),
+    }
+    if not significant_multi:
+        summary["reason"] = "Tidak ada SNP multi-locus yang lolos Bonferroni"
 
     result_json = {
         "consistent": consistent,
         "single_only": single_only,
         "multi_only": multi_only,
-        "summary": {
-            "n_consistent": len(consistent),
-            "n_single_only": len(single_only),
-            "n_multi_only": len(multi_only),
-            "total_peaks": len(consistent) + len(single_only) + len(multi_only),
-        },
+        "summary": summary,
     }
     write_json(out_json_path, result_json)
 

@@ -393,3 +393,93 @@ def test_postgwas_task_uses_4e_p1_for_plink_and_splits_suggestive_in_json(tmp_pa
     api_out = get_lead_snps_data(job_id=uuid.UUID(job_id), db=mock_db)
     assert [s["snp"] for s in api_out["snps"]] == ["rs_sig"]
     assert [s["snp"] for s in api_out.get("suggestive", [])] == ["rs_sug"]
+
+
+def _seed_postgwas_job(tmp_path, monkeypatch):
+    import uuid
+    from unittest.mock import MagicMock
+    from app.core.config import settings
+    from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep
+    from app.tasks import postgwas_tasks
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = str(uuid.uuid4())
+    job_root = tmp_path / "jobs" / job_id
+    gwas_dir = job_root / "gwas"
+    ml_dir = job_root / "multilocus"
+    gwas_dir.mkdir(parents=True)
+    ml_dir.mkdir(parents=True)
+    norm_assoc = gwas_dir / "gwas_results.normalized.tsv"
+    norm_assoc.write_text(
+        "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn\n"
+        "1\t1000\trs_ns1\tA\tG\t0.3\t0.05\t0.08\t0.25\t100\n"
+        "1\t2000\trs_ns2\tC\tT\t0.25\t0.02\t0.09\t0.65\t100\n",
+        encoding="utf-8",
+    )
+    mock_job = AnalysisJob(
+        id=uuid.UUID(job_id),
+        dataset_id=uuid.uuid4(),
+        pipeline_type="full_pipeline",
+        current_step=PipelineStep.POSTGWAS,
+        overall_status=JobStatus.RUNNING_POSTGWAS,
+        parameters={},
+    )
+    mock_db = MagicMock()
+    mock_db.get.return_value = mock_job
+    mock_db.query.return_value.filter.return_value.first.return_value = None
+
+    monkeypatch.setattr(postgwas_tasks, "SessionLocal", lambda: mock_db)
+    monkeypatch.setattr(postgwas_tasks, "ensure_not_cancelled", lambda *a, **kw: None)
+    monkeypatch.setattr(postgwas_tasks, "guard_status_change", lambda *a, **kw: None)
+    monkeypatch.setattr(postgwas_tasks, "mark_job", lambda *a, **kw: None)
+    monkeypatch.setattr(postgwas_tasks, "upsert_result", lambda *a, **kw: None)
+    monkeypatch.setattr(postgwas_tasks, "which_tool", lambda name: None)
+    return job_id, job_root, norm_assoc, mock_job
+
+
+def test_postgwas_peak_comparison_excludes_nonsignificant_multilocus_tsv(tmp_path, monkeypatch):
+    import json
+    from app.tasks import postgwas_tasks
+
+    job_id, job_root, norm_assoc, mock_job = _seed_postgwas_job(tmp_path, monkeypatch)
+    ml_rows = ["chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn"]
+    for i in range(10):
+        p_val = 0.02 + i * 0.05
+        ml_rows.append(f"1\t{(i + 1) * 1000}\trs_ml_{i}\tA\tG\t0.3\t0.1\t0.05\t{p_val}\t100")
+    (job_root / "multilocus" / "farmcpu_results.tsv").write_text("\n".join(ml_rows) + "\n", encoding="utf-8")
+
+    postgwas_tasks.run_postgwas_analysis(
+        {"normalized_assoc_path": str(norm_assoc)},
+        job_id=job_id,
+        dataset_id=str(mock_job.dataset_id),
+    )
+
+    peak = json.loads((job_root / "postgwas" / "peak_comparison.json").read_text(encoding="utf-8"))
+    assert peak["multi_only"] == []
+    assert peak["summary"]["n_multi_only"] == 0
+    assert peak["summary"]["reason"] == "Tidak ada SNP multi-locus yang lolos Bonferroni"
+
+
+def test_postgwas_peak_comparison_includes_only_bonferroni_significant_multilocus_snp(tmp_path, monkeypatch):
+    import json
+    from app.tasks import postgwas_tasks
+
+    job_id, job_root, norm_assoc, mock_job = _seed_postgwas_job(tmp_path, monkeypatch)
+    ml_rows = [
+        "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn",
+        "2\t50000\trs_sig_ml\tA\tG\t0.3\t0.8\t0.1\t1e-4\t100",
+    ]
+    for i in range(9):
+        ml_rows.append(f"2\t{(i + 1) * 1000}\trs_bg_{i}\tC\tT\t0.25\t0.05\t0.1\t{0.1 + i * 0.05}\t100")
+    (job_root / "multilocus" / "blink_results.tsv").write_text("\n".join(ml_rows) + "\n", encoding="utf-8")
+
+    postgwas_tasks.run_postgwas_analysis(
+        {"normalized_assoc_path": str(norm_assoc)},
+        job_id=job_id,
+        dataset_id=str(mock_job.dataset_id),
+    )
+
+    peak = json.loads((job_root / "postgwas" / "peak_comparison.json").read_text(encoding="utf-8"))
+    assert len(peak["multi_only"]) == 1
+    assert peak["multi_only"][0]["snp"] == "rs_sig_ml"
+    assert peak["multi_only"][0]["status"] == "Minor-Effect (Hanya Multi-Locus)"
