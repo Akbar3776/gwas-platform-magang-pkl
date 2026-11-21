@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from app.schemas.pipeline import QCPipelineConfig, StructureConfig
-from app.services.qc_service import run_python_fallback_qc
+from tests.fixtures.plink_fixture import run_python_fallback_qc
 from app.services.structure_service import (
     compute_centered_kinship,
     compute_king_robust_table,

@@ -7,11 +7,10 @@ from app.services.qc_service import (
     build_plink19_qc_commands,
     build_plink2_qc_commands,
     build_qc_comparison_from_plink_outputs,
-    encode_plink_bed_row,
     resolve_pheno_flags,
-    run_python_fallback_qc,
 )
 from tests.fixtures.make_fixtures import ensure_fixtures
+from tests.fixtures.plink_fixture import encode_plink_bed_row, run_python_fallback_qc
 
 
 def test_build_plink2_qc_commands_inbred():
@@ -303,24 +302,6 @@ def test_build_plink19_qc_commands_geno_disabled():
     cmd_main = cmds[1]
     assert "--maf" in cmd_main
     assert "--geno" not in cmd_main
-
-
-def test_build_plink_qc_command_geno_optional():
-    from app.services.qc_service import build_plink_qc_command
-
-    cmd_with = build_plink_qc_command(
-        input_vcf_path="/data/in.vcf.gz",
-        output_prefix="/data/out",
-        geno=0.05,
-    )
-    assert "--geno" in cmd_with
-
-    cmd_without = build_plink_qc_command(
-        input_vcf_path="/data/in.vcf.gz",
-        output_prefix="/data/out",
-        geno=None,
-    )
-    assert "--geno" not in cmd_without
 
 
 def test_qc_pipeline_config_default_mind_is_0_1():

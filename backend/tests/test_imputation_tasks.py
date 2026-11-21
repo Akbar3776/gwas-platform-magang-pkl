@@ -371,7 +371,7 @@ def test_post_beagle_conversion_reapplies_maf_and_geno_filters(tmp_path):
 def test_resume_from_structure_uses_imputed_bfile_and_multilocus_engine_reads_it(tmp_path, monkeypatch):
     from app.core.config import settings
     from app.schemas.pipeline import QCPipelineConfig
-    from app.services.qc_service import run_python_fallback_qc
+    from tests.fixtures.plink_fixture import run_python_fallback_qc
     from app.tasks import multilocus_tasks, pipeline_orchestrator
 
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
