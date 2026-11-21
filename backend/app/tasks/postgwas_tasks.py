@@ -308,7 +308,7 @@ def run_postgwas_analysis(
             )
 
         # 5. Buat Ringkasan Puncak GWAS (Perbandingan Single vs Multi-Locus)
-        from app.tasks.multilocus_tasks import generate_peak_comparison
+        from app.tasks.multilocus_tasks import _single_model_label, generate_peak_comparison
 
         peak_csv = workspace / "Ringkasan_Puncak_GWAS.csv"
         peak_json = workspace / "peak_comparison.json"
@@ -364,9 +364,7 @@ def run_postgwas_analysis(
             output_csv=peak_csv,
             output_json=peak_json,
             window_kb=int(clump_kb),
-            single_model_label=str(
-                ((job.parameters or {}).get("gwas") or {}).get("model_used") or "Single-Locus"
-            ).upper(),
+            single_model_label=_single_model_label(job.parameters),
         )
 
         # Sinkronkan juga ke direktori multilocus bila folder tersedia dan peak_data valid

@@ -41,6 +41,18 @@ MULTILOCUS_TIMEOUT_SECONDS = int(os.getenv("MULTILOCUS_TIMEOUT_SECONDS", str(6 *
 GAPIT_MAX_SNPS = int(os.getenv("GAPIT_MAX_SNPS", "300000"))
 
 
+def _single_model_label(parameters: dict[str, Any] | None, ctx: dict[str, Any] | None = None) -> str:
+    """Label model single-locus; structure_tasks menulis model_used di level atas job.parameters."""
+    parameters = parameters or {}
+    label = (
+        parameters.get("model_used")
+        or (parameters.get("gwas") or {}).get("model_used")
+        or (ctx or {}).get("model_used")
+        or "Single-Locus"
+    )
+    return str(label).upper()
+
+
 def _resolve_genotype_bfile(workspace: Path, ctx: dict[str, Any] | None = None) -> Path | None:
     """Resolve one shared genotype source, preferring imputed data over QC data."""
     ctx = ctx or {}
@@ -474,15 +486,9 @@ def _run_python_multilocus_engine(
         transform: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Menjalankan pemindaian seluruh varian dengan matriks kofaktor tambahan secara tervektorisasi per chunk."""
-        if transform is not None:
-            valid_indices = np.flatnonzero(valid_pheno)
-            scan_g = G_mat[valid_indices]
-            scan_y = y_centered[valid_indices]
-            scan_c = c_mat[valid_indices]
-        else:
-            scan_g = G_mat
-            scan_y = y_centered
-            scan_c = c_mat
+        scan_g = G_mat[valid_indices]
+        scan_y = y_centered[valid_indices]
+        scan_c = c_mat[valid_indices]
 
         if cofactors_idx:
             x_cof = [scan_c]
@@ -686,7 +692,6 @@ def _run_python_multilocus_engine(
             final_p, final_b, final_se = _refit_qtn_statistics(
                 cur_p, cur_b, cur_se, mlmm_cofactors, transform=best_transform
             )
-            out_tsv = workspace / "mlmm_results.tsv"
             out_tsv = workspace / "mlmm_results.tsv"
 
         else:
@@ -1243,7 +1248,7 @@ def run_multilocus_gwas(
             multi_lead_snps=multi_lead_snps,
             output_csv=summary_csv,
             output_json=peak_comp_file,
-            single_model_label=str(gwas_cfg.get("model_used") or ctx.get("model_used") or "Single-Locus").upper(),
+            single_model_label=_single_model_label(job.parameters, ctx),
         )
         upsert_result(
             db,

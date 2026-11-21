@@ -308,3 +308,64 @@ def test_gapit_pruning_accepts_non_numeric_contigs_with_real_plink(tmp_path, mon
     assert result.name == "gapit_input"
     assert result.with_suffix(".bim").is_file()
     assert "scaffold1" in result.with_suffix(".bim").read_text(encoding="utf-8")
+
+
+def _run_engine_with_optional_unphenotyped(root: Path, n_unphenotyped: int) -> dict[str, dict[str, str]]:
+    rng = np.random.default_rng(7)
+    n_samples, n_snps = 60, 200
+    genotypes = rng.integers(0, 3, size=(n_samples, n_snps), dtype=np.int8)
+    phenotype = [f"{v:.8f}" for v in 1.0 * genotypes[:, -1] + rng.normal(0.0, 1.0, n_samples)]
+    samples = [f"S{i:03d}" for i in range(n_samples)]
+    if n_unphenotyped:
+        genotypes = np.vstack([genotypes, np.full((n_unphenotyped, n_snps), 2, dtype=np.int8)])
+        samples += [f"X{i:03d}" for i in range(n_unphenotyped)]
+        phenotype += ["-9"] * n_unphenotyped
+
+    job_dir = root / "jobs" / "unphenotyped"
+    for sub in ("normalization", "inspection", "structure", "multilocus"):
+        (job_dir / sub).mkdir(parents=True, exist_ok=True)
+    vcf_lines = [
+        "##fileformat=VCFv4.2",
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(samples),
+    ]
+    for idx in range(n_snps):
+        calls = "\t".join(f"{value}/{value}" for value in genotypes[:, idx])
+        vcf_lines.append(f"1\t{idx + 1}\trs{idx + 1}\tA\tG\t.\tPASS\t.\tGT\t{calls}")
+    vcf_path = job_dir / "normalization" / "normalized.vcf"
+    vcf_path.write_text("\n".join(vcf_lines) + "\n", encoding="utf-8")
+    pheno_lines = ["FID\tIID\tTRAIT"] + [f"{s}\t{s}\t{p}" for s, p in zip(samples, phenotype)]
+    (job_dir / "inspection" / "pheno_plink.txt").write_text("\n".join(pheno_lines) + "\n", encoding="utf-8")
+    np.savetxt(job_dir / "structure" / "kinship.cXX.txt", np.eye(len(samples)))
+
+    workspace = job_dir / "multilocus"
+    _run_python_multilocus_engine(
+        job_id="unphenotyped",
+        dataset_id="dataset",
+        methods=["FarmCPU", "MLMM"],
+        workspace=workspace,
+        log_file=workspace / "multilocus.log",
+        ctx={"normalized_vcf_path": str(vcf_path), "trait": "TRAIT"},
+    )
+    return {
+        name: _read_result_row(workspace / f"{name}_results.tsv", f"rs{n_snps}")
+        for name in ("farmcpu", "mlmm")
+    }
+
+
+def test_python_engine_ignores_samples_without_phenotype(tmp_path):
+    baseline = _run_engine_with_optional_unphenotyped(tmp_path / "base", 0)
+    with_missing = _run_engine_with_optional_unphenotyped(tmp_path / "missing", 10)
+    for name in ("farmcpu", "mlmm"):
+        for column in ("beta", "se", "p"):
+            assert np.isclose(
+                float(with_missing[name][column]), float(baseline[name][column]), rtol=1e-6
+            ), (name, column, with_missing[name][column], baseline[name][column])
+
+
+def test_single_model_label_reads_structure_parameters():
+    from app.tasks.multilocus_tasks import _single_model_label
+
+    assert _single_model_label({"model_used": "glm"}) == "GLM"
+    assert _single_model_label({"gwas": {"model_used": "lmm"}}) == "LMM"
+    assert _single_model_label(None, {"model_used": "lmm"}) == "LMM"
+    assert _single_model_label({}) == "SINGLE-LOCUS"

@@ -388,7 +388,7 @@ def get_peak_comparison_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -
         multi_leads = ml_data.get("lead_snps", []) if isinstance(ml_data, dict) else []
 
         if single_leads or multi_leads:
-            from app.tasks.multilocus_tasks import generate_peak_comparison
+            from app.tasks.multilocus_tasks import _single_model_label, generate_peak_comparison
             job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
             job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
             out_csv = job_root / "postgwas" / "Ringkasan_Puncak_GWAS.csv"
@@ -398,10 +398,7 @@ def get_peak_comparison_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -
                 multi_lead_snps=multi_leads,
                 output_csv=out_csv,
                 output_json=out_json,
-                single_model_label=str(
-                    (((job.parameters if job else None) or {}).get("gwas") or {}).get("model_used")
-                    or "Single-Locus"
-                ).upper(),
+                single_model_label=_single_model_label(job.parameters if job else None),
             )
             return recomp
     return data
