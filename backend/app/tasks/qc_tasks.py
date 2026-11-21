@@ -90,6 +90,7 @@ def run_qc_pipeline(
     Supports inbred (without HWE) vs outcross (with HWE).
     Saves before/after QC stats to qc_comparison.json.
     """
+    stage_started_at = datetime.now(timezone.utc)
     db = SessionLocal()
     ctx: dict[str, Any] = dict(normalization_result or {})
     try:
@@ -443,6 +444,7 @@ def run_qc_pipeline(
             "qc",
             {
                 "status": "completed",
+                "started_at": stage_started_at,
                 "tool": tool_name,
                 "population_type": cfg.population_type.value,
                 "snp_loss_fraction": float(comparison_data.get("snp_loss_fraction", 0.0) or 0.0),

@@ -182,6 +182,7 @@ def _record_imputation_stage_summary(
     status: str,
     beagle_guard_removed: int,
     singles_count: int,
+    started_at: datetime | str | None = None,
     reason: str | None = None,
 ) -> None:
     """Persist Beagle guard counts on job.parameters and write imputation/stage_summary.json."""
@@ -203,6 +204,8 @@ def _record_imputation_stage_summary(
             else []
         ),
     }
+    if started_at is not None:
+        payload["started_at"] = started_at
     if reason:
         payload["reason"] = reason
     write_stage_summary(job_id, "imputation", payload, db=db)
@@ -229,6 +232,7 @@ def run_imputation(
     Run Beagle imputation with explicit JVM and memory bounds.
     Supports mode="none" (honest skip), mode="reference", and mode="reference_free".
     """
+    stage_started_at = datetime.now(timezone.utc)
     db = SessionLocal()
     ctx: dict[str, Any] = dict(qc_result or {})
     try:
@@ -271,6 +275,7 @@ def run_imputation(
                 status="skipped",
                 beagle_guard_removed=0,
                 singles_count=0,
+                started_at=stage_started_at,
                 reason="Imputasi tidak diminta (mode=none)",
             )
             mark_job(
@@ -396,6 +401,7 @@ def run_imputation(
                         status="skipped",
                         beagle_guard_removed=overflow_filtered,
                         singles_count=singles_count,
+                        started_at=stage_started_at,
                         reason=reason,
                     )
                     mark_job(
@@ -459,6 +465,7 @@ def run_imputation(
                 status="completed",
                 beagle_guard_removed=overflow_filtered,
                 singles_count=singles_count,
+                started_at=stage_started_at,
             )
             mark_job(
                 db,
@@ -496,6 +503,7 @@ def run_imputation(
                 status="skipped",
                 beagle_guard_removed=overflow_filtered,
                 singles_count=singles_count,
+                started_at=stage_started_at,
                 reason="Beagle JAR/Java atau reference panel tidak tersedia di host",
             )
             mark_job(

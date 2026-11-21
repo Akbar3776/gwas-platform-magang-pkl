@@ -58,6 +58,7 @@ def run_structure_analysis(
     Menjalankan analisis Struktur Populasi (LD pruning + PCA), Kekerabatan (Kinship + KING),
     dan evaluasi Linkage Disequilibrium Decay (Fase 3 + 4D).
     """
+    stage_started_at = datetime.now(timezone.utc)
     db = SessionLocal()
     ctx: dict[str, Any] = dict(imputation_or_qc_result or {})
     try:
@@ -363,6 +364,7 @@ def run_structure_analysis(
             "structure",
             {
                 "status": "completed",
+                "started_at": stage_started_at,
                 "recommended_model": rec_data["recommended_model"],
                 "model_used": rec_data["model_used"],
                 "ld_decay_method": ld_decay_data.get("method"),

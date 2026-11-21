@@ -48,6 +48,7 @@ def run_inspection(
     run_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute Phase 1 Data Inspection and sample ID reconciliation."""
+    stage_started_at = datetime.now(timezone.utc)
     ctx = ctx or {}
     job_id = str(job_id or ctx.get("job_id") or "")
     dataset_id = str(dataset_id or ctx.get("dataset_id") or "")
@@ -246,6 +247,7 @@ def run_inspection(
             "inspection",
             {
                 "status": "completed",
+                "started_at": stage_started_at,
                 "trait": report["trait"],
                 "n_matched": report["n_matched"],
                 "chromosome_summary_path": str(chrom_summary_file),

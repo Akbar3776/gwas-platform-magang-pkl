@@ -108,6 +108,7 @@ def run_vcf_normalization(
     run_id: str | None = None,
 ) -> dict[str, Any]:
     """Validate, sort, optionally normalize, and index one uploaded VCF."""
+    stage_started_at = datetime.now(timezone.utc)
     if isinstance(prev_result, dict):
         ctx = dict(prev_result)
         job_id = str(job_id or ctx.get("job_id") or "")
@@ -331,6 +332,7 @@ def run_vcf_normalization(
                 "normalization",
                 {
                     **chrom_split_meta,
+                    "started_at": stage_started_at,
                     "contig_filter_pattern": contig_filter_meta["pattern"],
                     "status": "completed",
                     "counts": {
