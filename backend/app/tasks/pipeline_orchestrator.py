@@ -186,6 +186,17 @@ def discover_resume_state(
     has_imputed_bed = (imp_dir / "imputed.bed").is_file()
     imp_skipped = (imp_dir / "skipped.json").is_file()
 
+    norm_dir = job_root / "normalization"
+    split_map_file = norm_dir / "chrom_split_map.json"
+    requires_split_map = "chrom_split" in params
+    has_split_map = split_map_file.is_file()
+    norm_ctx: dict[str, Any] = {
+        "normalized_vcf_path": str((norm_dir / "normalized.vcf.gz").resolve()),
+        "log_file": str((norm_dir / "bcftools.log").resolve()),
+    }
+    if has_split_map:
+        norm_ctx["split_map_path"] = str(split_map_file.resolve())
+
     stage_checks: list[tuple[str, bool, dict[str, Any]]] = [
         (
             "inspection",
@@ -193,17 +204,15 @@ def discover_resume_state(
             and (job_root / "inspection" / "keep_ids.txt").is_file(),
             {
                 "pheno_path": str((job_root / "inspection" / "pheno_plink.txt").resolve()),
+                "keep_ids_path": str((job_root / "inspection" / "keep_ids.txt").resolve()),
                 "keep_samples_path": str((job_root / "inspection" / "keep_ids.txt").resolve()),
                 "inspection_report_path": str((job_root / "inspection" / "inspection_report.json").resolve()),
             },
         ),
         (
             "normalization",
-            (job_root / "normalization" / "normalized.vcf.gz").is_file(),
-            {
-                "normalized_vcf_path": str((job_root / "normalization" / "normalized.vcf.gz").resolve()),
-                "log_file": str((job_root / "normalization" / "bcftools.log").resolve()),
-            },
+            (norm_dir / "normalized.vcf.gz").is_file() and (not requires_split_map or has_split_map),
+            norm_ctx,
         ),
         (
             "qc",

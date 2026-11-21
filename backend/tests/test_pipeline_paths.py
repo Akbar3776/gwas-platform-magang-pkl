@@ -273,3 +273,83 @@ def test_normalization_norm_uses_tmp_and_removes_final_on_cancel(tmp_path, monke
     assert seen_norm_out[0].endswith("normalized.vcf.gz.tmp")
     assert not (norm_dir / "normalized.vcf.gz.tmp").exists()
     assert not stale_final.exists()
+
+
+def test_discover_resume_state_returns_both_keep_ids_and_keep_samples_after_inspection(tmp_path, monkeypatch):
+    from app.core.config import settings
+    from app.tasks import pipeline_orchestrator
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = "job-w13-keep"
+    insp_dir = tmp_path / "jobs" / job_id / "inspection"
+    insp_dir.mkdir(parents=True)
+    (insp_dir / "pheno_plink.txt").write_text("FID\tIID\tT\nS1\tS1\t1.0\n", encoding="utf-8")
+    (insp_dir / "keep_ids.txt").write_text("S1 S1\n", encoding="utf-8")
+
+    _, start_stage, ctx = pipeline_orchestrator.discover_resume_state(
+        job_id=job_id,
+        dataset_id="ds-w13",
+        job_parameters={},
+    )
+    assert start_stage == "normalization"
+    expected_keep = str((insp_dir / "keep_ids.txt").resolve())
+    assert ctx["keep_ids_path"] == expected_keep
+    assert ctx["keep_samples_path"] == expected_keep
+
+
+def test_discover_resume_state_requires_split_map_when_chrom_split_recorded(tmp_path, monkeypatch):
+    from app.core.config import settings
+    from app.tasks import pipeline_orchestrator
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = "job-w13-split"
+    job_root = tmp_path / "jobs" / job_id
+    (job_root / "inspection").mkdir(parents=True)
+    (job_root / "inspection" / "pheno_plink.txt").write_text("FID\tIID\tT\n", encoding="utf-8")
+    (job_root / "inspection" / "keep_ids.txt").write_text("S1 S1\n", encoding="utf-8")
+    (job_root / "normalization").mkdir(parents=True)
+    (job_root / "normalization" / "normalized.vcf.gz").write_bytes(b"gz")
+
+    params = {"chrom_split": {"applied": True, "overflow_chromosomes": ["chr7"]}}
+
+    # Missing chrom_split_map.json -> must restart at normalization
+    _, start_stage, ctx = pipeline_orchestrator.discover_resume_state(
+        job_id=job_id,
+        dataset_id="ds-w13",
+        job_parameters=params,
+    )
+    assert start_stage == "normalization"
+    assert "split_map_path" not in ctx
+
+    # With chrom_split_map.json present -> advances to qc and exposes split_map_path
+    map_file = job_root / "normalization" / "chrom_split_map.json"
+    map_file.write_text('{"parts": {}}', encoding="utf-8")
+    _, start_stage2, ctx2 = pipeline_orchestrator.discover_resume_state(
+        job_id=job_id,
+        dataset_id="ds-w13",
+        job_parameters=params,
+    )
+    assert start_stage2 == "qc"
+    assert ctx2["split_map_path"] == str(map_file.resolve())
+
+
+def test_discover_resume_state_legacy_without_chrom_split_advances_past_normalization(tmp_path, monkeypatch):
+    from app.core.config import settings
+    from app.tasks import pipeline_orchestrator
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = "job-w13-legacy"
+    job_root = tmp_path / "jobs" / job_id
+    (job_root / "inspection").mkdir(parents=True)
+    (job_root / "inspection" / "pheno_plink.txt").write_text("FID\tIID\tT\n", encoding="utf-8")
+    (job_root / "inspection" / "keep_ids.txt").write_text("S1 S1\n", encoding="utf-8")
+    (job_root / "normalization").mkdir(parents=True)
+    (job_root / "normalization" / "normalized.vcf.gz").write_bytes(b"gz")
+
+    _, start_stage, ctx = pipeline_orchestrator.discover_resume_state(
+        job_id=job_id,
+        dataset_id="ds-w13",
+        job_parameters={},
+    )
+    assert start_stage == "qc"
+    assert "split_map_path" not in ctx
