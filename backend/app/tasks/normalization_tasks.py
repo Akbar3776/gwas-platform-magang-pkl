@@ -168,7 +168,6 @@ def run_vcf_normalization(
 
         split_vcf_path = workspace / "split_input.vcf"
         sorted_path = workspace / "sorted.vcf.gz"
-        norm_tmp_path = workspace / "normalized.vcf.gz.tmp"
         map_file = split_map_path(job_id)
         overflow_stats: dict[str, Any] = {
             "total_variants": 0,
@@ -230,7 +229,6 @@ def run_vcf_normalization(
                     f"overflow dibuang=0.\n"
                 )
 
-            reference_fasta = params.get("reference_fasta")
             run_cli_command(
                 [bcftools_bin, "sort", "-Oz", "-o", str(sorted_path), str(split_vcf_path)],
                 cwd=workspace,
@@ -239,19 +237,7 @@ def run_vcf_normalization(
                 cancel_check=_cancel_check,
             )
             split_vcf_path.unlink(missing_ok=True)
-
-            if reference_fasta:
-                run_cli_command(
-                    [bcftools_bin, "norm", "-f", str(reference_fasta), "-Oz", "-o", str(norm_tmp_path), str(sorted_path)],
-                    cwd=workspace,
-                    log_file=log_path,
-                    timeout=NORMALIZATION_TIMEOUT_SECONDS,
-                    cancel_check=_cancel_check,
-                )
-                sorted_path.unlink(missing_ok=True)
-                norm_tmp_path.replace(output_path)
-            else:
-                sorted_path.replace(output_path)
+            sorted_path.replace(output_path)
 
             if output_path.is_file():
                 _index_normalized_vcf(
@@ -268,14 +254,12 @@ def run_vcf_normalization(
         except (JobCancelledError, CLICancelledError):
             split_vcf_path.unlink(missing_ok=True)
             sorted_path.unlink(missing_ok=True)
-            norm_tmp_path.unlink(missing_ok=True)
             output_path.unlink(missing_ok=True)
             map_file.unlink(missing_ok=True)
             raise
         except Exception as cli_exc:
             split_vcf_path.unlink(missing_ok=True)
             sorted_path.unlink(missing_ok=True)
-            norm_tmp_path.unlink(missing_ok=True)
             output_path.unlink(missing_ok=True)
             map_file.unlink(missing_ok=True)
             logger.error("bcftools gagal memproses VCF (%s); menghentikan pipeline.", cli_exc)

@@ -201,7 +201,7 @@ def test_discover_resume_state_requires_multilocus_summary_or_skipped(tmp_path, 
     assert stage_after_skip == "postgwas"
 
 
-def test_normalization_norm_uses_tmp_and_removes_final_on_cancel(tmp_path, monkeypatch):
+def test_normalization_sort_uses_temp_and_ignores_reference_fasta_on_cancel(tmp_path, monkeypatch):
     from unittest.mock import MagicMock
     from app.core.config import settings
     from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep
@@ -243,19 +243,15 @@ def test_normalization_norm_uses_tmp_and_removes_final_on_cancel(tmp_path, monke
     norm_dir.mkdir(parents=True)
     stale_final = norm_dir / "normalized.vcf.gz"
     stale_final.write_bytes(b"stale")
-    seen_norm_out = []
+    seen_subcmds: list[str] = []
 
     def mock_run_cli(cmd, **kwargs):
-        if "sort" in cmd:
+        subcmd = cmd[1] if len(cmd) > 1 else ""
+        seen_subcmds.append(subcmd)
+        if subcmd == "sort":
             out_path = cmd[cmd.index("-o") + 1]
             with open(out_path, "wb") as f:
-                f.write(b"sorted")
-            return MagicMock(returncode=0)
-        if "norm" in cmd:
-            out_path = cmd[cmd.index("-o") + 1]
-            seen_norm_out.append(out_path)
-            with open(out_path, "wb") as f:
-                f.write(b"partial-norm")
+                f.write(b"partial-sort")
             raise CLICancelledError(cmd, kwargs.get("log_file"), ())
         return MagicMock(returncode=0)
 
@@ -269,9 +265,9 @@ def test_normalization_norm_uses_tmp_and_removes_final_on_cancel(tmp_path, monke
             params={"reference_fasta": "/ref.fa"},
         )
 
-    assert len(seen_norm_out) == 1
-    assert seen_norm_out[0].endswith("normalized.vcf.gz.tmp")
-    assert not (norm_dir / "normalized.vcf.gz.tmp").exists()
+    assert seen_subcmds == ["view", "sort"]
+    assert "norm" not in seen_subcmds
+    assert not (norm_dir / "sorted.vcf.gz").exists()
     assert not stale_final.exists()
 
 
