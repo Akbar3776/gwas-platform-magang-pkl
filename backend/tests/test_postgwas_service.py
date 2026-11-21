@@ -483,3 +483,75 @@ def test_postgwas_peak_comparison_includes_only_bonferroni_significant_multilocu
     assert len(peak["multi_only"]) == 1
     assert peak["multi_only"][0]["snp"] == "rs_sig_ml"
     assert peak["multi_only"][0]["status"] == "Minor-Effect (Hanya Multi-Locus)"
+
+
+def test_postgwas_restores_orig_coords_and_preserves_pseudo_matching(tmp_path, monkeypatch):
+    import csv
+    import json
+    from app.services.chromosome_service import save_split_map
+    from app.tasks import postgwas_tasks
+
+    job_id, job_root, norm_assoc, mock_job = _seed_postgwas_job(tmp_path, monkeypatch)
+    split_map = {
+        "threshold_bp": 5_000,
+        "unit_bp": 2_000,
+        "split_chroms": {"chr7": {"max_orig_pos": 6500, "num_parts": 4, "parts": ["chr7_p0", "chr7_p1", "chr7_p2", "chr7_p3"]}},
+        "parts": {
+            "chr7_p2": {"orig_chr": "chr7", "part": 2, "offset_bp": 4_000},
+            "chr7_p3": {"orig_chr": "chr7", "part": 3, "offset_bp": 6_000},
+        },
+    }
+    save_split_map(job_id, split_map)
+
+    norm_assoc.write_text(
+        "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn\n"
+        "chr7_p2\t1500\tchr7:5500\tA\tG\t0.3\t0.9\t0.1\t1e-10\t100\n"
+        "chr7_p3\t500\tchr7:6500\tC\tT\t0.25\t0.6\t0.1\t1e-9\t100\n"
+        "1\t1000\trs_bg\tA\tG\t0.3\t0.02\t0.08\t0.5\t100\n",
+        encoding="utf-8",
+    )
+    ml_rows = [
+        "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn",
+        "7_p2\t1520\tchr7:5520\tA\tG\t0.3\t0.85\t0.1\t1e-6\t100",
+    ]
+    for i in range(9):
+        ml_rows.append(f"1\t{(i + 1) * 1000}\trs_ml_bg_{i}\tC\tT\t0.25\t0.05\t0.1\t{0.2 + i * 0.05}\t100")
+    (job_root / "multilocus" / "farmcpu_results.tsv").write_text("\n".join(ml_rows) + "\n", encoding="utf-8")
+
+    postgwas_tasks.run_postgwas_analysis(
+        {"normalized_assoc_path": str(norm_assoc)},
+        job_id=job_id,
+        dataset_id=str(mock_job.dataset_id),
+    )
+
+    lead_payload = json.loads((job_root / "postgwas" / "lead_snps.json").read_text(encoding="utf-8"))
+    by_snp = {s["snp"]: s for s in lead_payload["snps"]}
+    assert by_snp["chr7:5500"]["chr"] == "7_p2"
+    assert by_snp["chr7:5500"]["pos"] == 1500
+    assert by_snp["chr7:5500"]["orig_chr"] == "chr7"
+    assert by_snp["chr7:5500"]["orig_pos"] == 5500
+    assert by_snp["chr7:6500"]["orig_chr"] == "chr7"
+    assert by_snp["chr7:6500"]["orig_pos"] == 6500
+
+    with (job_root / "postgwas" / "lead_snps.tsv").open("r", encoding="utf-8") as lf:
+        tsv_rows = list(csv.DictReader(lf, delimiter="\t"))
+    assert list(tsv_rows[0].keys())[-2:] == ["orig_chr", "orig_pos"]
+    tsv_by_snp = {r["snp"]: r for r in tsv_rows}
+    assert tsv_by_snp["chr7:5500"]["orig_chr"] == "chr7"
+    assert tsv_by_snp["chr7:5500"]["orig_pos"] == "5500"
+
+    peak = json.loads((job_root / "postgwas" / "peak_comparison.json").read_text(encoding="utf-8"))
+    assert len(peak["consistent"]) == 1
+    assert peak["consistent"][0]["chr"] == "7_p2"
+    assert peak["consistent"][0]["orig_chr"] == "chr7"
+    assert peak["consistent"][0]["orig_pos"] == 5500
+    assert len(peak["single_only"]) == 1
+    assert peak["single_only"][0]["orig_chr"] == "chr7"
+    assert peak["single_only"][0]["orig_pos"] == 6500
+
+    with (job_root / "postgwas" / "Ringkasan_Puncak_GWAS.csv").open("r", encoding="utf-8") as cf:
+        csv_rows = list(csv.DictReader(cf))
+    assert list(csv_rows[0].keys())[-2:] == ["Orig_Chr", "Orig_Pos"]
+    csv_by_snp = {r["SNP"]: r for r in csv_rows}
+    assert csv_by_snp["chr7:5500"]["Orig_Chr"] == "chr7"
+    assert csv_by_snp["chr7:5500"]["Orig_Pos"] == "5500"

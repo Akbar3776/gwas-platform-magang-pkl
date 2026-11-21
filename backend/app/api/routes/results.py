@@ -388,6 +388,7 @@ def get_peak_comparison_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -
         multi_leads = ml_data.get("lead_snps", []) if isinstance(ml_data, dict) else []
 
         if single_leads or multi_leads:
+            from app.services.chromosome_service import load_split_map
             from app.tasks.multilocus_tasks import _single_model_label, generate_peak_comparison
             job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
             job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
@@ -399,6 +400,7 @@ def get_peak_comparison_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -
                 output_csv=out_csv,
                 output_json=out_json,
                 single_model_label=_single_model_label(job.parameters if job else None),
+                split_map=load_split_map(job_id),
             )
             return recomp
     return data
@@ -415,12 +417,14 @@ def get_multilocus_results_data(job_id: uuid.UUID, db: Session = Depends(get_db)
         if needs_enrichment:
             job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "multilocus"
             if job_root.is_dir():
+                from app.services.chromosome_service import load_split_map
                 from app.tasks.multilocus_tasks import (
                     METHOD_DISPLAY_NAMES,
                     extract_multilocus_leads_from_tsv,
                     write_significant_pve_csv,
                 )
 
+                split_map = load_split_map(job_id)
                 job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
                 trait_label = str(
                     (((job.parameters if job else None) or {}).get("phenotype") or {}).get("trait")
@@ -437,6 +441,7 @@ def get_multilocus_results_data(job_id: uuid.UUID, db: Session = Depends(get_db)
                             method_name=m_upper,
                             trait_name=trait_label,
                             max_top=5,
+                            split_map=split_map,
                         )
                         if m_snps:
                             extracted_leads.extend(m_snps)

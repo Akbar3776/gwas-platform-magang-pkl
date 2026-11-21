@@ -13,6 +13,7 @@ from typing import Any
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, ResultType
 from app.schemas.pipeline import ClumpConfig, ThresholdConfig
+from app.services.chromosome_service import load_split_map, restore_coord
 from app.services.postgwas_service import (
     calculate_unclamped_lambda_gc,
     determine_thresholds,
@@ -267,6 +268,12 @@ def run_postgwas_analysis(
             exclude_snps={s["snp"] for s in lead_snps if s.get("snp")},
         )
 
+        split_map = load_split_map(job_id)
+        for item in (*lead_snps, *suggestive_snps):
+            orig_chr, orig_pos = restore_coord(item.get("chr"), item.get("pos"), split_map)
+            item["orig_chr"] = orig_chr
+            item["orig_pos"] = orig_pos
+
         lead_snps_payload = {
             "count": len(lead_snps),
             "snps": lead_snps,
@@ -280,7 +287,7 @@ def run_postgwas_analysis(
         lead_snps_tsv = workspace / "lead_snps.tsv"
         with lead_snps_tsv.open("w", encoding="utf-8", newline="") as lsf:
             writer = csv.writer(lsf, delimiter="\t")
-            writer.writerow(["snp", "chr", "pos", "a1", "a0", "p", "beta", "se", "n_clumped"])
+            writer.writerow(["snp", "chr", "pos", "a1", "a0", "p", "beta", "se", "n_clumped", "orig_chr", "orig_pos"])
             for s in lead_snps:
                 writer.writerow([
                     s.get("snp"),
@@ -292,6 +299,8 @@ def run_postgwas_analysis(
                     s.get("beta", 0.0),
                     s.get("se", 0.0),
                     s.get("n_clumped", 0),
+                    s.get("orig_chr", s.get("chr")),
+                    s.get("orig_pos", s.get("pos")),
                 ])
 
         n_sig_lead = sum(1 for s in lead_snps if float(s.get("p", 1.0)) <= selected_p)
@@ -356,6 +365,7 @@ def run_postgwas_analysis(
                         m_tsv,
                         method_name=method_name.upper(),
                         trait_name=trait_label,
+                        split_map=split_map,
                     )
                     multi_leads.extend(s for s in extracted if s.get("is_significant"))
 
@@ -366,6 +376,7 @@ def run_postgwas_analysis(
             output_json=peak_json,
             window_kb=int(clump_kb),
             single_model_label=_single_model_label(job.parameters),
+            split_map=split_map,
         )
 
         # Sinkronkan juga ke direktori multilocus bila folder tersedia dan peak_data valid

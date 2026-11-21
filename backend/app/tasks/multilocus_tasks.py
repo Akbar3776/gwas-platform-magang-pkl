@@ -16,6 +16,7 @@ import numpy as np
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, JobStatus, PipelineStep, ResultType
 from app.services.assoc_normalizer import CANONICAL_COLUMNS, normalize_association_results
+from app.services.chromosome_service import load_split_map, restore_coord
 from app.services.manhattan_parser import _build_chr_mapping
 from app.core.resource_limits import read_container_memory_limit_mb
 from app.tasks._common import (
@@ -224,11 +225,26 @@ def write_significant_pve_csv(
             ])
 
 
+def _resolve_orig_coord(
+    item: dict[str, Any],
+    chrom_fallback: str,
+    pos_fallback: int,
+    split_map: dict[str, Any] | None,
+) -> tuple[str, int]:
+    """Resolve original genomic (chr, pos) using split_map when available."""
+    if split_map is not None:
+        return restore_coord(item.get("chr") or chrom_fallback, pos_fallback, split_map)
+    if item.get("orig_chr") is not None and item.get("orig_pos") is not None:
+        return str(item["orig_chr"]), int(item["orig_pos"])
+    return chrom_fallback, pos_fallback
+
+
 def extract_multilocus_leads_from_tsv(
     tsv_path: Path,
     method_name: str,
     trait_name: str = "Trait",
     max_top: int = 5,
+    split_map: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Membaca TSV kanonik multi-locus dan melengkapi metrik MAF, nobs, effect, H&B.P.Value, dan PVE(%)."""
     if not tsv_path.is_file():
@@ -278,11 +294,14 @@ def extract_multilocus_leads_from_tsv(
             nobs=r["n"],
             p_val=r["p"],
         )
+        orig_chr, orig_pos = restore_coord(r["chr"], r["pos"], split_map)
         out.append({
             "trait": trait_name,
             "snp": r["rs"],
             "chr": r["chr"],
             "pos": r["pos"],
+            "orig_chr": orig_chr,
+            "orig_pos": orig_pos,
             "p": float(r["p"]),
             "maf": maf,
             "nobs": r["n"],
@@ -580,6 +599,7 @@ def _run_python_multilocus_engine(
 
     all_methods_results: dict[str, Any] = {}
     lead_snps_multi: list[dict[str, Any]] = []
+    split_map = load_split_map(job_id)
 
     # Eksekusi masing-masing model yang dipilih
     for m in methods:
@@ -738,11 +758,18 @@ def _run_python_multilocus_engine(
                 nobs=ti_nobs,
                 p_val=ti_p,
             )
+            orig_chr, orig_pos = restore_coord(
+                str(variants_meta[ti]["chr"]),
+                int(variants_meta[ti]["ps"]),
+                split_map,
+            )
             snp_entry = {
                 "trait": trait_name,
                 "snp": variants_meta[ti]["rs"],
                 "chr": str(variants_meta[ti]["chr"]),
                 "pos": variants_meta[ti]["ps"],
+                "orig_chr": orig_chr,
+                "orig_pos": orig_pos,
                 "p": ti_p,
                 "maf": ti_maf,
                 "nobs": ti_nobs,
@@ -1180,6 +1207,7 @@ def run_multilocus_gwas(
             or ((job.parameters or {}).get("phenotype") or {}).get("trait")
             or "Trait"
         )
+        split_map = load_split_map(job_id)
         for m in active_methods:
             m_upper = m.upper()
             entry = methods_results.get(m_upper)
@@ -1193,6 +1221,7 @@ def run_multilocus_gwas(
                         method_name=m_upper,
                         trait_name=trait_label,
                         max_top=5,
+                        split_map=split_map,
                     )
                     if extracted:
                         multi_lead_snps.extend(extracted)
@@ -1201,6 +1230,18 @@ def run_multilocus_gwas(
                         write_significant_pve_csv(pve_csv, extracted, trait_name=trait_label)
                         entry["significant_snps"] = extracted
                         entry["pve_csv_file"] = str(pve_csv)
+            elif isinstance(entry.get("significant_snps"), list):
+                for snp_item in entry["significant_snps"]:
+                    if isinstance(snp_item, dict) and "orig_chr" not in snp_item:
+                        o_chr, o_pos = restore_coord(snp_item.get("chr"), snp_item.get("pos"), split_map)
+                        snp_item["orig_chr"] = o_chr
+                        snp_item["orig_pos"] = o_pos
+
+        for snp_item in multi_lead_snps:
+            if isinstance(snp_item, dict) and "orig_chr" not in snp_item:
+                o_chr, o_pos = restore_coord(snp_item.get("chr"), snp_item.get("pos"), split_map)
+                snp_item["orig_chr"] = o_chr
+                snp_item["orig_pos"] = o_pos
 
         engines_used = {
             m_upper: str(entry.get("engine", "unknown"))
@@ -1249,6 +1290,7 @@ def run_multilocus_gwas(
             output_csv=summary_csv,
             output_json=peak_comp_file,
             single_model_label=_single_model_label(job.parameters, ctx),
+            split_map=split_map,
         )
         upsert_result(
             db,
@@ -1316,6 +1358,7 @@ def generate_peak_comparison(
     output_json: Path | str,
     window_kb: int = 100,
     single_model_label: str = "Single-Locus",
+    split_map: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Membandingkan puncak asosiasi Single-Locus (GEMMA/GLM) dengan Multi-Locus (FarmCPU, BLINK, MLMM).
@@ -1353,11 +1396,15 @@ def generate_peak_comparison(
                 matched_multi_indices.add(m_idx)
                 break
 
+        s_orig_chr, s_orig_pos = _resolve_orig_coord(s, s_chr, s_pos, split_map)
+
         if matched_multi is not None:
             consistent.append({
                 "snp": s.get("snp"),
                 "chr": s_chr,
                 "pos": s_pos,
+                "orig_chr": s_orig_chr,
+                "orig_pos": s_orig_pos,
                 "p_single": s.get("p"),
                 "p_multi": matched_multi.get("p"),
                 "maf": matched_multi.get("maf"),
@@ -1377,6 +1424,8 @@ def generate_peak_comparison(
                 "snp": s.get("snp"),
                 "chr": s_chr,
                 "pos": s_pos,
+                "orig_chr": s_orig_chr,
+                "orig_pos": s_orig_pos,
                 "p_single": s.get("p"),
                 "p_multi": None,
                 "effect": s.get("beta"),
@@ -1387,10 +1436,15 @@ def generate_peak_comparison(
 
     for m_idx, m in enumerate(significant_multi):
         if m_idx not in matched_multi_indices:
+            m_chr = chr_label(m.get("chr", ""))
+            m_pos = int(m.get("pos", 0))
+            m_orig_chr, m_orig_pos = _resolve_orig_coord(m, m_chr, m_pos, split_map)
             multi_only.append({
                 "snp": m.get("snp"),
-                "chr": chr_label(m.get("chr", "")),
-                "pos": int(m.get("pos", 0)),
+                "chr": m_chr,
+                "pos": m_pos,
+                "orig_chr": m_orig_chr,
+                "orig_pos": m_orig_pos,
                 "p_single": None,
                 "p_multi": m.get("p"),
                 "maf": m.get("maf"),
@@ -1424,7 +1478,18 @@ def generate_peak_comparison(
     all_rows = consistent + single_only + multi_only
     with out_csv_path.open("w", encoding="utf-8", newline="") as cf:
         writer = csv.writer(cf)
-        writer.writerow(["SNP", "Kromosom", "Posisi", "Metode", "P_Single", "P_Multi", "Status", "Keterangan"])
+        writer.writerow([
+            "SNP",
+            "Kromosom",
+            "Posisi",
+            "Metode",
+            "P_Single",
+            "P_Multi",
+            "Status",
+            "Keterangan",
+            "Orig_Chr",
+            "Orig_Pos",
+        ])
         for r in all_rows:
             writer.writerow([
                 r["snp"],
@@ -1435,6 +1500,8 @@ def generate_peak_comparison(
                 r["p_multi"] if r["p_multi"] is not None else "NA",
                 r["status"],
                 r["keterangan"],
+                r.get("orig_chr", r["chr"]),
+                r.get("orig_pos", r["pos"]),
             ])
 
     return result_json

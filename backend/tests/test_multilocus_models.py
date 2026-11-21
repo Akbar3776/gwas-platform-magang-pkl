@@ -1,3 +1,4 @@
+import csv
 from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
@@ -424,3 +425,45 @@ def test_generate_peak_comparison_preserves_chr_labels_and_matches_gm(tmp_path):
     assert res["summary"]["n_multi_only"] == 1
     assert [c["chr"] for c in res["consistent"]] == ["Gm01", "H1"]
     assert res["multi_only"][0]["chr"] == "H2"
+
+
+def test_multilocus_extract_and_peak_comparison_preserve_orig_coords(tmp_path):
+    tsv_file = tmp_path / "farmcpu_results.tsv"
+    tsv_file.write_text(
+        "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn\n"
+        "chr7_p2\t1500\tchr7:5500\tA\tG\t0.3\t0.8\t0.1\t1e-6\t100\n",
+        encoding="utf-8",
+    )
+    split_map = {
+        "threshold_bp": 5_000,
+        "unit_bp": 2_000,
+        "parts": {
+            "chr7_p2": {"orig_chr": "chr7", "part": 2, "offset_bp": 4_000},
+        },
+    }
+    leads = multilocus_tasks.extract_multilocus_leads_from_tsv(
+        tsv_file,
+        method_name="FARMCPU",
+        trait_name="TRAIT1",
+        split_map=split_map,
+    )
+    assert len(leads) == 1
+    assert leads[0]["chr"] == "7_p2"
+    assert leads[0]["pos"] == 1500
+    assert leads[0]["orig_chr"] == "chr7"
+    assert leads[0]["orig_pos"] == 5500
+
+    res = generate_peak_comparison(
+        single_lead_snps=[{"snp": "chr7:5500", "chr": "7_p2", "pos": 1500, "p": 1e-8}],
+        multi_lead_snps=leads,
+        output_csv=tmp_path / "Ringkasan_Puncak_GWAS.csv",
+        output_json=tmp_path / "peak_comparison.json",
+        split_map=split_map,
+    )
+    assert res["consistent"][0]["orig_chr"] == "chr7"
+    assert res["consistent"][0]["orig_pos"] == 5500
+
+    with (tmp_path / "Ringkasan_Puncak_GWAS.csv").open("r", encoding="utf-8") as cf:
+        rows = list(csv.DictReader(cf))
+    assert rows[0]["Orig_Chr"] == "chr7"
+    assert rows[0]["Orig_Pos"] == "5500"
