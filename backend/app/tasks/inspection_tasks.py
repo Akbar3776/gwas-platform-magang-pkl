@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 import uuid
 
+from app.core.config import settings
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, ResultType
 from app.services.chromosome_service import summarize_chromosomes, write_chromosome_summary
@@ -114,7 +115,10 @@ def run_inspection(
             missing_tokens=missing_tokens,
         )
 
-        chr_summary = summarize_chromosomes(vcf_path)
+        chr_summary = summarize_chromosomes(
+            vcf_path,
+            drop_pattern=settings.NON_PRIMARY_CONTIG_REGEX,
+        )
         chrom_summary_file = out_dir / "chromosome_characteristics_summary.txt"
         write_chromosome_summary(chr_summary, chrom_summary_file)
         if chr_summary["total_invalid_pos"] > 0:
@@ -122,10 +126,31 @@ def run_inspection(
                 f"Ditemukan {chr_summary['total_invalid_pos']} varian dengan POS <= 0 (INVALID_POS) "
                 f"pada file VCF; varian tersebut akan disaring sebelum pemisahan kromosom."
             )
-        report["chromosome_summary"] = {
+        primary_chroms = [
+            row for row in chr_summary["chromosomes"] if not row.get("excluded")
+        ]
+        excluded_info = dict(chr_summary.get("excluded_contigs") or {})
+        n_exc_contigs = int(excluded_info.get("contigs") or 0)
+        n_exc_variants = int(excluded_info.get("variants") or 0)
+        chrom_summary_payload: dict[str, Any] = {
             **chr_summary,
+            "chromosomes": primary_chroms,
+            "excluded_contigs": excluded_info,
             "summary_path": str(chrom_summary_file),
         }
+        scaffold_info_msg: str | None = None
+        if n_exc_contigs > 0:
+            pct = round(
+                (n_exc_variants / max(int(chr_summary["total_variants"]), 1)) * 100.0,
+                1,
+            )
+            scaffold_info_msg = (
+                f"{n_exc_contigs} scaffold ({n_exc_variants} SNP, {pct}%) "
+                "akan dibuang pada tahap normalisasi"
+            )
+            report.setdefault("info_messages", []).append(scaffold_info_msg)
+            chrom_summary_payload["info_message"] = scaffold_info_msg
+        report["chromosome_summary"] = chrom_summary_payload
 
         # Write inspection output files
         sampel_vcf_file = out_dir / "sampel_vcf.txt"
@@ -196,6 +221,8 @@ def run_inspection(
             f" - Posisi Invalid (<=0)  : {chr_summary['total_invalid_pos']}\n"
             f" - Berkas Ringkasan TSV  : {chrom_summary_file.name}\n",
         )
+        if scaffold_info_msg:
+            append_log(log_file, f"[Fase 0] [INFO] {scaffold_info_msg}")
 
         for w in report["warnings"]:
             append_log(log_file, f"[WARN] {w}")
@@ -232,6 +259,8 @@ def run_inspection(
                     "variants_in": int(chr_summary["total_variants"]),
                     "overflow": int(chr_summary["total_overflow"]),
                     "invalid_pos": int(chr_summary["total_invalid_pos"]),
+                    "non_primary_contigs": n_exc_contigs,
+                    "non_primary_variants": n_exc_variants,
                 },
             },
             db=db,
