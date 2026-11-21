@@ -1,4 +1,6 @@
 import csv
+import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -8,6 +10,7 @@ import pytest
 from app.tasks import multilocus_tasks
 from app.tasks.multilocus_tasks import (
     _run_gapit_models,
+    _prune_gapit_bfile,
     _run_python_multilocus_engine,
     _write_gapit_inputs,
     compute_snp_pve_pct,
@@ -246,3 +249,57 @@ def test_gapit_models_passes_pca_and_runner_uses_fread(tmp_path, monkeypatch):
     assert "data.table::fread(opt$gd" in runner_text
     assert "data.table::fread(opt$gm" in runner_text
     assert "PCA.total = as.integer(opt$pca)" in runner_text
+
+
+def test_gapit_pruning_commands_allow_extra_chr(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.with_suffix(".bed").write_bytes(b"")
+    source.with_suffix(".bim").write_text(
+        "scaffold1\trs1\t0\t1\tA\tG\n1\trs2\t0\t2\tA\tG\n1\trs3\t0\t3\tA\tG\n",
+        encoding="utf-8",
+    )
+    source.with_suffix(".fam").write_text("S1 S1 0 0 0 -9\n", encoding="utf-8")
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        out_prefix = Path(cmd[cmd.index("--out") + 1])
+        if "--indep-pairwise" in cmd:
+            out_prefix.with_suffix(".prune.in").write_text("rs1\nrs2\n", encoding="utf-8")
+        else:
+            for suffix in (".bed", ".bim", ".fam"):
+                out_prefix.with_suffix(suffix).write_bytes(b"")
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(multilocus_tasks, "GAPIT_MAX_SNPS", 2, raising=False)
+    monkeypatch.setattr(multilocus_tasks, "which_tool", lambda name: "plink")
+    monkeypatch.setattr(multilocus_tasks, "run_cli_command", fake_run)
+
+    _prune_gapit_bfile(source, tmp_path, tmp_path / "probe.log", 3)
+
+    assert len(commands) == 2
+    assert all("--allow-extra-chr" in command for command in commands)
+
+
+@pytest.mark.skipif(shutil.which("plink") is None, reason="plink tidak tersedia")
+def test_gapit_pruning_accepts_non_numeric_contigs_with_real_plink(tmp_path, monkeypatch):
+    plink = shutil.which("plink")
+    source = tmp_path / "source"
+    subprocess.run(
+        [plink, "--dummy", "20", "10", "--make-bed", "--out", str(source)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    bim_path = source.with_suffix(".bim")
+    bim_lines = bim_path.read_text(encoding="utf-8").splitlines()
+    bim_lines[0] = "scaffold1" + bim_lines[0][bim_lines[0].find("\t"):]
+    bim_path.write_text("\n".join(bim_lines) + "\n", encoding="utf-8")
+    monkeypatch.setattr(multilocus_tasks, "GAPIT_MAX_SNPS", 2, raising=False)
+    monkeypatch.setattr(multilocus_tasks, "which_tool", lambda name: plink)
+
+    result, count, _ = _prune_gapit_bfile(source, tmp_path, tmp_path / "probe.log", 10)
+
+    assert count <= 2
+    assert result.with_suffix(".bim").is_file()
+    assert "scaffold1" in result.with_suffix(".bim").read_text(encoding="utf-8")

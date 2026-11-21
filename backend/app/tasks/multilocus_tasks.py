@@ -93,6 +93,7 @@ def _prune_gapit_bfile(
             [
                 plink,
                 "--bfile", str(source_prefix),
+                "--allow-extra-chr",
                 "--indep-pairwise", "50", "5", str(r2),
                 "--out", str(ld_prefix),
             ],
@@ -111,6 +112,7 @@ def _prune_gapit_bfile(
                 [
                     plink,
                     "--bfile", str(source_prefix),
+                    "--allow-extra-chr",
                     "--extract", str(prune_file),
                     "--make-bed",
                     "--out", str(input_prefix),
