@@ -291,6 +291,10 @@ def test_gapit_pruning_accepts_non_numeric_contigs_with_real_plink(tmp_path, mon
         capture_output=True,
         text=True,
     )
+    bed_path = source.with_suffix(".bed")
+    raw = bed_path.read_bytes()
+    snp_bytes = (20 + 3) // 4
+    bed_path.write_bytes(raw[:3] + raw[3:3 + snp_bytes] * 10)  # semua SNP = salinan SNP pertama (LD sempurna)
     bim_path = source.with_suffix(".bim")
     bim_lines = bim_path.read_text(encoding="utf-8").splitlines()
     bim_lines[0] = "scaffold1" + bim_lines[0][bim_lines[0].find("\t"):]
@@ -300,6 +304,7 @@ def test_gapit_pruning_accepts_non_numeric_contigs_with_real_plink(tmp_path, mon
 
     result, count, _ = _prune_gapit_bfile(source, tmp_path, tmp_path / "probe.log", 10)
 
-    assert count <= 2
+    assert count == 2
+    assert result.name == "gapit_input"
     assert result.with_suffix(".bim").is_file()
     assert "scaffold1" in result.with_suffix(".bim").read_text(encoding="utf-8")
