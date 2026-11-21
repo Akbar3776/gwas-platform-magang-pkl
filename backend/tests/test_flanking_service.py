@@ -201,3 +201,72 @@ def test_run_annotation_sets_regions_status_no_reference_without_fasta(
     primers = json.loads((anno_dir / "primers.json").read_text(encoding="utf-8"))
     assert primers["regions_status"] == "no_reference"
     assert primers["candidate_regions"]["fasta"] is None
+
+
+def test_build_kasp_input_masks_neighbors_and_reports_validation_statuses(
+    overflow_dataset: dict,
+    tmp_path: Path,
+):
+    from app.services.flanking_service import build_kasp_input
+
+    fasta_lines = overflow_dataset["fasta_path"].read_text(encoding="utf-8").splitlines()
+    seqs: dict[str, list[str]] = {}
+    cur = None
+    for ln in fasta_lines:
+        if ln.startswith(">"):
+            cur = ln[1:].strip().split()[0]
+            seqs[cur] = []
+        elif cur is not None:
+            seqs[cur].append(ln.strip())
+    chr7_seq = "".join(seqs["chr7"]).upper()
+    ref_5500 = chr7_seq[5500 - 1]
+    alt_5500 = {"A": "G", "G": "A", "C": "T", "T": "C"}[ref_5500]
+    ref_30 = chr7_seq[30 - 1]
+    alt_30 = {"A": "G", "G": "A", "C": "T", "T": "C"}[ref_30]
+
+    split_map = {
+        "threshold_bp": overflow_dataset["split_threshold_bp"],
+        "unit_bp": overflow_dataset["split_unit_bp"],
+        "parts": {
+            "chr7_p0": {"orig_chr": "chr7", "part": 0, "offset_bp": 0},
+            "chr7_p2": {"orig_chr": "chr7", "part": 2, "offset_bp": 4_000},
+        },
+    }
+    bim_path = tmp_path / "split.bim"
+    bim_path.write_text(
+        f"chr7_p2\tchr7:5500\t0\t1500\t{alt_5500}\t{ref_5500}\n"
+        "chr7_p2\tchr7:5540\t0\t1540\tT\tC\n",
+        encoding="utf-8",
+    )
+
+    snps = [
+        {"snp": "chr7:5500", "chr": "7_p2", "pos": 1500, "ref": ref_5500, "alt": alt_5500},
+        {"snp": "chr7:5500_mismatch", "chr": "7_p2", "pos": 1500, "ref": alt_5500, "alt": ref_5500},
+        {"snp": "chr7:30_short", "chr": "chr7", "pos": 30, "ref": ref_30, "alt": alt_30},
+        {"snp": "chr7:5500_indel", "chr": "chr7", "pos": 5500, "ref": "AT", "alt": "A"},
+    ]
+
+    rows = build_kasp_input(
+        snps,
+        overflow_dataset["fasta_path"],
+        bim_path,
+        split_map=split_map,
+    )
+    by_id = {row["snp_id"]: row for row in rows}
+
+    ok_row = by_id["chr7:5500"]
+    assert ok_row["status"] == "ok"
+    assert ok_row["orig_chr"] == "chr7"
+    assert ok_row["orig_pos"] == 5500
+    assert ok_row["left_len"] == 150
+    assert ok_row["right_len"] == 150
+    assert ok_row["masked_neighbors"] == 1
+    assert ok_row["flanking"].count("[") == 1
+    left_flank, right_flank = ok_row["flanking"].split(f"[{ref_5500}/{alt_5500}]")
+    assert len(left_flank) == 150
+    assert len(right_flank) == 150
+    assert right_flank[39] == "N"
+
+    assert by_id["chr7:5500_mismatch"]["status"] == "ref_mismatch"
+    assert by_id["chr7:30_short"]["status"] == "flank_too_short"
+    assert by_id["chr7:5500_indel"]["status"] == "unsupported_variant"

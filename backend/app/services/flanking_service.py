@@ -411,3 +411,155 @@ def find_nearby_variants(
             "snp_id": var["snp_id"],
         })
     return nearby
+
+
+KASP_MIN_FLANK_BP = 60
+_ACGT_BASES = {"A", "C", "G", "T"}
+
+
+def build_kasp_input(
+    snps: list[dict[str, Any]],
+    fasta_path: str | Path | None,
+    bim_path: str | Path | None = None,
+    *,
+    flank_bp: int | None = None,
+    split_map: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Build EasyKASP input rows (<left>[REF/ALT]<right>) with N-masked nearby variants."""
+    from app.services.primer_service import _lookup_contig, _read_fasta_region, load_fasta_index
+
+    flank_len = int(flank_bp if flank_bp is not None else settings.KASP_FLANK_BP)
+    has_fasta = fasta_path is not None and Path(fasta_path).is_file()
+    if not has_fasta:
+        return [
+            {
+                "snp_id": str(s.get("snp") or f"{s.get('orig_chr') or s.get('chr')}:{s.get('orig_pos') or s.get('pos')}").strip(),
+                "allele_1": str(s.get("ref") or "").strip().upper(),
+                "allele_2": str(s.get("alt") or "").strip().upper(),
+                "flanking": "",
+                "orig_chr": str(s.get("orig_chr") or s.get("chr") or ""),
+                "orig_pos": int(s.get("orig_pos") or s.get("pos") or 0),
+                "fasta_ref": "",
+                "masked_neighbors": 0,
+                "left_len": 0,
+                "right_len": 0,
+                "status": "no_reference",
+                "reason": "FASTA referensi tidak tersedia",
+            }
+            for s in snps
+        ]
+
+    fasta_file = Path(fasta_path)
+    fasta_index = load_fasta_index(fasta_file)
+    bim_index = (
+        build_bim_position_index(bim_path, split_map=split_map)
+        if bim_path and Path(bim_path).is_file()
+        else None
+    )
+
+    out_rows: list[dict[str, Any]] = []
+    for s in snps:
+        orig_chr, orig_pos = restore_coord(
+            str(s.get("orig_chr") or s.get("chr") or ""),
+            int(s.get("orig_pos") or s.get("pos") or 0),
+            split_map,
+        )
+        snp_id = str(s.get("snp") or f"{orig_chr}:{orig_pos}").strip()
+        ref = str(s.get("ref") or "").strip().upper()
+        alt = str(s.get("alt") or "").strip().upper()
+
+        base_row: dict[str, Any] = {
+            "snp_id": snp_id,
+            "allele_1": ref,
+            "allele_2": alt,
+            "flanking": "",
+            "orig_chr": orig_chr,
+            "orig_pos": orig_pos,
+            "fasta_ref": "",
+            "masked_neighbors": 0,
+            "left_len": 0,
+            "right_len": 0,
+        }
+
+        if ref not in _ACGT_BASES or alt not in _ACGT_BASES or ref == alt:
+            out_rows.append({
+                **base_row,
+                "status": "unsupported_variant",
+                "reason": "Hanya SNP biallelik satu basa (A/C/G/T) yang didukung untuk desain KASP",
+            })
+            continue
+
+        rec = _lookup_contig(fasta_index, orig_chr)
+        if rec is None:
+            out_rows.append({
+                **base_row,
+                "status": "no_reference_for_chr",
+                "reason": f"Kontig '{orig_chr}' tidak ditemukan pada FASTA referensi",
+            })
+            continue
+
+        contig_len = int(rec["length"])
+        left_avail = orig_pos - 1
+        right_avail = contig_len - orig_pos
+        if orig_pos <= 0 or orig_pos > contig_len or left_avail < KASP_MIN_FLANK_BP or right_avail < KASP_MIN_FLANK_BP:
+            out_rows.append({
+                **base_row,
+                "status": "flank_too_short",
+                "reason": f"Flanking di sekitar {orig_chr}:{orig_pos} kurang dari {KASP_MIN_FLANK_BP} bp",
+            })
+            continue
+
+        start_1 = max(1, orig_pos - flank_len)
+        end_1 = min(contig_len, orig_pos + flank_len)
+        seq = _read_fasta_region(fasta_file, orig_chr, start_1, end_1, index=fasta_index) or ""
+        center_idx = orig_pos - start_1
+        if not (0 <= center_idx < len(seq)):
+            out_rows.append({
+                **base_row,
+                "status": "flank_too_short",
+                "reason": f"Gagal mengekstrak posisi {orig_chr}:{orig_pos} dari FASTA",
+            })
+            continue
+
+        fasta_ref = seq[center_idx]
+        if fasta_ref != ref:
+            out_rows.append({
+                **base_row,
+                "fasta_ref": fasta_ref,
+                "status": "ref_mismatch",
+                "reason": f"Basa FASTA '{fasta_ref}' != REF '{ref}' pada {orig_chr}:{orig_pos}",
+            })
+            continue
+
+        left_chars = list(seq[:center_idx])
+        right_chars = list(seq[center_idx + 1:])
+        masked_neighbors = 0
+        if bim_index is not None:
+            nearby = find_nearby_variants(orig_chr, orig_pos, flank_len, bim_index, split_map=split_map)
+            for nv in nearby:
+                off = int(nv["offset"])
+                if off < 0:
+                    idx_l = len(left_chars) + off
+                    if 0 <= idx_l < len(left_chars):
+                        left_chars[idx_l] = "N"
+                        masked_neighbors += 1
+                elif off > 0:
+                    idx_r = off - 1
+                    if 0 <= idx_r < len(right_chars):
+                        right_chars[idx_r] = "N"
+                        masked_neighbors += 1
+
+        left_str = "".join(left_chars)
+        right_str = "".join(right_chars)
+        out_rows.append({
+            **base_row,
+            "flanking": f"{left_str}[{ref}/{alt}]{right_str}",
+            "fasta_ref": fasta_ref,
+            "masked_neighbors": masked_neighbors,
+            "left_len": len(left_chars),
+            "right_len": len(right_chars),
+            "status": "ok",
+            "reason": None,
+        })
+
+    return out_rows
