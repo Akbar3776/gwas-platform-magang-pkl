@@ -233,24 +233,46 @@ def get_inspection_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dic
 
 
 def _enrich_qc_split_parts(data: Any, job_id: uuid.UUID) -> Any:
-    """Populate split_chrom_parts/split_chromosomes from chrom_split_map when absent."""
+    """Populate split_chrom_parts and Fase 0 contig-filter counts when present."""
     if not isinstance(data, dict) or data.get("status") in {"skipped", "not_available"}:
         return data
-    if "split_chrom_parts" in data and isinstance(data["split_chrom_parts"], dict):
-        return data
-    smap = load_split_map(job_id)
-    split_chroms = smap.get("split_chroms") if isinstance(smap, dict) else None
-    if not isinstance(split_chroms, dict) or not split_chroms:
-        return data
-    parts_counts = {
-        str(k): int(v.get("num_parts") or len(v.get("parts") or []))
-        for k, v in split_chroms.items()
-        if isinstance(v, dict)
-    }
     enriched = dict(data)
-    enriched["split_chrom_parts"] = parts_counts
-    if not enriched.get("split_chromosomes"):
-        enriched["split_chromosomes"] = sorted(parts_counts.keys())
+
+    if "split_chrom_parts" not in enriched or not isinstance(enriched["split_chrom_parts"], dict):
+        smap = load_split_map(job_id)
+        split_chroms = smap.get("split_chroms") if isinstance(smap, dict) else None
+        if isinstance(split_chroms, dict) and split_chroms:
+            parts_counts = {
+                str(k): int(v.get("num_parts") or len(v.get("parts") or []))
+                for k, v in split_chroms.items()
+                if isinstance(v, dict)
+            }
+            enriched["split_chrom_parts"] = parts_counts
+            if not enriched.get("split_chromosomes"):
+                enriched["split_chromosomes"] = sorted(parts_counts.keys())
+
+    removed = enriched.get("removed")
+    if isinstance(removed, dict) and "non_primary_variants" not in removed:
+        stats_file = (
+            Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "normalization" / "qc_overflow_stats.json"
+        )
+        if stats_file.is_file():
+            try:
+                norm_stats = json.loads(stats_file.read_text(encoding="utf-8"))
+                if isinstance(norm_stats, dict) and "contig_filter_pattern" in norm_stats:
+                    new_removed = dict(removed)
+                    new_removed["non_primary_variants"] = int(
+                        norm_stats.get("non_primary_removed_variants", 0)
+                    )
+                    new_removed["non_primary_contigs"] = int(
+                        norm_stats.get("non_primary_removed_contigs", 0)
+                    )
+                    if "invalid_pos" not in new_removed:
+                        new_removed["invalid_pos"] = int(norm_stats.get("invalid_pos_removed", 0))
+                    enriched["removed"] = new_removed
+            except Exception:
+                pass
+
     return enriched
 
 

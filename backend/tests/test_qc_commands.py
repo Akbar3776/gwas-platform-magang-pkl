@@ -316,3 +316,94 @@ def test_qc_pipeline_config_default_mind_is_0_1():
     cmd2 = cmds[2]
     idx = cmd2.index("--mind")
     assert cmd2[idx + 1] == "0.1"
+
+
+def test_qc_standalone_drops_non_primary_contigs_and_records_comparison(monkeypatch, tmp_path: Path):
+    import json
+    from unittest.mock import MagicMock
+    import uuid
+    from app.core.config import settings
+    from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, UploadStatus
+    from app.tasks import _common as task_common, qc_tasks
+    from tests.test_pipeline_e2e import InMemoryDB
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    db = InMemoryDB()
+    monkeypatch.setattr(qc_tasks, "SessionLocal", lambda: db)
+    monkeypatch.setattr(task_common, "SessionLocal", lambda: db)
+
+    vcf_file = tmp_path / "raw_mixed.vcf"
+    vcf_file.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n"
+        "##contig=<ID=chr1,length=5000>\n"
+        "##contig=<ID=scaffold10019,length=1000>\n"
+        "##contig=<ID=scaffold10098,length=2000>\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n"
+        "chr1\t1000\tchr1:1000\tA\tG\t100\tPASS\t.\tGT\t0/0\t1/1\n"
+        "scaffold10019\t200\tscaff19:200\tA\tG\t100\tPASS\t.\tGT\t0/0\t1/1\n"
+        "scaffold10098\t300\tscaff98:300\tC\tT\t100\tPASS\t.\tGT\t0/1\t0/1\n"
+        "scaffold10098\t600\tscaff98:600\tG\tA\t100\tPASS\t.\tGT\t1/1\t0/0\n",
+        encoding="utf-8",
+    )
+
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=uuid.uuid4(),
+        original_filename="raw_mixed.vcf",
+        storage_path=str(vcf_file),
+        file_size_bytes=vcf_file.stat().st_size,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    db.add(ds)
+
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=ds.id,
+        triggered_by=ds.owner_id,
+        pipeline_type="qc_only",
+        current_step=PipelineStep.QC,
+        overall_status=JobStatus.RUNNING_QC,
+        parameters={},
+    )
+    db.add(job)
+
+    seen_vcf_text: list[str] = []
+
+    def mock_qc_cli(cmd, **kwargs):
+        if "--vcf" in cmd:
+            vcf_arg = Path(cmd[cmd.index("--vcf") + 1])
+            if vcf_arg.name == "split_input.vcf" and vcf_arg.is_file():
+                seen_vcf_text.append(vcf_arg.read_text(encoding="utf-8"))
+        if "--make-bed" in cmd:
+            out_prefix = Path(cmd[cmd.index("--out") + 1])
+            out_prefix.with_suffix(".bed").write_bytes(b"\x6c\x1b\x01\x00")
+            out_prefix.with_suffix(".bim").write_text("1\tchr1:1000\t0\t1000\tG\tA\n", encoding="utf-8")
+            out_prefix.with_suffix(".fam").write_text("S1 S1 0 0 0 -9\nS2 S2 0 0 0 -9\n", encoding="utf-8")
+            out_prefix.with_suffix(".vcf.gz").write_bytes(b"vcfgz")
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(qc_tasks, "which_tool", lambda name: "plink2" if name == "plink2" else None)
+    monkeypatch.setattr(qc_tasks, "run_cli_command", mock_qc_cli)
+
+    res = qc_tasks.run_qc_pipeline(None, job_id=str(job.id), dataset_id=str(ds.id))
+
+    assert seen_vcf_text
+    assert all("scaffold" not in txt for txt in seen_vcf_text)
+
+    qc_dir = tmp_path / "jobs" / str(job.id) / "qc"
+    comp = json.loads((qc_dir / "qc_comparison.json").read_text(encoding="utf-8"))
+    summary = json.loads((qc_dir / "stage_summary.json").read_text(encoding="utf-8"))
+    log_text = (qc_dir / "plink_qc.log").read_text(encoding="utf-8")
+
+    assert comp["removed"]["non_primary_variants"] == 3
+    assert comp["removed"]["non_primary_contigs"] == 2
+    assert res["qc_comparison"]["removed"]["non_primary_variants"] == 3
+    assert summary["counts"]["non_primary_removed_contigs"] == 2
+    assert summary["counts"]["non_primary_removed_variants"] == 3
+    assert "[Fase 0 - Buang Scaffold] 2 kontig non-utama (3 varian) dibuang; pola=" in log_text
+    assert job.parameters["contig_filter"] == {
+        "pattern": settings.NON_PRIMARY_CONTIG_REGEX,
+        "removed_contigs": 2,
+        "removed_variants": 3,
+    }

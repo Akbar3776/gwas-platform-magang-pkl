@@ -165,6 +165,24 @@ def run_qc_pipeline(
         split_chromosomes: list[str] = list(chrom_split_ctx.get("overflow_chromosomes") or [])
         split_chrom_parts: dict[str, int] = {}
 
+        contig_filter_ctx = ctx.get("contig_filter") or (job.parameters or {}).get("contig_filter")
+        has_contig_filter = isinstance(contig_filter_ctx, dict)
+        non_primary_removed_variants = (
+            int(contig_filter_ctx.get("removed_variants") or 0)
+            if isinstance(contig_filter_ctx, dict)
+            else 0
+        )
+        non_primary_removed_contigs = (
+            int(contig_filter_ctx.get("removed_contigs") or 0)
+            if isinstance(contig_filter_ctx, dict)
+            else 0
+        )
+        contig_filter_pattern = (
+            str(contig_filter_ctx.get("pattern") or "")
+            if isinstance(contig_filter_ctx, dict)
+            else ""
+        )
+
         norm_stats_file = workspace.parent / "normalization" / "qc_overflow_stats.json"
         if norm_stats_file.is_file():
             try:
@@ -175,6 +193,18 @@ def run_qc_pipeline(
                     invalid_pos_removed = int(norm_stats.get("invalid_pos_removed", 0))
                 if not split_chromosomes:
                     split_chromosomes = list(norm_stats.get("overflow_chromosomes") or [])
+                if "contig_filter_pattern" in norm_stats:
+                    has_contig_filter = True
+                    if not contig_filter_pattern:
+                        contig_filter_pattern = str(norm_stats.get("contig_filter_pattern") or "")
+                    if non_primary_removed_variants == 0:
+                        non_primary_removed_variants = int(
+                            norm_stats.get("non_primary_removed_variants", 0)
+                        )
+                    if non_primary_removed_contigs == 0:
+                        non_primary_removed_contigs = int(
+                            norm_stats.get("non_primary_removed_contigs", 0)
+                        )
             except Exception:
                 pass
 
@@ -185,11 +215,13 @@ def run_qc_pipeline(
                 split_chromosomes = sorted(split_chrom_parts.keys())
 
         standalone_clean_vcf: Path | None = None
+        standalone_contig_filter: dict[str, Any] | None = None
         if not ctx.get("normalized_vcf_path") and Path(input_vcf_path).is_file():
             standalone_clean_vcf = workspace / "split_input.vcf"
             split_stats = split_overflow_chromosomes(
                 input_vcf=input_vcf_path,
                 output_vcf=standalone_clean_vcf,
+                drop_pattern=settings.NON_PRIMARY_CONTIG_REGEX,
             )
             if split_stats["split_applied"]:
                 save_split_map(job_id, split_stats["split_map"])
@@ -197,6 +229,15 @@ def run_qc_pipeline(
             overflow_removed = int(split_stats["overflow_removed"])
             invalid_pos_removed = int(split_stats["invalid_pos_removed"])
             split_chromosomes = list(split_stats["overflow_chromosomes"])
+            has_contig_filter = True
+            non_primary_removed_variants = int(split_stats["non_primary_removed_variants"])
+            non_primary_removed_contigs = int(split_stats["non_primary_removed_contigs"])
+            contig_filter_pattern = str(split_stats["contig_filter_pattern"])
+            standalone_contig_filter = {
+                "pattern": contig_filter_pattern,
+                "removed_contigs": non_primary_removed_contigs,
+                "removed_variants": non_primary_removed_variants,
+            }
             input_vcf_path = str(standalone_clean_vcf)
 
         plink2_bin = which_tool("plink2")
@@ -206,12 +247,19 @@ def run_qc_pipeline(
 
         tool_name = "PLINK 2" if has_plink2 else ("PLINK 1.9" if has_plink else "Tidak tersedia")
         split_label = ", ".join(split_chromosomes) if split_chromosomes else "tidak ada"
+        scaffold_log_line = (
+            f"[Fase 0 - Buang Scaffold] {non_primary_removed_contigs} kontig non-utama "
+            f"({non_primary_removed_variants} varian) dibuang; pola={contig_filter_pattern}\n"
+            if standalone_contig_filter is not None
+            else ""
+        )
         append_log(
             log_file,
             f"=== TAHAP 3: QUALITY CONTROL ({tool_name}) ===\n"
             f"Waktu mulai      : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
             f"Input VCF        : {input_vcf_path}\n"
             f"Fase 0 Split Chr : {split_label} (invalid_pos={invalid_pos_removed}, overflow_removed={overflow_removed}, batas {settings.CHROM_SPLIT_THRESHOLD_BP})\n"
+            f"{scaffold_log_line}"
             f"Populasi         : {cfg.population_type.value} (HWE: {'Nonaktif' if cfg.population_type.value == 'inbred' else cfg.hwe})\n"
             f"Parameter        : MAF={cfg.maf}, GENO={'Nonaktif' if cfg.geno is None else cfg.geno}, MIND={cfg.mind}\n"
             f"SNP-only/Bi-all  : {cfg.snps_only} / max-alleles={cfg.max_alleles}\n"
@@ -341,6 +389,9 @@ def run_qc_pipeline(
 
         comparison_data.setdefault("removed", {})["overflow_32bit"] = overflow_removed
         comparison_data["removed"]["invalid_pos"] = invalid_pos_removed
+        if has_contig_filter:
+            comparison_data["removed"]["non_primary_variants"] = non_primary_removed_variants
+            comparison_data["removed"]["non_primary_contigs"] = non_primary_removed_contigs
         comparison_data["split_chromosomes"] = split_chromosomes
         comparison_data["split_chrom_parts"] = split_chrom_parts
 
@@ -366,11 +417,27 @@ def run_qc_pipeline(
         )
 
         job.qc_output_prefix = str(output_prefix)
-        job.parameters = {
-            **(job.parameters or {}),
+        extra_qc_params: dict[str, Any] = {
             "qc_summary": qc_summary,
             "snp_loss_fraction": comparison_data.get("snp_loss_fraction", 0.0),
         }
+        if standalone_contig_filter is not None:
+            extra_qc_params["contig_filter"] = standalone_contig_filter
+            extra_qc_params["qc_overflow_removed"] = 0
+        job.parameters = {
+            **(job.parameters or {}),
+            **extra_qc_params,
+        }
+        qc_summary_counts: dict[str, Any] = {
+            "samples_in": int((comparison_data.get("before") or {}).get("n_samples") or 0),
+            "samples_out": int((comparison_data.get("after") or {}).get("n_samples") or 0),
+            "variants_in": int((comparison_data.get("before") or {}).get("n_snps") or 0),
+            "variants_out": int((comparison_data.get("after") or {}).get("n_snps") or 0),
+            "invalid_pos_removed": int(invalid_pos_removed),
+        }
+        if has_contig_filter:
+            qc_summary_counts["non_primary_removed_contigs"] = int(non_primary_removed_contigs)
+            qc_summary_counts["non_primary_removed_variants"] = int(non_primary_removed_variants)
         write_stage_summary(
             job_id,
             "qc",
@@ -380,13 +447,7 @@ def run_qc_pipeline(
                 "population_type": cfg.population_type.value,
                 "snp_loss_fraction": float(comparison_data.get("snp_loss_fraction", 0.0) or 0.0),
                 "split_chromosomes": split_chromosomes,
-                "counts": {
-                    "samples_in": int((comparison_data.get("before") or {}).get("n_samples") or 0),
-                    "samples_out": int((comparison_data.get("after") or {}).get("n_samples") or 0),
-                    "variants_in": int((comparison_data.get("before") or {}).get("n_snps") or 0),
-                    "variants_out": int((comparison_data.get("after") or {}).get("n_snps") or 0),
-                    "invalid_pos_removed": int(invalid_pos_removed),
-                },
+                "counts": qc_summary_counts,
                 "warnings": [comparison_data["warning"]] if comparison_data.get("warning") else [],
             },
             db=db,

@@ -174,6 +174,9 @@ def run_vcf_normalization(
             "kept_variants": 0,
             "overflow_removed": 0,
             "invalid_pos_removed": 0,
+            "non_primary_removed_variants": 0,
+            "non_primary_removed_contigs": 0,
+            "contig_filter_pattern": str(settings.NON_PRIMARY_CONTIG_REGEX or ""),
             "split_applied": False,
             "overflow_chromosomes": [],
             "max_pos": int(settings.CHROM_SPLIT_THRESHOLD_BP),
@@ -193,20 +196,30 @@ def run_vcf_normalization(
             )
 
             insp_summary_file = workspace.parent / "inspection" / "chromosome_characteristics_summary.txt"
-            insp_summary = load_chromosome_summary(insp_summary_file)
+            insp_summary = load_chromosome_summary(
+                insp_summary_file,
+                drop_pattern=settings.NON_PRIMARY_CONTIG_REGEX,
+            )
             if insp_summary is None:
-                insp_summary = summarize_chromosomes(input_path)
+                insp_summary = summarize_chromosomes(
+                    input_path,
+                    drop_pattern=settings.NON_PRIMARY_CONTIG_REGEX,
+                )
 
             split_result = split_overflow_chromosomes(
                 input_path,
                 split_vcf_path,
                 summary=insp_summary,
+                drop_pattern=settings.NON_PRIMARY_CONTIG_REGEX,
             )
             overflow_stats = {
                 "total_variants": split_result["total_variants"],
                 "kept_variants": split_result["kept_variants"],
                 "overflow_removed": 0,
                 "invalid_pos_removed": split_result["invalid_pos_removed"],
+                "non_primary_removed_variants": split_result["non_primary_removed_variants"],
+                "non_primary_removed_contigs": split_result["non_primary_removed_contigs"],
+                "contig_filter_pattern": split_result["contig_filter_pattern"],
                 "split_applied": split_result["split_applied"],
                 "overflow_chromosomes": split_result["overflow_chromosomes"],
                 "threshold_bp": split_result["threshold_bp"],
@@ -223,9 +236,13 @@ def run_vcf_normalization(
                 log.write(
                     f"[Fase 0 - Pemecahan Kromosom] threshold={split_result['threshold_bp']:,} bp, "
                     f"unit={split_result['unit_bp']:,} bp, dipecah={split_desc}\n"
+                    f"[Fase 0 - Buang Scaffold] {split_result['non_primary_removed_contigs']} kontig non-utama "
+                    f"({split_result['non_primary_removed_variants']} varian) dibuang; "
+                    f"pola={split_result['contig_filter_pattern']}\n"
                     f"[Fase 0 - Pemecahan Kromosom] Selesai: total={split_result['total_variants']} varian, "
                     f"dipertahankan={split_result['kept_variants']} varian, "
                     f"invalid POS<=0 disaring={split_result['invalid_pos_removed']} varian, "
+                    f"kontig non-utama dibuang={split_result['non_primary_removed_variants']} varian, "
                     f"overflow dibuang=0.\n"
                 )
 
@@ -282,6 +299,11 @@ def run_vcf_normalization(
             "unit_bp": int(split_result["unit_bp"]),
             "split_map_path": str(saved_map_path),
         }
+        contig_filter_meta = {
+            "pattern": str(split_result["contig_filter_pattern"]),
+            "removed_contigs": int(split_result["non_primary_removed_contigs"]),
+            "removed_variants": int(split_result["non_primary_removed_variants"]),
+        }
 
         # Keep job status as RUNNING_QC so the frontend polling hook knows the pipeline is still active.
         mark_job(
@@ -302,17 +324,21 @@ def run_vcf_normalization(
                     "qc_overflow_removed": 0,
                     "qc_overflow_stats": overflow_stats,
                     "chrom_split": chrom_split_meta,
+                    "contig_filter": contig_filter_meta,
                 }
             write_stage_summary(
                 job_id,
                 "normalization",
                 {
                     **chrom_split_meta,
+                    "contig_filter_pattern": contig_filter_meta["pattern"],
                     "status": "completed",
                     "counts": {
                         "variants_in": int(split_result["total_variants"]),
                         "variants_out": int(split_result["kept_variants"]),
                         "invalid_pos_removed": int(split_result["invalid_pos_removed"]),
+                        "non_primary_removed_contigs": int(split_result["non_primary_removed_contigs"]),
+                        "non_primary_removed_variants": int(split_result["non_primary_removed_variants"]),
                         "overflow_chromosomes": len(split_result["overflow_chromosomes"]),
                     },
                 },
@@ -328,6 +354,7 @@ def run_vcf_normalization(
             "normalized_vcf_path": str(output_path),
             "split_map_path": str(saved_map_path),
             "chrom_split": chrom_split_meta,
+            "contig_filter": contig_filter_meta,
             "qc_overflow_removed": 0,
             "qc_overflow_stats": overflow_stats,
             "log_file": str(log_path),

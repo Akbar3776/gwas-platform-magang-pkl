@@ -345,3 +345,172 @@ def test_normalization_real_bcftools_on_overflow_dataset(
         data_lines = [ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")]
     assert len(data_lines) == 17
     assert any(ln.startswith("chr7_p2\t1500\t") for ln in data_lines)
+
+
+def test_normalization_filters_non_primary_scaffolds_and_records_consistent_counts(
+    monkeypatch,
+    tmp_path: Path,
+):
+    import json
+    import uuid
+    from app.core.config import settings
+    from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, UploadStatus
+    from app.tasks import _common as task_common, normalization_tasks
+    from tests.test_pipeline_e2e import InMemoryDB
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    db = InMemoryDB()
+    monkeypatch.setattr(normalization_tasks, "SessionLocal", lambda: db)
+    monkeypatch.setattr(task_common, "SessionLocal", lambda: db)
+
+    vcf_file = tmp_path / "mixed_garlic.vcf"
+    vcf_file.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n"
+        "##contig=<ID=Chr1,length=3000000000>\n"
+        "##contig=<ID=scaffold10019,length=1000>\n"
+        "##contig=<ID=scaffold10098,length=2000>\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        "Chr1\t0\trs_inv\tA\tG\t.\tPASS\t.\tGT\t0/0\n"
+        "Chr1\t1000\trs_ok\tA\tG\t.\tPASS\t.\tGT\t0/1\n"
+        f"Chr1\t{2_147_483_648}\trs_overflow\tG\tA\t.\tPASS\t.\tGT\t1/1\n"
+        "scaffold10019\t200\tscaff19_1\tA\tG\t.\tPASS\t.\tGT\t0/0\n"
+        "scaffold10098\t300\tscaff98_1\tC\tT\t.\tPASS\t.\tGT\t0/1\n"
+        "scaffold10098\t600\tscaff98_2\tG\tA\t.\tPASS\t.\tGT\t1/1\n"
+        "scaffold10098\t900\tscaff98_3\tT\tC\t.\tPASS\t.\tGT\t0/0\n",
+        encoding="utf-8",
+    )
+
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=uuid.uuid4(),
+        original_filename="mixed_garlic.vcf",
+        storage_path=str(vcf_file),
+        file_size_bytes=vcf_file.stat().st_size,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    db.add(ds)
+
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=ds.id,
+        triggered_by=ds.owner_id,
+        pipeline_type="full_pipeline",
+        current_step=PipelineStep.NORMALIZATION,
+        overall_status=JobStatus.RUNNING_NORMALIZATION,
+        parameters={},
+    )
+    db.add(job)
+
+    captured_split: list[str] = []
+
+    def mock_run_cli(cmd, **kwargs):
+        if "sort" in cmd:
+            captured_split.append(Path(cmd[-1]).read_text(encoding="utf-8"))
+            out_idx = cmd.index("-o") + 1
+            Path(cmd[out_idx]).write_bytes(b"sorted_gz")
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("app.tasks.normalization_tasks.which_tool", lambda name: "bcftools")
+    monkeypatch.setattr("app.tasks.normalization_tasks.run_cli_command", mock_run_cli)
+
+    normalization_tasks.run_vcf_normalization(job_id=str(job.id), dataset_id=str(ds.id))
+
+    assert len(captured_split) == 1
+    assert "scaffold" not in captured_split[0]
+    assert "rs_ok" in captured_split[0]
+    assert "Chr1_p2\t147483648\trs_overflow" in captured_split[0]
+
+    norm_dir = tmp_path / "jobs" / str(job.id) / "normalization"
+    stats_payload = json.loads((norm_dir / "qc_overflow_stats.json").read_text(encoding="utf-8"))
+    summary_payload = json.loads((norm_dir / "stage_summary.json").read_text(encoding="utf-8"))
+    log_text = (norm_dir / "bcftools.log").read_text(encoding="utf-8")
+
+    assert "[Fase 0 - Buang Scaffold] 2 kontig non-utama (4 varian) dibuang; pola=" in log_text
+    assert stats_payload["non_primary_removed_contigs"] == 2
+    assert stats_payload["non_primary_removed_variants"] == 4
+    assert stats_payload["contig_filter_pattern"] == settings.NON_PRIMARY_CONTIG_REGEX
+    assert stats_payload["kept_variants"] == 2
+
+    assert summary_payload["counts"]["variants_in"] == 7
+    assert summary_payload["counts"]["variants_out"] == 2
+    assert summary_payload["counts"]["invalid_pos_removed"] == 1
+    assert summary_payload["counts"]["non_primary_removed_contigs"] == 2
+    assert summary_payload["counts"]["non_primary_removed_variants"] == 4
+
+    assert job.parameters["contig_filter"] == {
+        "pattern": settings.NON_PRIMARY_CONTIG_REGEX,
+        "removed_contigs": 2,
+        "removed_variants": 4,
+    }
+
+
+def test_normalization_real_bcftools_drops_non_primary_scaffolds_when_present(
+    monkeypatch,
+    tmp_path: Path,
+):
+    from app.tasks._common import which_tool
+
+    if which_tool("bcftools") is None:
+        pytest.skip("bcftools tidak tersedia di host")
+
+    import gzip
+    import uuid
+    from app.core.config import settings
+    from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, UploadStatus
+    from app.tasks import _common as task_common, normalization_tasks
+    from tests.test_pipeline_e2e import InMemoryDB
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    db = InMemoryDB()
+    monkeypatch.setattr(normalization_tasks, "SessionLocal", lambda: db)
+    monkeypatch.setattr(task_common, "SessionLocal", lambda: db)
+
+    vcf_file = tmp_path / "mixed_real.vcf"
+    vcf_file.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n"
+        "##contig=<ID=chr1,length=5000>\n"
+        "##contig=<ID=scaffold10019,length=1000>\n"
+        "##contig=<ID=scaffold10098,length=2000>\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n"
+        "chr1\t500\tchr1:500\tA\tG\t100\tPASS\t.\tGT\t0/0\t1/1\n"
+        "scaffold10019\t200\tscaff19:200\tA\tG\t100\tPASS\t.\tGT\t0/0\t1/1\n"
+        "scaffold10098\t300\tscaff98:300\tC\tT\t100\tPASS\t.\tGT\t0/1\t0/1\n"
+        "scaffold10098\t600\tscaff98:600\tG\tA\t100\tPASS\t.\tGT\t1/1\t0/0\n",
+        encoding="utf-8",
+    )
+
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=uuid.uuid4(),
+        original_filename="mixed_real.vcf",
+        storage_path=str(vcf_file),
+        file_size_bytes=vcf_file.stat().st_size,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    db.add(ds)
+
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=ds.id,
+        triggered_by=ds.owner_id,
+        pipeline_type="full_pipeline",
+        current_step=PipelineStep.NORMALIZATION,
+        overall_status=JobStatus.RUNNING_NORMALIZATION,
+        parameters={},
+    )
+    db.add(job)
+
+    res = normalization_tasks.run_vcf_normalization(job_id=str(job.id), dataset_id=str(ds.id))
+    norm_gz = Path(res["normalized_vcf_path"])
+    assert norm_gz.is_file()
+    with gzip.open(norm_gz, "rt", encoding="utf-8") as fh:
+        all_lines = fh.read().splitlines()
+    contig_headers = [ln for ln in all_lines if ln.startswith("##contig=")]
+    data_lines = [ln for ln in all_lines if ln and not ln.startswith("#")]
+    assert not any("scaffold" in ln for ln in contig_headers)
+    assert len(data_lines) == 1
+    assert data_lines[0].startswith("chr1\t500\t")
+    assert res["contig_filter"]["removed_contigs"] == 2
+    assert res["contig_filter"]["removed_variants"] == 3
