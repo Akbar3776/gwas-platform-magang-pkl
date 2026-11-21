@@ -21,7 +21,7 @@ const INITIAL_FORM = {
   maf: "0.05",
   enable_geno: true,
   geno: "0.05",
-  mind: "0.05",
+  mind: "0.1",
   hwe: "0.000001",
   snps_only: true,
   set_missing_var_ids: true,

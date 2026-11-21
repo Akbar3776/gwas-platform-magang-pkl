@@ -366,3 +366,17 @@ def test_build_plink_qc_command_geno_optional():
         geno=None,
     )
     assert "--geno" not in cmd_without
+
+
+def test_qc_pipeline_config_default_mind_is_0_1():
+    cfg = QCPipelineConfig()
+    assert cfg.mind == 0.1
+
+    cmds = build_plink2_qc_commands(
+        cfg=cfg,
+        input_vcf="/data/in.vcf.gz",
+        output_dir=Path("/data/qc"),
+    )
+    cmd2 = cmds[2]
+    idx = cmd2.index("--mind")
+    assert cmd2[idx + 1] == "0.1"

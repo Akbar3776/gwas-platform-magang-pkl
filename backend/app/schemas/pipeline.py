@@ -24,7 +24,7 @@ class QCPipelineConfig(BaseModel):
     population_type: PopulationType = PopulationType.INBRED
     maf: float = Field(default=0.05, ge=0, le=0.5)
     geno: float | None = Field(default=0.05, ge=0, le=1)
-    mind: float = Field(default=0.05, ge=0, le=1)
+    mind: float = Field(default=0.1, ge=0, le=1)
     hwe: float | None = Field(default=None, ge=0, le=1)        # None bila inbred
     snps_only: bool = True                                      # --snps-only just-acgt
     max_alleles: int = Field(default=2, ge=2, le=2)             # --max-alleles 2

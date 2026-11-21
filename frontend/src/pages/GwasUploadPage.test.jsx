@@ -74,4 +74,33 @@ describe("GwasUploadPage capabilities integration (A24)", () => {
     expect(screen.getByLabelText("MIND")).toHaveAttribute("name", "mind");
     expect(screen.getByLabelText("GENO")).toHaveAttribute("name", "geno");
   });
+
+  test("defaults QC MIND field to 0.1", async () => {
+    fetchReferencePanels.mockResolvedValue([]);
+    fetchCapabilities.mockResolvedValue({
+      plink2: true,
+      plink: true,
+      gemma: true,
+      bcftools: true,
+      beagle: false,
+      rscript: false,
+      gapit: false,
+      multilocus_available: false,
+      mode: "docker",
+    });
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <GwasUploadPage />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(fetchCapabilities).toHaveBeenCalled();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Mock Ready Dataset/i }));
+
+    expect(screen.getByLabelText("MIND")).toHaveValue(0.1);
+  });
 });
