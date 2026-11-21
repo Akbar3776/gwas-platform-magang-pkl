@@ -24,6 +24,7 @@ from app.tasks._common import (
     is_job_cancelled,
     mark_job,
     which_tool,
+    write_stage_summary,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
 from app.utils.process import CLICancelledError, CLIExecutionError, SubprocessFailed, run_cli_command
@@ -527,6 +528,21 @@ def run_gemma_gwas(
                     job_id=job.id,
                     result_type=ResultType.GWAS_NORMALIZED_TSV,
                     file_path=str(norm_path),
+                )
+                write_stage_summary(
+                    job_id,
+                    "gwas",
+                    {
+                        "status": "completed",
+                        "model": model,
+                        "engine": "gemma",
+                        "lambda_gc": float(summary_stats.get("lambda_gc", 1.0)),
+                        "counts": {
+                            "total_snps": int(summary_stats.get("total_snps", 0)),
+                            "significant_snps": int(summary_stats.get("significant_snps", 0)),
+                        },
+                    },
+                    db=db,
                 )
                 db.commit()
         finally:

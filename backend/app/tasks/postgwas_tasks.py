@@ -31,6 +31,7 @@ from app.tasks._common import (
     upsert_result,
     which_tool,
     write_json,
+    write_stage_summary,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
 from app.utils.process import CLICancelledError, run_cli_command
@@ -401,6 +402,22 @@ def run_postgwas_analysis(
             "thresholds": thresholds,
             "n_lead_snps": len(lead_snps),
         }
+        write_stage_summary(
+            job_id,
+            "postgwas",
+            {
+                "status": "completed",
+                "lambda_gc": float(lambda_gc),
+                "selected_method": thresholds.get("selected_method"),
+                "selected_p": thresholds.get("selected_p"),
+                "counts": {
+                    "lead_snps": len(lead_snps),
+                    "suggestive_snps": len(suggestive_snps),
+                    "total_peaks": int((peak_data.get("summary") or {}).get("total_peaks") or 0),
+                },
+            },
+            db=db,
+        )
         guard_status_change(db, job.id, JobStatus.RUNNING_PARSING)
         job.overall_status = JobStatus.RUNNING_PARSING
         job.current_step = PipelineStep.VISUALIZATION

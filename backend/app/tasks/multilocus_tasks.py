@@ -30,6 +30,7 @@ from app.tasks._common import (
     upsert_result,
     which_tool,
     write_json,
+    write_stage_summary,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
 from app.utils.process import CLICancelledError, run_cli_command
@@ -1207,6 +1208,18 @@ def run_multilocus_gwas(
                 "status": "skipped",
                 "reason": reason,
             })
+            write_stage_summary(
+                job_id,
+                "multilocus",
+                {
+                    "status": "skipped",
+                    "reason": reason,
+                    "models": [],
+                    "engines": {},
+                    "counts": {"n_models": 0, "n_lead_snps": 0},
+                },
+                db=db,
+            )
             mark_job(
                 db,
                 job,
@@ -1398,6 +1411,20 @@ def run_multilocus_gwas(
                     f"sebagai dataset visualisasi Manhattan & QQ Plot.",
                 )
 
+        write_stage_summary(
+            job_id,
+            "multilocus",
+            {
+                "status": "completed",
+                "models": list(active_methods),
+                "engines": engines_used,
+                "counts": {
+                    "n_models": len(methods_results),
+                    "n_lead_snps": len(multi_lead_snps),
+                },
+            },
+            db=db,
+        )
         mark_job(
             db,
             job,

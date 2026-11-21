@@ -18,6 +18,7 @@ from app.tasks._common import (
     mark_job,
     stage_dir,
     upsert_result,
+    write_stage_summary,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
 
@@ -129,6 +130,21 @@ def run_visualization(
             "manhattan_cache_path": str(manhattan_cache_path),
             "summary_stats": full_summary,
         }
+        write_stage_summary(
+            job_id,
+            "visualization",
+            {
+                "status": "completed",
+                "lambda_gc": float(summary_stats.get("lambda_gc", 1.0)),
+                "counts": {
+                    "total_snps": int(summary_stats.get("total_snps", 0)),
+                    "significant_snps": int(summary_stats.get("significant_snps", 0)),
+                    "kept_rows": int(cache_summary.get("kept_rows", 0)),
+                    "lead_snps": len(lead_snps),
+                },
+            },
+            db=db,
+        )
         guard_status_change(db, job.id, JobStatus.RUNNING_ANNOTATION)
         job.overall_status = JobStatus.RUNNING_ANNOTATION
         job.current_step = PipelineStep.ANNOTATION
