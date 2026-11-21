@@ -183,3 +183,101 @@ def test_run_inspection_keeps_first_valid_value_for_duplicate_iid(tmp_path, monk
         gemma_ws / "gemma.log",
     )
     assert vec.tolist() == [10.0, 12.0, 15.0, 30.0]
+
+
+def test_run_inspection_populates_fase0_chromosome_summary_and_api_returns_it(
+    tmp_path,
+    monkeypatch,
+    overflow_dataset,
+):
+    import json
+    import uuid
+    from pathlib import Path
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.api.routes.results import get_inspection_data
+    from app.core.config import settings
+    from app.db.base import Base
+    from app.db.engine.models import (
+        AnalysisJob,
+        Dataset,
+        JobStatus,
+        PipelineStep,
+        UploadStatus,
+        User,
+        UserRole,
+    )
+    from app.tasks import _common as task_common, inspection_tasks
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    engine = create_engine(f"sqlite:///{tmp_path / 'w10.db'}")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    monkeypatch.setattr(inspection_tasks, "SessionLocal", Session)
+    monkeypatch.setattr(task_common, "SessionLocal", Session)
+
+    db = Session()
+    try:
+        user = User(
+            id=uuid.uuid4(),
+            email="w10@test.local",
+            hashed_password="x",
+            role=UserRole.RESEARCHER,
+        )
+        ds = Dataset(
+            id=uuid.uuid4(),
+            owner_id=user.id,
+            original_filename="overflow.vcf.gz",
+            storage_path=str(overflow_dataset["vcf_path"]),
+            phenotype_file_path=str(overflow_dataset["pheno_path"]),
+            upload_status=UploadStatus.UPLOADED,
+        )
+        job = AnalysisJob(
+            id=uuid.uuid4(),
+            dataset_id=ds.id,
+            triggered_by=user.id,
+            pipeline_type="full_pipeline",
+            current_step=PipelineStep.INSPECTION,
+            overall_status=JobStatus.PENDING,
+            parameters={},
+        )
+        db.add_all([user, ds, job])
+        db.commit()
+        job_id = str(job.id)
+        ds_id = str(ds.id)
+    finally:
+        db.close()
+
+    res = inspection_tasks.run_inspection(
+        job_id=job_id,
+        dataset_id=ds_id,
+        phenotype_cfg={"trait": "TRAIT1", "id_column": "IID", "fid_column": "FID"},
+    )
+
+    summary_tsv = Path(res["chromosome_summary_path"])
+    assert summary_tsv.is_file()
+    assert summary_tsv.name == "chromosome_characteristics_summary.txt"
+    assert "chr7\t11\t0\t6500\t5\t1" in summary_tsv.read_text(encoding="utf-8")
+
+    stage_summary_file = tmp_path / "jobs" / job_id / "inspection" / "stage_summary.json"
+    assert stage_summary_file.is_file()
+    stage_payload = json.loads(stage_summary_file.read_text(encoding="utf-8"))
+    assert stage_payload["overflow_chromosomes"] == ["chr7"]
+    assert stage_payload["total_overflow"] == 5
+    assert stage_payload["total_invalid_pos"] == 1
+    assert stage_payload["needs_split"] is True
+
+    inspection_log = (tmp_path / "jobs" / job_id / "inspection" / "inspection.log").read_text(encoding="utf-8")
+    assert "[Fase 0]" in inspection_log
+
+    verify_db = Session()
+    try:
+        api_payload = get_inspection_data(uuid.UUID(job_id), db=verify_db)
+        assert api_payload["chromosome_summary"]["overflow_chromosomes"] == ["chr7"]
+        assert api_payload["chromosome_summary"]["total_invalid_pos"] == 1
+        assert api_payload["blocking_errors"] == []
+        assert any("INVALID_POS" in w for w in api_payload["warnings"])
+        db_job = verify_db.get(AnalysisJob, uuid.UUID(job_id))
+        assert db_job.parameters["stage_summaries"]["inspection"]["overflow_chromosomes"] == ["chr7"]
+    finally:
+        verify_db.close()

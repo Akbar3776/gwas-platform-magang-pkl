@@ -10,6 +10,7 @@ import uuid
 
 from app.db.engine.database import SessionLocal
 from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, ResultType
+from app.services.chromosome_service import summarize_chromosomes, write_chromosome_summary
 from app.services.phenotype_service import (
     inspect_phenotype,
     load_phenotype_table,
@@ -24,6 +25,7 @@ from app.tasks._common import (
     stage_dir,
     upsert_result,
     write_json,
+    write_stage_summary,
 )
 from app.tasks.celery_app import celery_app, get_task_logger
 
@@ -112,6 +114,19 @@ def run_inspection(
             missing_tokens=missing_tokens,
         )
 
+        chr_summary = summarize_chromosomes(vcf_path)
+        chrom_summary_file = out_dir / "chromosome_characteristics_summary.txt"
+        write_chromosome_summary(chr_summary, chrom_summary_file)
+        if chr_summary["total_invalid_pos"] > 0:
+            report.setdefault("warnings", []).append(
+                f"Ditemukan {chr_summary['total_invalid_pos']} varian dengan POS <= 0 (INVALID_POS) "
+                f"pada file VCF; varian tersebut akan disaring sebelum pemisahan kromosom."
+            )
+        report["chromosome_summary"] = {
+            **chr_summary,
+            "summary_path": str(chrom_summary_file),
+        }
+
         # Write inspection output files
         sampel_vcf_file = out_dir / "sampel_vcf.txt"
         sampel_vcf_file.write_text("\n".join(vcf_ids) + "\n", encoding="utf-8")
@@ -168,6 +183,20 @@ def run_inspection(
             f" - Nilai Missing          : {report['missing_count']}\n",
         )
 
+        ovf_desc = (
+            ", ".join(chr_summary["overflow_chromosomes"])
+            if chr_summary["overflow_chromosomes"]
+            else "tidak ada"
+        )
+        append_log(
+            log_file,
+            f"[Fase 0] Karakteristik Kromosom (batas {chr_summary['threshold_bp']:,} bp):\n"
+            f" - Total Varian VCF      : {chr_summary['total_variants']}\n"
+            f" - Varian Overflow       : {chr_summary['total_overflow']} ({ovf_desc})\n"
+            f" - Posisi Invalid (<=0)  : {chr_summary['total_invalid_pos']}\n"
+            f" - Berkas Ringkasan TSV  : {chrom_summary_file.name}\n",
+        )
+
         for w in report["warnings"]:
             append_log(log_file, f"[WARN] {w}")
 
@@ -185,6 +214,20 @@ def run_inspection(
             file_path=str(report_json_file),
             summary_stats=report,
         )
+        write_stage_summary(
+            job_id,
+            "inspection",
+            {
+                "trait": report["trait"],
+                "n_matched": report["n_matched"],
+                "chromosome_summary_path": str(chrom_summary_file),
+                "overflow_chromosomes": chr_summary["overflow_chromosomes"],
+                "total_overflow": chr_summary["total_overflow"],
+                "total_invalid_pos": chr_summary["total_invalid_pos"],
+                "needs_split": chr_summary["needs_split"],
+            },
+            db=db,
+        )
         guard_status_change(db, job.id, JobStatus.RUNNING_NORMALIZATION)
         job.overall_status = JobStatus.RUNNING_NORMALIZATION
         job.current_step = PipelineStep.NORMALIZATION
@@ -199,6 +242,7 @@ def run_inspection(
             "trait": report["trait"],
             "n_matched": report["n_matched"],
             "inspection_report_path": str(report_json_file),
+            "chromosome_summary_path": str(chrom_summary_file),
         }
     except JobCancelledError:
         append_log(log_file, "[CANCELLED] Tahap inspeksi dibatalkan pengguna.")
