@@ -18,6 +18,8 @@ from app.services.structure_service import (
     determine_model_recommendation,
     read_plink_binary,
     run_pca_decomposition,
+    select_ld_decay_blocks,
+    write_ld_decay_range_file,
 )
 from app.tasks._common import (
     JobCancelledError,
@@ -236,18 +238,66 @@ def run_structure_analysis(
         kinship_file = workspace / "kinship.json"
         write_json(kinship_file, kinship_json)
 
-        # 5. LD Decay Analysis
+        # 5. LD Decay Analysis (dari bfile QC/imputasi tanpa LD pruning, dibatasi blok kontigu)
         _check_not_cancelled()
         append_log(log_file, "Menghitung kurva peluruhan Linkage Disequilibrium (LD Decay)...")
+        bim_path = Path(f"{bfile_prefix}.bim")
+        if bim_path.is_file():
+            block_info = select_ld_decay_blocks(bim_path, max_snps=cfg.ld_decay_max_snps)
+        else:
+            block_info = {"needs_subset": False, "blocks": []}
+
+        if block_info["needs_subset"] and block_info["blocks"]:
+            range_file = workspace / "ld_decay_ranges.txt"
+            write_ld_decay_range_file(block_info["blocks"], range_file)
+            ld_subset_bfile = workspace / "ld_subset"
+            is_plink2 = "plink2" in Path(plink_bin).stem.lower()
+            extract_mod = "bed1" if is_plink2 else "range"
+            ld_extract_cmd = [
+                plink_bin,
+                "--bfile",
+                str(bfile_prefix),
+                "--allow-extra-chr",
+                "--extract",
+                extract_mod,
+                str(range_file),
+                "--make-bed",
+                "--out",
+                str(ld_subset_bfile),
+            ]
+            ensure_not_cancelled(job_id, db, run_id=run_id)
+            append_log(
+                log_file,
+                f"Mengekstrak blok kontigu LD decay (max {cfg.ld_decay_max_snps} SNP): {' '.join(ld_extract_cmd)}",
+            )
+            run_cli_command(
+                ld_extract_cmd,
+                cwd=workspace,
+                log_file=log_file,
+                timeout=1800,
+                cancel_check=_cancel_check,
+            )
+            _, ld_variants, ld_G = read_plink_binary(str(ld_subset_bfile))
+        else:
+            _, ld_variants, ld_G = read_plink_binary(str(bfile_prefix))
+
+        append_log(
+            log_file,
+            f"Menghitung LD decay dari sumber non-prune {bfile_prefix} ({ld_G.shape[1]} varian).",
+        )
         ld_decay_data = compute_ld_decay_curve(
-            variants=variants,
-            G=G,
+            variants=ld_variants,
+            G=ld_G,
             window_kb=cfg.ld_decay_window_kb,
             bin_kb=cfg.ld_decay_bin_kb,
             cutoff_r2=cfg.ld_decay_r2_cutoff,
             fallback_kb=cfg.ld_decay_fallback_kb,
             cancel_check=_check_not_cancelled,
         )
+        ld_decay_data["method"] = "unphased r^2 (setara plink2 --r2-unphased)"
+        ld_decay_data["source_bfile"] = str(bfile_prefix)
+        ld_decay_data["n_variants_used"] = int(ld_G.shape[1])
+        ld_decay_data["blocks"] = block_info["blocks"]
         ld_decay_file = workspace / "ld_decay.json"
         write_json(ld_decay_file, ld_decay_data)
         append_log(log_file, f"LD Decay selesai: {ld_decay_data['reason']}")

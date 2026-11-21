@@ -452,6 +452,112 @@ def compute_ld_decay_curve(
     }
 
 
+def select_ld_decay_blocks(bim_path: str | Path, max_snps: int) -> dict[str, Any]:
+    """Pilih blok kontigu proporsional per kromosom hingga maksimal max_snps varian untuk LD decay."""
+    chr_positions: dict[str, list[int]] = {}
+    total_snps = 0
+    with Path(bim_path).open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) < 4:
+                continue
+            chrom = parts[0]
+            pos = int(parts[3])
+            chr_positions.setdefault(chrom, []).append(pos)
+            total_snps += 1
+
+    if total_snps <= max_snps:
+        blocks = [
+            {
+                "chrom": chrom,
+                "start_bp": int(min(ps)),
+                "end_bp": int(max(ps)),
+                "n_snps": len(ps),
+                "start_idx": 0,
+                "end_idx": len(ps) - 1,
+            }
+            for chrom, ps in chr_positions.items()
+            if len(ps) >= 2
+        ]
+        return {
+            "needs_subset": False,
+            "total_snps": total_snps,
+            "selected_snps": total_snps,
+            "blocks": blocks,
+        }
+
+    eligible = [(chrom, sorted(ps)) for chrom, ps in chr_positions.items() if len(ps) >= 2]
+    if not eligible:
+        return {
+            "needs_subset": False,
+            "total_snps": total_snps,
+            "selected_snps": total_snps,
+            "blocks": [],
+        }
+
+    kept = eligible
+    if 2 * len(eligible) > max_snps:
+        keep_n = max(1, max_snps // 2)
+        kept = sorted(eligible, key=lambda item: len(item[1]), reverse=True)[:keep_n]
+
+    n_kept = len(kept)
+    counts = [2] * n_kept
+    capacities = [len(ps) - 2 for _, ps in kept]
+    rem = max(0, max_snps - 2 * n_kept)
+    total_cap = sum(capacities)
+    if rem > 0 and total_cap > 0:
+        if rem >= total_cap:
+            counts = [len(ps) for _, ps in kept]
+        else:
+            exact_shares = [rem * (cap / total_cap) for cap in capacities]
+            floors = [min(capacities[i], int(share)) for i, share in enumerate(exact_shares)]
+            counts = [counts[i] + floors[i] for i in range(n_kept)]
+            leftover = rem - sum(floors)
+            remainders = sorted(
+                range(n_kept),
+                key=lambda i: (exact_shares[i] - floors[i], capacities[i]),
+                reverse=True,
+            )
+            for i in remainders:
+                if leftover <= 0:
+                    break
+                if counts[i] < len(kept[i][1]):
+                    counts[i] += 1
+                    leftover -= 1
+
+    blocks: list[dict[str, Any]] = []
+    for (chrom, ps), k in zip(kept, counts):
+        start_idx = (len(ps) - k) // 2
+        end_idx = start_idx + k - 1
+        blocks.append({
+            "chrom": chrom,
+            "start_bp": int(ps[start_idx]),
+            "end_bp": int(ps[end_idx]),
+            "n_snps": int(k),
+            "start_idx": int(start_idx),
+            "end_idx": int(end_idx),
+        })
+
+    return {
+        "needs_subset": True,
+        "total_snps": total_snps,
+        "selected_snps": int(sum(counts)),
+        "blocks": blocks,
+    }
+
+
+def write_ld_decay_range_file(blocks: list[dict[str, Any]], path: str | Path) -> Path:
+    """Tulis file interval 1-based tertutup untuk PLINK (--extract bed1 / --extract range)."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"{b['chrom']}\t{int(b['start_bp'])}\t{int(b['end_bp'])}\tblock_{idx}\n"
+        for idx, b in enumerate(blocks)
+    ]
+    target.write_text("".join(lines), encoding="utf-8")
+    return target
+
+
 def determine_model_recommendation(
     pca_data: dict[str, Any],
     king_data: dict[str, Any],
