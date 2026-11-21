@@ -10,8 +10,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import primer3
+
 FAM_TAIL = "GAAGGTGACCAAGTTCATGCT"
 HEX_TAIL = "GAAGGTCGGAGTCAACGGATT"
+OLIGO_TM_MARGIN_C = 5.0
+OLIGO_DG_WARN_KCAL = -9.0
 
 _CLEAN_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _BASE_COMP = {"A": "T", "T": "A", "C": "G", "G": "C"}
@@ -73,46 +77,6 @@ def _easykasp_tm(ka: int, kt: int, kc: int, kg: int, denom_offset: int = 0) -> f
     if total <= 0:
         return 0.0
     return 72.0 + (37.4 * (kg + kc) - 747.0) / total
-
-
-def _score_allele_window(seq: str, tm_min: float = 56.6, tm_max: float = 59.0) -> float | None:
-    """Evaluate EasyKASP Tm and GC/homopolymer gates for allele-specific candidates."""
-    ka, kt, kc, kg = _count_bases(seq)
-    n_acgt = ka + kt + kc + kg
-    if n_acgt < 18 or len(seq) != n_acgt:
-        return None
-    gc_frac = (kg + kc) / n_acgt
-    if gc_frac < 0.16 or gc_frac > 0.72:
-        return None
-    tm = _easykasp_tm(ka, kt, kc, kg)
-    if tm < tm_min or tm > tm_max:
-        return None
-    if _has_homopolymer(seq, 6):
-        return None
-    return tm
-
-
-def _score_common_window(seq: str) -> float | None:
-    """Evaluate EasyKASP Tm, GC, and homopolymer gates for common primer candidates."""
-    ka, kt, kc, kg = _count_bases(seq)
-    n_acgt = ka + kt + kc + kg
-    if n_acgt < 20 or len(seq) != n_acgt:
-        return None
-    gc_frac = (kg + kc) / n_acgt
-    if gc_frac < 0.21 or gc_frac > 0.70:
-        return None
-    tm = _easykasp_tm(ka, kt, kc, kg)
-    if tm < 59.9 or tm > 62.9:
-        return None
-    if abs(tm - 60.4) > 0.57:
-        return None
-    if _has_homopolymer(seq, 6):
-        return None
-    left4 = _vba_left(seq, 4)
-    right4 = _vba_right(seq, 4)
-    if left4 in {"AAAA", "TTTT", "CCCC", "GGGG"} or right4 in {"AAAA", "TTTT", "CCCC", "GGGG"}:
-        return None
-    return tm
 
 
 def _select_allele_candidate(
@@ -529,4 +493,124 @@ def design_kasp(
         "tm_c": _primer_tm(c7),
         "status": "OK",
         "notes": notes,
+    }
+
+
+def _format_thermo_entry(
+    thermo_res: Any,
+    *,
+    ref_tm: float,
+    label: str,
+    warnings_out: list[str],
+    record_warning: bool = True,
+) -> dict[str, Any]:
+    """Convert primer3 ThermoResult cal/mol dg into kcal/mol and evaluate warning threshold."""
+    structure_found = bool(getattr(thermo_res, "structure_found", False))
+    tm = round(float(getattr(thermo_res, "tm", 0.0) or 0.0), 2)
+    dg_kcal = round(float(getattr(thermo_res, "dg", 0.0) or 0.0) / 1000.0, 2)
+    warn = bool(structure_found and (tm >= (ref_tm - OLIGO_TM_MARGIN_C) or dg_kcal < OLIGO_DG_WARN_KCAL))
+    if warn and record_warning:
+        warnings_out.append(f"{label}: potensi struktur sekunder (Tm={tm:.1f} C, dG={dg_kcal:.2f} kcal/mol)")
+    return {
+        "structure_found": structure_found,
+        "tm": tm,
+        "dg": dg_kcal,
+        "warn": warn,
+    }
+
+
+def analyze_kasp_oligos(design_result: dict[str, Any]) -> dict[str, Any]:
+    """Analyze hairpins, homodimers, heterodimers, and end stability on full tailed KASP oligos."""
+    if not isinstance(design_result, dict) or design_result.get("status") != "OK":
+        return {
+            "analyzed": False,
+            "reason": "Desain KASP gagal",
+            "warn": False,
+            "warnings": [],
+            "hairpins": {},
+            "homodimers": {},
+            "heterodimers": {},
+            "end_stability": {},
+            "input_sequences": {},
+        }
+
+    px = str(design_result.get("primer_x") or "").strip().upper()
+    py = str(design_result.get("primer_y") or "").strip().upper()
+    pc = str(design_result.get("primer_c") or "").strip().upper()
+
+    tm_x = float(design_result.get("tm_x") or _primer_tm(design_result.get("primer_x_no_tail") or px) or 57.0)
+    tm_y = float(design_result.get("tm_y") or _primer_tm(design_result.get("primer_y_no_tail") or py) or 57.0)
+    tm_c = float(design_result.get("tm_c") or _primer_tm(pc) or 60.0)
+
+    warnings: list[str] = []
+    oligo_specs = (
+        ("primer_x", px, tm_x, "Hairpin Primer_X"),
+        ("primer_y", py, tm_y, "Hairpin Primer_Y"),
+        ("primer_c", pc, tm_c, "Hairpin Primer_C"),
+    )
+    hairpins = {
+        key: _format_thermo_entry(
+            primer3.bindings.calc_hairpin(seq),
+            ref_tm=ref_tm,
+            label=label,
+            warnings_out=warnings,
+        )
+        for key, seq, ref_tm, label in oligo_specs
+    }
+    homodimers = {
+        key: _format_thermo_entry(
+            primer3.bindings.calc_homodimer(seq),
+            ref_tm=ref_tm,
+            label=label.replace("Hairpin", "Homodimer"),
+            warnings_out=warnings,
+        )
+        for key, seq, ref_tm, label in oligo_specs
+    }
+    pair_specs = (
+        ("x_c", px, pc, min(tm_x, tm_c), "Heterodimer Primer_X/C"),
+        ("y_c", py, pc, min(tm_y, tm_c), "Heterodimer Primer_Y/C"),
+        ("x_y", px, py, min(tm_x, tm_y), "Heterodimer Primer_X/Y"),
+    )
+    heterodimers = {
+        key: _format_thermo_entry(
+            primer3.bindings.calc_heterodimer(s1, s2),
+            ref_tm=ref_tm,
+            label=label,
+            warnings_out=warnings,
+        )
+        for key, s1, s2, ref_tm, label in pair_specs
+    }
+    end_specs = (
+        ("x_c", px, pc, min(tm_x, tm_c)),
+        ("y_c", py, pc, min(tm_y, tm_c)),
+        ("x_y", px, py, min(tm_x, tm_y)),
+        ("primer_x", px, px, tm_x),
+        ("primer_y", py, py, tm_y),
+        ("primer_c", pc, pc, tm_c),
+    )
+    end_stability = {
+        key: _format_thermo_entry(
+            primer3.bindings.calc_end_stability(s1, s2),
+            ref_tm=ref_tm,
+            label=f"End stability {key}",
+            warnings_out=warnings,
+            record_warning=False,
+        )
+        for key, s1, s2, ref_tm in end_specs
+    }
+
+    return {
+        "analyzed": True,
+        "reason": None,
+        "warn": bool(warnings),
+        "warnings": warnings,
+        "hairpins": hairpins,
+        "homodimers": homodimers,
+        "heterodimers": heterodimers,
+        "end_stability": end_stability,
+        "input_sequences": {
+            "primer_x": px,
+            "primer_y": py,
+            "primer_c": pc,
+        },
     }

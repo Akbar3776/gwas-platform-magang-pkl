@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from app.services.kasp_service import FAM_TAIL, HEX_TAIL, design_kasp
+import pytest
+
+from app.services.kasp_service import FAM_TAIL, HEX_TAIL, analyze_kasp_oligos, design_kasp
 
 SNP_74098_FLANK = (
     "TGTTCATTGTTGTAGCCTTCAATGTCAAATACCTTCTAAGGGTTATGTGatcataatatataaagt"
@@ -62,3 +64,34 @@ def test_design_kasp_avoids_n_masked_bases_in_primers():
         assert "N" not in result["primer_c"]
     else:
         assert result["primer_x"] == ""
+
+
+def test_analyze_kasp_oligos_golden_snp_74098_includes_tails_and_preserves_status():
+    design = design_kasp("SNP_74098", "T", "C", SNP_74098_FLANK)
+    assert design["status"] == "OK"
+
+    oligo = analyze_kasp_oligos(design)
+    assert design["status"] == "OK"
+    assert oligo["analyzed"] is True
+    assert oligo["input_sequences"]["primer_x"].startswith(FAM_TAIL)
+    assert oligo["input_sequences"]["primer_y"].startswith(HEX_TAIL)
+    assert oligo["input_sequences"]["primer_x"] == design["primer_x"]
+    assert oligo["input_sequences"]["primer_y"] == design["primer_y"]
+    assert oligo["input_sequences"]["primer_c"] == design["primer_c"]
+
+    px_hp = oligo["hairpins"]["primer_x"]
+    assert px_hp["structure_found"] is True
+    assert px_hp["tm"] == pytest.approx(46.0, abs=0.5)
+    assert px_hp["dg"] == pytest.approx(-0.91, abs=0.1)
+
+    assert set(oligo["homodimers"].keys()) == {"primer_x", "primer_y", "primer_c"}
+    assert set(oligo["heterodimers"].keys()) == {"x_c", "y_c", "x_y"}
+    assert set(oligo["end_stability"].keys()) == {"x_c", "y_c", "x_y", "primer_x", "primer_y", "primer_c"}
+
+
+def test_analyze_kasp_oligos_handles_failed_design():
+    failed = design_kasp("SNP_FAIL", "T", "C", "ACGT")
+    oligo = analyze_kasp_oligos(failed)
+    assert oligo["analyzed"] is False
+    assert oligo["warn"] is False
+    assert oligo["hairpins"] == {}
