@@ -484,3 +484,82 @@ def chr_label(raw: str) -> str:
     """Label kromosom apa adanya, hanya prefix 'chr' (case-insensitive) yang dibuang."""
     label = re.sub(r"^chr", "", str(raw).strip(), flags=re.IGNORECASE)
     return label or "0"
+
+
+def _coerce_iso_timestamp(value: Any, fallback: str) -> str:
+    if value is None:
+        return fallback
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def write_stage_summary(
+    job_id: uuid.UUID | str,
+    stage: str,
+    payload: dict[str, Any],
+    *,
+    db: Any = None,
+    session_factory: Any = None,
+) -> dict[str, Any]:
+    """Tulis <stage>/stage_summary.json secara atomic dan gabungkan ke job.parameters['stage_summaries']."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    finished_at = _coerce_iso_timestamp(payload.get("finished_at"), now_iso)
+    started_at = _coerce_iso_timestamp(payload.get("started_at"), finished_at)
+    raw_duration = payload.get("duration_s")
+    if raw_duration is None:
+        try:
+            start_dt = datetime.fromisoformat(started_at)
+            end_dt = datetime.fromisoformat(finished_at)
+            duration_s = round(max(0.0, (end_dt - start_dt).total_seconds()), 3)
+        except (ValueError, TypeError):
+            duration_s = 0.0
+    else:
+        duration_s = float(raw_duration)
+
+    summary: dict[str, Any] = {
+        **payload,
+        "stage": stage,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_s": duration_s,
+        "counts": dict(payload.get("counts") or {}),
+        "warnings": list(payload.get("warnings") or []),
+    }
+
+    summary_path = stage_dir(str(job_id), stage) / "stage_summary.json"
+    write_json(summary_path, summary)
+
+    close_db = False
+    session = db
+    try:
+        if session is None:
+            session = (session_factory or SessionLocal)()
+            close_db = True
+        try:
+            target_id: Any = uuid.UUID(str(job_id))
+        except (ValueError, TypeError):
+            target_id = str(job_id)
+        job = session.get(AnalysisJob, target_id)
+        if job is not None:
+            params = dict(job.parameters or {})
+            summaries = dict(params.get("stage_summaries") or {})
+            summaries[stage] = summary
+            params["stage_summaries"] = summaries
+            job.parameters = params
+            session.commit()
+    except Exception as exc:
+        if session is not None:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+        logger.warning("Gagal menyimpan ringkasan tahap %s untuk job %s: %s", stage, job_id, exc)
+    finally:
+        if close_db and session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+    return summary

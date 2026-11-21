@@ -138,3 +138,123 @@ def test_overflow_dataset_fixture(overflow_dataset):
             chr7_seq.append(ln.strip())
     full_chr7 = "".join(chr7_seq)
     assert chr7_5500_ref == full_chr7[5500 - 1]
+
+
+def test_write_stage_summary_writes_file_and_merges_job_parameters(tmp_path):
+    import uuid
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.core.config import settings
+    from app.db.base import Base
+    from app.db.engine.models import AnalysisJob, Dataset, JobStatus, PipelineStep, UploadStatus, User, UserRole
+    from app.tasks._common import write_stage_summary
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'summary_test.db'}")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+
+    db = Session()
+    try:
+        user = User(
+            id=uuid.uuid4(),
+            email="summary@example.com",
+            hashed_password="x",
+            role=UserRole.RESEARCHER,
+        )
+        ds = Dataset(
+            id=uuid.uuid4(),
+            owner_id=user.id,
+            original_filename="cohort.vcf.gz",
+            storage_path=str(tmp_path / "cohort.vcf.gz"),
+            upload_status=UploadStatus.UPLOADED,
+        )
+        job = AnalysisJob(
+            id=uuid.uuid4(),
+            dataset_id=ds.id,
+            triggered_by=user.id,
+            pipeline_type="full_pipeline",
+            current_step=PipelineStep.INSPECTION,
+            overall_status=JobStatus.RUNNING_INSPECTION,
+            parameters={"qc": {"maf": 0.05}},
+        )
+        db.add_all([user, ds, job])
+        db.commit()
+        job_id = str(job.id)
+    finally:
+        db.close()
+
+    res1 = write_stage_summary(
+        job_id,
+        "inspection",
+        {
+            "started_at": "2026-11-21T10:00:00+00:00",
+            "finished_at": "2026-11-21T10:00:05.500000+00:00",
+            "counts": {"samples": 8},
+            "warnings": [],
+            "inputs": {"vcf": "cohort.vcf.gz"},
+        },
+        session_factory=Session,
+    )
+    assert res1["duration_s"] == 5.5
+
+    write_stage_summary(
+        job_id,
+        "normalization",
+        {"counts": {"variants": 17}, "warnings": ["pos=0"]},
+        session_factory=Session,
+    )
+    write_stage_summary(
+        job_id,
+        "inspection",
+        {"counts": {"samples": 9}, "warnings": ["updated"]},
+        session_factory=Session,
+    )
+
+    storage_root = Path(settings.STORAGE_ROOT)
+    for stage_name in ("inspection", "normalization"):
+        summary_file = storage_root / "jobs" / job_id / stage_name / "stage_summary.json"
+        assert summary_file.is_file()
+        loaded = read_json(summary_file)
+        for key in ("stage", "started_at", "finished_at", "duration_s", "counts", "warnings"):
+            assert key in loaded
+
+    insp_disk = read_json(storage_root / "jobs" / job_id / "inspection" / "stage_summary.json")
+    assert insp_disk["counts"] == {"samples": 9}
+    assert insp_disk["warnings"] == ["updated"]
+
+    check_db = Session()
+    try:
+        persisted = check_db.get(AnalysisJob, uuid.UUID(job_id))
+        assert persisted is not None
+        assert persisted.parameters["qc"] == {"maf": 0.05}
+        summaries = persisted.parameters["stage_summaries"]
+        assert set(summaries.keys()) == {"inspection", "normalization"}
+        assert summaries["inspection"]["counts"] == {"samples": 9}
+        assert summaries["normalization"]["counts"] == {"variants": 17}
+    finally:
+        check_db.close()
+
+
+def test_write_stage_summary_db_error_only_warns(caplog):
+    import logging
+    import uuid
+    from app.core.config import settings
+    from app.tasks._common import write_stage_summary
+
+    def broken_factory():
+        raise RuntimeError("db error")
+
+    job_id = str(uuid.uuid4())
+    with caplog.at_level(logging.WARNING):
+        res = write_stage_summary(
+            job_id,
+            "qc",
+            {"counts": {"snps": 120}, "warnings": []},
+            session_factory=broken_factory,
+        )
+
+    assert res["stage"] == "qc"
+    summary_file = Path(settings.STORAGE_ROOT) / "jobs" / job_id / "qc" / "stage_summary.json"
+    assert summary_file.is_file()
+    assert read_json(summary_file)["counts"] == {"snps": 120}
+    assert any("Gagal menyimpan ringkasan tahap qc" in rec.message for rec in caplog.records)
