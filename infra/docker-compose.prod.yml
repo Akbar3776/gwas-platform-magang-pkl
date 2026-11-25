@@ -33,6 +33,7 @@ services:
         required: false
     environment:
       ENV: production
+      ALLOW_SQLITE_FALLBACK: "false"
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-gwas_user}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-gwas_db}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -72,6 +73,7 @@ services:
         required: false
     environment:
       ENV: production
+      ALLOW_SQLITE_FALLBACK: "false"
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-gwas_user}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-gwas_db}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -103,6 +105,7 @@ services:
         required: false
     environment:
       ENV: production
+      ALLOW_SQLITE_FALLBACK: "false"
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-gwas_user}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-gwas_db}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
