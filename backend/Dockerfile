@@ -115,6 +115,8 @@ RUN wget -q "https://s3.amazonaws.com/plink2-assets/beta1/plink2_linux_x86_64_${
     && rm -f /tmp/plink2.zip
 
 COPY ./app ./app
+COPY alembic.ini ./
+COPY ./alembic ./alembic
 
 # ------------------------------------------------------------------------------
 # 6. Direktori staging untuk file VCF (di-mount sebagai volume oleh docker-compose)

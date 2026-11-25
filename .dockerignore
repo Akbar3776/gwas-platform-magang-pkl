@@ -12,3 +12,14 @@ backend/.env.*
 .gitignore
 storage/
 *.log
+backend/data/
+ncbi_dataset/
+Hasil_Output/
+GWAS_Workflow_211126/
+KASP_Primer/
+graphify-out/
+.codegraph/
+.ua/
+slides/
+*.vcf
+*.vcf.gz

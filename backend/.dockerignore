@@ -9,8 +9,14 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 tests/
-alembic/versions/
 storage/
 dist/
 build/
 *.egg-info/
+data/
+bcftools/
+beagle-lib/
+gemma/
+plink2_win64_*/
+tools/
+*.db
