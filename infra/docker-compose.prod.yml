@@ -17,7 +17,7 @@ services:
     networks:
       - gwas_network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost/health"]
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/health"]
       interval: 15s
       timeout: 5s
       retries: 5
