@@ -10,6 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import threading
 from typing import Any
 import uuid
 
@@ -664,6 +665,37 @@ def _normalize_candidate_genes_payload(
     }
 
 
+_REFRESH_LOCKS: dict[str, threading.Lock] = {}
+_REFRESH_LOCKS_GUARD = threading.Lock()
+
+
+def _job_refresh_lock(job: AnalysisJob | None, anno_dir: Path) -> threading.Lock:
+    key = str(job.id) if (job is not None and job.id is not None) else str(anno_dir.resolve())
+    with _REFRESH_LOCKS_GUARD:
+        lock = _REFRESH_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _REFRESH_LOCKS[key] = lock
+        return lock
+
+
+def _read_go_json(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, dict) else None
+    except Exception:
+        return None
+
+
+def _extract_go_fp(payload: dict[str, Any] | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    fp = (payload.get("go_stats") or {}).get("fingerprint")
+    return str(fp) if fp else None
+
+
 def _write_json_atomic(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -689,108 +721,116 @@ def refresh_go_if_stale(
     from app.services import go_enrichment_service as go_svc
     from app.services.go_ontology_service import load_go_ontology
 
-    if gff_path is None:
-        gff_path = _resolve_dataset_gff_path(db, job)
-    if go_mapping_path is None:
-        go_mapping_path = _resolve_dataset_go_mapping_path(db, job)
-    if ortholog_index_path is None:
-        ortholog_index_path = _resolve_dataset_ortholog_index_path(db, job)
+    with _job_refresh_lock(job, anno_dir):
+        if gff_path is None:
+            gff_path = _resolve_dataset_gff_path(db, job)
+        if go_mapping_path is None:
+            go_mapping_path = _resolve_dataset_go_mapping_path(db, job)
+        if ortholog_index_path is None:
+            ortholog_index_path = _resolve_dataset_ortholog_index_path(db, job)
 
-    go_file = anno_dir / "go_enrichment.json"
-    current_go: dict[str, Any] | None = cached_go if isinstance(cached_go, dict) else None
-    if current_go is None and go_file.is_file():
-        try:
-            loaded = json.loads(go_file.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                current_go = loaded
-        except Exception:
-            current_go = None
-    if current_go is None and isinstance(cand_payload, dict) and isinstance(cand_payload.get("go_enrichment"), dict):
-        current_go = cand_payload["go_enrichment"]
+        go_file = anno_dir / "go_enrichment.json"
+        # File di disk menjadi sumber kebenaran setelah lock didapat (C10)
+        current_go = _read_go_json(go_file)
+        if current_go is None and isinstance(cached_go, dict):
+            current_go = cached_go
+        if (
+            current_go is None
+            and isinstance(cand_payload, dict)
+            and isinstance(cand_payload.get("go_enrichment"), dict)
+        ):
+            current_go = cand_payload["go_enrichment"]
 
-    params = job.parameters if job is not None else None
-    feature_type = go_svc.resolve_job_feature_type(params)
-    contig_pattern, contig_pattern_source = go_svc.resolve_job_contig_pattern(params)
-    trait_label = str(((params or {}).get("phenotype") or {}).get("trait") or "Candidate Genes")
+        params = job.parameters if job is not None else None
+        feature_type = go_svc.resolve_job_feature_type(params)
+        contig_pattern, contig_pattern_source = go_svc.resolve_job_contig_pattern(params)
+        trait_label = str(((params or {}).get("phenotype") or {}).get("trait") or "Candidate Genes")
 
-    expected_fp = go_svc.compute_go_fingerprint(
-        mapping_sha256=go_svc.file_sha256_cached(go_mapping_path),
-        gff_sha256=go_svc.file_sha256_cached(gff_path),
-        obo=load_go_ontology(),
-        ortholog_sha256=go_svc.file_sha256_cached(ortholog_index_path),
-        feature_type=feature_type,
-        contig_pattern=contig_pattern,
-        allow_synthetic=go_svc._allow_synthetic_annotation(),
-    )
-    stored_fp = (
-        ((current_go.get("go_stats") or {}).get("fingerprint"))
-        if isinstance(current_go, dict)
-        else None
-    )
-    if isinstance(current_go, dict) and stored_fp == expected_fp and stored_fp is not None:
-        return current_go, False
-
-    gff_available = bool(gff_path is not None and gff_path.is_file())
-    if not gff_available and isinstance(current_go, dict):
-        bg_src = str(((current_go.get("go_stats") or {}).get("background") or {}).get("source") or "")
-        made_with_gff = bg_src.startswith("gff_") or (
-            not current_go.get("go_stats") and bool(current_go.get("go_table"))
-        )
-        if made_with_gff:
-            return {**current_go, "stale": True, "stale_reason": "gff_unavailable"}, False
-
-    if not isinstance(cand_payload, dict):
-        return current_go, False
-    mapped_rows = cand_payload.get("rows") or cand_payload.get("mappings") or []
-    cand_genes = cand_payload.get("candidate_genes_list") or []
-    if not mapped_rows and not cand_genes:
-        return current_go, False
-
-    try:
-        new_go = go_svc.run_go_enrichment_analysis(
-            mapped_rows=mapped_rows,
-            candidate_genes_list=cand_genes,
-            trait_name=trait_label,
-            output_dir=anno_dir,
-            gff_path=gff_path,
-            go_mapping_path=go_mapping_path,
+        expected_fp = go_svc.compute_go_fingerprint(
+            mapping_sha256=go_svc.file_sha256_cached(go_mapping_path),
+            gff_sha256=go_svc.file_sha256_cached(gff_path),
+            obo=load_go_ontology(),
+            ortholog_sha256=go_svc.file_sha256_cached(ortholog_index_path),
             feature_type=feature_type,
-            contig_filter_pattern=contig_pattern,
-            contig_pattern_source=contig_pattern_source,
-            ortholog_index_path=ortholog_index_path,
+            contig_pattern=contig_pattern,
+            allow_synthetic=go_svc._allow_synthetic_annotation(),
         )
-    except Exception:
-        logger.exception("Gagal menyegarkan hasil GO untuk job=%s", getattr(job, "id", None))
-        if isinstance(current_go, dict):
-            return {**current_go, "stale": True, "stale_reason": "recompute_failed"}, False
-        return None, False
+        stored_fp = _extract_go_fp(current_go)
+        if isinstance(current_go, dict) and stored_fp == expected_fp and stored_fp is not None:
+            return current_go, False
 
-    if go_file.is_file():
-        try:
-            prev_payload = json.loads(go_file.read_text(encoding="utf-8"))
-        except Exception:
-            prev_payload = current_go
-        if isinstance(prev_payload, dict):
-            _write_json_atomic(anno_dir / "go_enrichment.previous.json", prev_payload)
-    elif isinstance(current_go, dict):
-        _write_json_atomic(anno_dir / "go_enrichment.previous.json", current_go)
-
-    _write_json_atomic(go_file, new_go)
-    cand_file = anno_dir / "candidate_genes.json"
-    if cand_file.is_file() or isinstance(cand_payload, dict):
-        try:
-            base_cand = (
-                json.loads(cand_file.read_text(encoding="utf-8"))
-                if cand_file.is_file()
-                else dict(cand_payload)
+        gff_available = bool(gff_path is not None and gff_path.is_file())
+        if not gff_available and isinstance(current_go, dict):
+            bg_src = str(((current_go.get("go_stats") or {}).get("background") or {}).get("source") or "")
+            made_with_gff = bg_src.startswith("gff_") or (
+                not current_go.get("go_stats") and bool(current_go.get("go_table"))
             )
-            if isinstance(base_cand, dict):
-                base_cand["go_enrichment"] = new_go
-                _write_json_atomic(cand_file, base_cand)
-        except Exception:
-            logger.exception("Gagal memperbarui candidate_genes.json untuk job=%s", getattr(job, "id", None))
+            if made_with_gff:
+                return {**current_go, "stale": True, "stale_reason": "gff_unavailable"}, False
 
-    return new_go, True
+        if not isinstance(cand_payload, dict):
+            return current_go, False
+        mapped_rows = cand_payload.get("rows") or cand_payload.get("mappings") or []
+        cand_genes = cand_payload.get("candidate_genes_list") or []
+        if not mapped_rows and not cand_genes:
+            return current_go, False
+
+        try:
+            new_go = go_svc.run_go_enrichment_analysis(
+                mapped_rows=mapped_rows,
+                candidate_genes_list=cand_genes,
+                trait_name=trait_label,
+                output_dir=anno_dir,
+                gff_path=gff_path,
+                go_mapping_path=go_mapping_path,
+                feature_type=feature_type,
+                contig_filter_pattern=contig_pattern,
+                contig_pattern_source=contig_pattern_source,
+                ortholog_index_path=ortholog_index_path,
+            )
+        except Exception:
+            logger.exception("Gagal menyegarkan hasil GO untuk job=%s", getattr(job, "id", None))
+            if isinstance(current_go, dict):
+                return {**current_go, "stale": True, "stale_reason": "recompute_failed"}, False
+            return None, False
+
+        new_fp = _extract_go_fp(new_go)
+        on_disk = _read_go_json(go_file)
+        if on_disk is not None and new_fp is not None and _extract_go_fp(on_disk) == new_fp:
+            return on_disk, False
+
+        backup_source = on_disk if on_disk is not None else current_go
+        try:
+            if backup_source is not None and (
+                new_fp is None or _extract_go_fp(backup_source) != new_fp
+            ):
+                _write_json_atomic(anno_dir / "go_enrichment.previous.json", backup_source)
+            _write_json_atomic(go_file, new_go)
+        except OSError as exc:
+            logger.warning(
+                "Gagal menyimpan pembaruan go_enrichment.json untuk job=%s: %s",
+                getattr(job, "id", None),
+                exc,
+            )
+            return new_go, True
+
+        cand_file = anno_dir / "candidate_genes.json"
+        if cand_file.is_file() or isinstance(cand_payload, dict):
+            try:
+                base_cand = (
+                    json.loads(cand_file.read_text(encoding="utf-8"))
+                    if cand_file.is_file()
+                    else dict(cand_payload)
+                )
+                if isinstance(base_cand, dict):
+                    base_cand["go_enrichment"] = new_go
+                    _write_json_atomic(cand_file, base_cand)
+            except Exception:
+                logger.exception(
+                    "Gagal memperbarui candidate_genes.json untuk job=%s", getattr(job, "id", None)
+                )
+
+        return new_go, True
 
 
 @router.get("/{job_id}/candidate-genes", summary="Pemetaan anotasi gen kandidat GFF3 & GO (Fase 5)")

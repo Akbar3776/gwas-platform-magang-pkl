@@ -209,3 +209,93 @@ def test_refresh_non_destructive_when_gff_missing_or_recompute_raises(tmp_path: 
 def test_results_router_retains_require_job_owner_dependency():
     dep_calls = [getattr(dep.dependency, "__name__", "") for dep in results_routes.router.dependencies]
     assert "require_job_owner" in dep_calls
+
+
+def test_refresh_parallel_requests_compute_once_and_keep_original_backup(tmp_path: Path, monkeypatch):
+    import threading
+    import time
+
+    db, _ds, job, anno_dir, _gff, _go_map, legacy_go = _setup_job_env(tmp_path, monkeypatch)
+
+    calls = 0
+    calls_lock = threading.Lock()
+    orig_run = go_enrichment_service.run_go_enrichment_analysis
+
+    def _slow_run(**kwargs):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        out = orig_run(**kwargs)
+        time.sleep(0.5)
+        return out
+
+    monkeypatch.setattr(go_enrichment_service, "run_go_enrichment_analysis", _slow_run)
+
+    start = threading.Barrier(2, timeout=20)
+    results: dict[str, dict] = {}
+    errors: list[BaseException] = []
+
+    def _call(name, fn):
+        try:
+            start.wait()
+            results[name] = fn(job.id, db=db)
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=_call, args=("go", results_routes.get_go_enrichment_data)),
+        threading.Thread(target=_call, args=("cand", results_routes.get_candidate_genes_data)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    backup_path = anno_dir / "go_enrichment.previous.json"
+    backup = json.loads(backup_path.read_text(encoding="utf-8")) if backup_path.is_file() else None
+    assert not errors, errors
+    assert calls == 1
+    assert backup == legacy_go
+    assert results["go"]["go_stats"]["fingerprint"] == results["cand"]["go_enrichment"]["go_stats"]["fingerprint"]
+    assert list(anno_dir.glob("*.tmp*")) == []
+
+
+def test_refresh_skips_write_when_another_worker_already_refreshed(tmp_path: Path, monkeypatch):
+    db, _ds, job, anno_dir, _gff, _go_map, _legacy_go = _setup_job_env(tmp_path, monkeypatch)
+    orig_run = go_enrichment_service.run_go_enrichment_analysis
+    go_file = anno_dir / "go_enrichment.json"
+
+    def _other_worker_run(**kwargs):
+        out = orig_run(**kwargs)
+        go_file.write_text(json.dumps({**out, "_writer": "other_worker"}), encoding="utf-8")
+        return out
+
+    monkeypatch.setattr(go_enrichment_service, "run_go_enrichment_analysis", _other_worker_run)
+
+    out = results_routes.get_go_enrichment_data(job.id, db=db)
+    assert out["_writer"] == "other_worker"
+    assert json.loads(go_file.read_text(encoding="utf-8"))["_writer"] == "other_worker"
+    assert not (anno_dir / "go_enrichment.previous.json").exists()
+
+
+def test_refresh_write_oserror_returns_200_and_keeps_old_file(tmp_path: Path, monkeypatch, caplog):
+    import os
+
+    db, _ds, job, anno_dir, _gff, _go_map, legacy_go = _setup_job_env(tmp_path, monkeypatch)
+    orig_replace = os.replace
+
+    def _locked_replace(src, dst):
+        if Path(dst).name == "go_enrichment.json":
+            raise PermissionError("locked by concurrent reader")
+        return orig_replace(src, dst)
+
+    monkeypatch.setattr(results_routes.os, "replace", _locked_replace)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        out = results_routes.get_go_enrichment_data(job.id, db=db)
+
+    assert out["status"] == "completed"
+    assert out["go_stats"]["fingerprint"]
+    assert any(r.levelno >= logging.WARNING for r in caplog.records)
+    assert json.loads((anno_dir / "go_enrichment.json").read_text(encoding="utf-8")) == legacy_go
+    assert list(anno_dir.glob("*.tmp*")) == []
