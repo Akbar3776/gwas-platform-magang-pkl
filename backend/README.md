@@ -156,7 +156,7 @@ Seluruh endpoint berada di bawah prefix `/api/v1` (kecuali `/health`). Dokumenta
 ### B. Unggahan Dataset, Fenotipe, GFF3, GO, & Referensi FASTA (`/api/v1/upload`)
 | Metode | Endpoint | Deskripsi |
 | :--- | :--- | :--- |
-| `GET` | `/api/v1/upload/datasets` | Daftar dataset VCF beserta status fenotipe, GFF3, pemetaan GO, dan FASTA referensi. |
+| `GET` | `/api/v1/upload/datasets` | Daftar dataset VCF beserta status fenotipe, GFF3, pemetaan GO, indeks ortolog (`has_ortholog`), dan FASTA referensi. |
 | `POST` | `/api/v1/upload/init` | Memulai sesi upload bertahap VCF (`original_filename`, `total_size_bytes`). |
 | `POST` | `/api/v1/upload/chunk` | Mengunggah potongan (*chunk*, batas `MAX_CHUNK_SIZE_BYTES = 16 MiB`) berkas VCF. |
 | `POST` | `/api/v1/upload/finalize` | Memvalidasi kelengkapan chunk & checksum SHA-256 lalu merakit file VCF asinkron. |
@@ -165,7 +165,8 @@ Seluruh endpoint berada di bawah prefix `/api/v1` (kecuali `/health`). Dokumenta
 | `DELETE` | `/api/v1/upload/{file_id}` | Menghapus dataset (soft-delete DB) dan berkas fisiknya. |
 | `POST` / `DELETE` | `/api/v1/upload/{file_id}/phenotype` | Mengunggah atau menghapus file fenotipe (`.txt`/`.tsv`/`.csv`). |
 | `POST` / `DELETE` | `/api/v1/upload/{file_id}/annotation` | Mengunggah atau menghapus file anotasi GFF3 (`.gff3`/`.gff`/`.gff3.gz`). |
-| `POST` / `DELETE` | `/api/v1/upload/{file_id}/go-annotation` | Mengunggah atau menghapus pemetaan Gene Ontology (`.tsv`/`.txt`/`.gaf`/`.gaf.gz`). |
+| `POST` / `DELETE` | `/api/v1/upload/{file_id}/go-annotation` | Mengunggah atau menghapus pemetaan Gene Ontology (`.tsv`/`.txt`/`.gaf`/`.tab`/`.go` atau `.gz` bernama bebas seperti `Asa.GO.gz`). |
+| `POST` / `DELETE` | `/api/v1/upload/{file_id}/ortholog` | Mengunggah hasil BLAST outfmt6 (`.blast`/`.tsv`/`.txt`/`.tab`/`.out`/`.m8`/`.gz`) untuk diindeks sebagai `ortholog_besthit.tsv.gz` atau menghapus indeksnya. |
 | `POST` | `/api/v1/upload/{file_id}/reference/init` | Memulai sesi upload bertahap FASTA referensi (`.fa`/`.fasta`/`.fna`/`.gz`). |
 | `POST` | `/api/v1/upload/{file_id}/reference/chunk` | Mengunggah satu potongan (*chunk*) berkas FASTA referensi. |
 | `POST` | `/api/v1/upload/{file_id}/reference/finalize` | Finalisasi FASTA referensi + penjadwalan dekompresi & pembangunan indeks `.fai`. |
@@ -254,7 +255,38 @@ R_BINARY_PATH=Rscript
 BEAGLE_MAX_MEMORY=
 ALLOW_PYTHON_MULTILOCUS=true
 ALLOW_SYNTHETIC_ANNOTATION=false
+
+# Pemetaan GO, Ontologi OBO Lokal, & Indeks Ortolog BLAST (ADR-012)
+GO_MAPPING_MAX_UPLOAD_BYTES=52428800
+GO_MAPPING_MAX_DECOMPRESSED_BYTES=134217728
+GO_MAPPING_MAX_LINES=1000000
+GO_MAPPING_MIN_VALID_RATIO=0.5
+UPLOAD_TEXT_MAX_LINE_BYTES=65536
+# Biarkan dikomentari di Docker agar env_file Compose tidak menimpa ENV GO_OBO_PATH=/opt/go/go-basic.obo di image
+# GO_OBO_PATH=/opt/go/go-basic.obo
+GO_OBO_MAX_BYTES=209715200
+GO_OBO_MAX_LINES=2000000
+ORTHOLOG_MAX_UPLOAD_BYTES=99614720
+ORTHOLOG_MAX_DECOMPRESSED_BYTES=536870912
+ORTHOLOG_MAX_LINES=10000000
+ORTHOLOG_MAX_QUERIES=500000
 ```
+
+### Anotasi GO, Ontologi OBO Lokal, Background Kontig, & Ortolog BLAST (`ADR-012`)
+
+- **Format & Batas Unggahan:**
+  - **Pemetaan GO** (`/api/v1/upload/{file_id}/go-annotation`): menerima ekstensi `.tsv`, `.txt`, `.gaf`, `.tab`, `.go`, serta berkas `.gz` bernama bebas (mis. `Asa.GO.gz`). Format kompresi dideteksi via *magic bytes* (`sniff_compression`), lalu dibaca dengan batas dekompresi (`GO_MAPPING_MAX_DECOMPRESSED_BYTES`), batas baris (`GO_MAPPING_MAX_LINES`), batas panjang baris (`UPLOAD_TEXT_MAX_LINE_BYTES`), dan rasio baris valid minimal (`GO_MAPPING_MIN_VALID_RATIO`). Pencocokan ID mendukung *exact* diikuti *fallback* satu sufiks isoform (`\.N$`).
+  - **Ortolog BLAST** (`/api/v1/upload/{file_id}/ortholog`): menerima outfmt6 12 kolom standar pada ekstensi `.blast`, `.tsv`, `.txt`, `.tab`, `.out`, `.m8`, atau `.gz` (mis. `Asa_Ath.blast.gz`). File mentah tidak disimpan; server hanya menulis indeks best-hit kanonik `ortholog_besthit.tsv.gz` (tie-break: `bitscore` maks → `evalue` min → `pident` maks → `subject_locus` → `sseqid`) dengan batas `ORTHOLOG_MAX_*`.
+- **Kode Error Terstruktur (`detail={"code","message"}`):**
+  - `400`: `GO_EXTENSION`, `ORTHOLOG_EXTENSION`, `INVALID_STORAGE_PATH`, `UNSUPPORTED_COMPRESSION`, `GZIP_INVALID`, `BINARY_CONTENT`, `CORRUPT_GZIP`, `LINE_TOO_LONG`, `NO_VALID_ROWS`, `TOO_MANY_INVALID_LINES`, `GO_PARSE_ERROR`, `ORTHOLOG_PARSE_ERROR`.
+  - `409`: `ACTIVE_JOB`.
+  - `413`: `UPLOAD_TOO_LARGE`, `DECOMPRESSED_TOO_LARGE`, `TOO_MANY_LINES`, `TOO_MANY_QUERIES`.
+- **Ontologi OBO Lokal (`go-basic.obo`) & Peringatan `env_file`:**
+  - Pada image Docker produksi (`backend/Dockerfile`), `go-basic.obo` (rilis ter-pin `2026-08-05` / `releases/2026-07-26`) sudah diunduh saat build dengan verifikasi SHA-256 ke `/opt/go/go-basic.obo` dan diekspor lewat `ENV GO_OBO_PATH=/opt/go/go-basic.obo`.
+  - **Penting untuk Docker Compose:** Jangan aktifkan baris `GO_OBO_PATH=` kosong pada `.env` atau `backend/.env` karena `env_file` Compose akan menimpa `ENV GO_OBO_PATH` milik image dan mematikan normalisasi OBO. Biarkan dikomentari di Docker, dan set hanya saat menjalankan backend/pengujian lokal di host (mis. `$env:GO_OBO_PATH="D:\Games\Code\GWAS_Study_ML\go-basic.obo"`).
+- **Universe Background & Penyegaran Lazy:**
+  - Universe background GO mengikuti pola filter kontig yang tersimpan pada `job.parameters["contig_filter"]["pattern"]` (job pra-Phase 5 tanpa key tersebut tidak memfilter kontig; pemanggilan tanpa job memakai `NON_PRIMARY_CONTIG_REGEX`).
+  - Membuka hasil GO (`GET /api/v1/results/{job_id}/go-enrichment` atau `/candidate-genes`) akan menyegarkan hasil secara *lazy* dan non-destruktif (`go_enrichment.previous.json`) apabila fingerprint input (mapping GO, GFF, OBO, indeks ortolog, `feature_type`, pola kontig, flag sintetis) berubah.
 
 ---
 
