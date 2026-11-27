@@ -74,6 +74,9 @@ def list_uploaded_datasets(
         go_anno_info = meta.get("go_annotation", {})
         go_anno_path = go_anno_info.get("path")
         has_go_anno = bool(go_anno_path and Path(go_anno_path).is_file())
+        ortholog_info = meta.get("ortholog", {})
+        ortholog_path = ortholog_info.get("path")
+        has_ortholog = bool(ortholog_path and Path(ortholog_path).is_file())
         ref_info = meta.get("reference_fasta", {})
         ref_path = ref_info.get("path")
         has_ref = bool(ref_path and Path(ref_path).is_file())
@@ -98,6 +101,9 @@ def list_uploaded_datasets(
                 "has_go_annotation": has_go_anno,
                 "go_annotation_filename": go_anno_info.get("filename") if has_go_anno else None,
                 "go_annotation_n_genes": go_anno_info.get("n_genes", 0) if has_go_anno else 0,
+                "has_ortholog": has_ortholog,
+                "ortholog_filename": ortholog_info.get("filename") if has_ortholog else None,
+                "ortholog_n_genes": ortholog_info.get("n_queries", 0) if has_ortholog else 0,
                 "has_reference": has_ref,
                 "reference_filename": ref_info.get("filename") if has_ref else None,
                 "reference_n_contigs": ref_info.get("n_contigs", 0) if has_ref else 0,
@@ -757,6 +763,144 @@ def delete_go_annotation_file(
         if _under_storage(go_path):
             go_path.unlink(missing_ok=True)
     meta.pop("go_annotation", None)
+    dataset.extra_metadata = meta
+    db.commit()
+    return {"deleted": True}
+
+
+_ALLOWED_ORTHOLOG_PLAIN_EXTS = (".blast", ".tsv", ".txt", ".tab", ".out", ".m8")
+
+
+@router.post("/{file_id}/ortholog")
+def upload_ortholog_file(
+    file_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Mengunggah hasil BLAST outfmt6 (.blast/.tsv/.txt/.tab/.out/.m8/.gz) menjadi indeks best-hit."""
+    from app.services.ortholog_service import build_besthit_index
+    from app.services.upload_validation import (
+        UploadValidationError,
+        copy_upload_bounded,
+        sniff_compression,
+    )
+
+    dataset = _owned_dataset(file_id, user, db)
+    fname = Path(file.filename or "ortholog.blast").name[:255] or "ortholog.blast"
+    lower_fname = fname.lower()
+    if not (lower_fname.endswith(".gz") or lower_fname.endswith(_ALLOWED_ORTHOLOG_PLAIN_EXTS)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "ORTHOLOG_EXTENSION",
+                "message": "File ortolog BLAST harus berupa teks (.blast/.tsv/.txt/.tab/.out/.m8) atau .gz.",
+            },
+        )
+
+    jobs = db.query(AnalysisJob).filter(AnalysisJob.dataset_id == dataset.id).all()
+    for j in jobs:
+        if j.deleted_at is None and j.overall_status in ACTIVE_JOB_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "ACTIVE_JOB",
+                    "message": "File indeks ortolog tidak dapat diganti karena ada job yang sedang berjalan.",
+                },
+            )
+
+    ds_dir = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id)
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    part_path = ds_dir / f".ortholog.{uuid.uuid4().hex}.part"
+    target_path = ds_dir / "ortholog_besthit.tsv.gz"
+    if not _under_storage(part_path) or not _under_storage(target_path):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "INVALID_STORAGE_PATH", "message": "Path penyimpanan tidak valid."},
+        )
+
+    try:
+        try:
+            source_bytes, source_sha256 = copy_upload_bounded(
+                file.file,
+                part_path,
+                max_bytes=settings.ORTHOLOG_MAX_UPLOAD_BYTES,
+            )
+            compression = sniff_compression(part_path)
+            if lower_fname.endswith(".gz") and compression != "gzip":
+                raise UploadValidationError(
+                    "GZIP_INVALID",
+                    "Berkas berakhiran .gz tidak memiliki header gzip yang valid.",
+                    http_status=status.HTTP_400_BAD_REQUEST,
+                )
+            stats = build_besthit_index(part_path, target_path)
+        except UploadValidationError as err:
+            logger.warning("Unggahan ortolog ditolak dataset=%s kode=%s", dataset.id, err.code)
+            _raise_upload_err(err)
+        except Exception:
+            logger.exception("Gagal memproses BLAST ortolog pada dataset=%s", dataset.id)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "ORTHOLOG_PARSE_ERROR",
+                    "message": "Berkas BLAST gagal dibaca atau formatnya rusak.",
+                },
+            ) from None
+    finally:
+        part_path.unlink(missing_ok=True)
+
+    meta = dict(dataset.extra_metadata or {})
+    ortholog_meta = {
+        "filename": fname,
+        "path": str(target_path),
+        "sha256": stats["sha256"],
+        "source_sha256": source_sha256,
+        "source_bytes": source_bytes,
+        "decompressed_bytes": stats["decompressed_bytes"],
+        "n_rows": stats["n_rows"],
+        "n_invalid_lines": stats["n_invalid_lines"],
+        "n_queries": stats["n_queries"],
+        "n_ties": stats["n_ties"],
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    meta["ortholog"] = ortholog_meta
+    dataset.extra_metadata = meta
+    db.commit()
+
+    logger.info(
+        "Indeks ortolog disimpan dataset=%s user=%s sha256=%s queries=%d ties=%d",
+        dataset.id,
+        user.id,
+        stats["sha256"],
+        stats["n_queries"],
+        stats["n_ties"],
+    )
+    return {k: v for k, v in ortholog_meta.items() if k != "path"}
+
+
+@router.delete("/{file_id}/ortholog")
+def delete_ortholog_file(
+    file_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Menghapus indeks ortolog BLAST dari dataset."""
+    dataset = _owned_dataset(file_id, user, db)
+    jobs = db.query(AnalysisJob).filter(AnalysisJob.dataset_id == dataset.id).all()
+    for j in jobs:
+        if j.deleted_at is None and j.overall_status in ACTIVE_JOB_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="File indeks ortolog tidak dapat dihapus karena ada job yang sedang berjalan.",
+            )
+
+    meta = dict(dataset.extra_metadata or {})
+    ortholog_info = meta.get("ortholog") or {}
+    if ortholog_info.get("path"):
+        ortholog_path = Path(ortholog_info["path"])
+        if _under_storage(ortholog_path):
+            ortholog_path.unlink(missing_ok=True)
+    meta.pop("ortholog", None)
     dataset.extra_metadata = meta
     db.commit()
     return {"deleted": True}
