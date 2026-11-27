@@ -218,6 +218,21 @@ export async function deleteGoAnnotation(fileId) {
 }
 
 /**
+ * Unggah file hasil BLAST outfmt6 untuk membangun indeks best-hit ortolog dataset.
+ */
+export async function uploadOrtholog(fileId, file, onProgress) {
+  return postDatasetFile(`/upload/${fileId}/ortholog`, file, onProgress);
+}
+
+/**
+ * Hapus indeks best-hit ortolog dari dataset.
+ */
+export async function deleteOrtholog(fileId) {
+  const { data } = await httpClient.delete(`/upload/${fileId}/ortholog`);
+  return data;
+}
+
+/**
  * Hapus FASTA referensi genom dan indeks .fai dari dataset.
  */
 export async function deleteReference(fileId) {

@@ -9,6 +9,7 @@ import { WorkspaceExplorer } from "../components/WorkspaceExplorer";
 import { PhenotypeUploader } from "../components/PhenotypeUploader";
 import { AnnotationUploader } from "../components/AnnotationUploader";
 import { GoMappingUploader } from "../components/GoMappingUploader";
+import { OrthologUploader } from "../components/OrthologUploader";
 import { ReferenceUploader } from "../components/ReferenceUploader";
 import { DataInspectionPanel } from "../components/DataInspectionPanel";
 
@@ -240,6 +241,20 @@ export function GwasUploadPage() {
             has_go_annotation: Boolean(meta),
             go_annotation_filename: meta?.filename || null,
             go_annotation_n_genes: meta?.n_genes ?? null,
+          }
+        : prev
+    );
+    setRefreshCount((c) => c + 1);
+  }, []);
+
+  const handleOrthologChanged = useCallback((meta) => {
+    setDatasetMeta((prev) =>
+      prev
+        ? {
+            ...prev,
+            has_ortholog: Boolean(meta),
+            ortholog_filename: meta?.filename || null,
+            ortholog_n_genes: meta?.n_queries ?? null,
           }
         : prev
     );
@@ -497,6 +512,12 @@ export function GwasUploadPage() {
                   initialGoAnnotationFilename={datasetMeta?.go_annotation_filename}
                   initialGoAnnotationGenes={datasetMeta?.go_annotation_n_genes}
                   onGoAnnotationChanged={handleGoAnnotationChanged}
+                />
+                <OrthologUploader
+                  datasetId={datasetId}
+                  initialOrthologFilename={datasetMeta?.ortholog_filename}
+                  initialOrthologGenes={datasetMeta?.ortholog_n_genes}
+                  onOrthologChanged={handleOrthologChanged}
                 />
               </div>
 

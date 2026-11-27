@@ -16,6 +16,8 @@ jest.mock("../api/jobsApi", () => ({
   deleteAnnotation: jest.fn(),
   uploadGoAnnotation: jest.fn(),
   deleteGoAnnotation: jest.fn(),
+  uploadOrtholog: jest.fn(),
+  deleteOrtholog: jest.fn(),
   deleteReference: jest.fn(),
   fetchUploadedDatasets: jest.fn().mockResolvedValue([]),
   fetchUserJobs: jest.fn().mockResolvedValue([]),
