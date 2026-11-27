@@ -69,6 +69,36 @@ def _extract_go_tokens(raw: str) -> list[str]:
     return out
 
 
+_GO_CANDIDATE_FILENAMES = (
+    "go_annotation.tsv.gz",
+    "go_annotation.tsv",
+    "go_annotation.gaf",
+    "go_annotation.txt",
+    "go_annotation.gaf.gz",
+    "go_annotation.txt.gz",
+)
+
+
+def resolve_dataset_go_mapping_path(dataset: Any) -> Path | None:
+    """Mengembalikan path file pemetaan GO dataset yang valid dan berada di bawah STORAGE_ROOT."""
+    if dataset is None:
+        return None
+    from app.tasks._common import is_under_storage
+
+    go_meta = (getattr(dataset, "extra_metadata", None) or {}).get("go_annotation")
+    if isinstance(go_meta, dict) and go_meta.get("path"):
+        meta_path = Path(go_meta["path"])
+        if meta_path.is_file() and is_under_storage(meta_path):
+            return meta_path
+
+    ds_dir = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id)
+    for cand_name in _GO_CANDIDATE_FILENAMES:
+        go_f = ds_dir / cand_name
+        if go_f.is_file():
+            return go_f
+    return None
+
+
 def _normalize_gene_key(gene_id: Any) -> str:
     txt = str(gene_id or "").strip()
     if txt.lower().startswith("gene:"):

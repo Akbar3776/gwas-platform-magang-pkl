@@ -285,3 +285,45 @@ def test_upload_go_active_job_returns_409_and_token_parsing(tmp_path: Path, monk
     assert len(ann["G1"]) == 2
     assert ann["G2"][0]["go_id"] == "GO:0000003"
     assert ann["G3"][0]["go_id"] == "GO:0000004"
+
+
+def test_resolve_dataset_go_mapping_path_single_resolver_and_txt_gz(tmp_path: Path, monkeypatch):
+    from app.api.routes import results as results_routes
+    from app.services.go_enrichment_service import resolve_dataset_go_mapping_path
+
+    storage_root = tmp_path / "storage"
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(storage_root))
+    ds_id = uuid.uuid4()
+    ds_dir = storage_root / "datasets" / str(ds_id)
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    txt_gz = ds_dir / "go_annotation.txt.gz"
+    txt_gz.write_bytes(_gz_bytes(b"G1\tGO:0006357\n"))
+
+    outside = tmp_path / "outside_go.tsv"
+    outside.write_text("G1\tGO:0006357\n", encoding="utf-8")
+
+    ds = Dataset(
+        id=ds_id,
+        owner_id=uuid.uuid4(),
+        original_filename="c.vcf",
+        storage_path=str(storage_root / "c.vcf"),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+        extra_metadata={"go_annotation": {"path": str(outside)}},
+    )
+
+    assert resolve_dataset_go_mapping_path(ds) == txt_gz
+
+    class _FakeDB:
+        def query(self, *args):
+            class _Q:
+                def filter(self, *a):
+                    return self
+
+                def first(self):
+                    return ds
+
+            return _Q()
+
+    job = AnalysisJob(id=uuid.uuid4(), dataset_id=ds.id, triggered_by=ds.owner_id, overall_status=JobStatus.COMPLETED)
+    assert results_routes._resolve_dataset_go_mapping_path(_FakeDB(), job) == txt_gz

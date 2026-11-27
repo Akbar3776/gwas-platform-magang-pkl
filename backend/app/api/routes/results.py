@@ -537,18 +537,9 @@ def _resolve_dataset_gff_path(db: Session, job: AnalysisJob | None) -> Path | No
 
 
 def _resolve_dataset_go_mapping_path(db: Session, job: AnalysisJob | None) -> Path | None:
-    dataset = _resolve_dataset_for_job(db, job)
-    if dataset is None:
-        return None
-    go_meta = (dataset.extra_metadata or {}).get("go_annotation") if dataset.extra_metadata else None
-    if isinstance(go_meta, dict) and go_meta.get("path") and Path(go_meta["path"]).is_file():
-        return Path(go_meta["path"])
-    ds_dir = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id)
-    for cand_name in ("go_annotation.tsv", "go_annotation.gaf", "go_annotation.txt", "go_annotation.tsv.gz", "go_annotation.gaf.gz"):
-        go_f = ds_dir / cand_name
-        if go_f.is_file():
-            return go_f
-    return None
+    from app.services.go_enrichment_service import resolve_dataset_go_mapping_path
+
+    return resolve_dataset_go_mapping_path(_resolve_dataset_for_job(db, job))
 
 
 def _resolve_dataset_fasta_path(db: Session, job: AnalysisJob | None) -> Path | None:
