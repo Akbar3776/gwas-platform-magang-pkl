@@ -254,6 +254,128 @@ def run_greedy_clumping(
     )
 
 
+def _lead_p(snp: dict[str, Any]) -> float:
+    try:
+        return float(snp.get("p"))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _clumped_ids(snp: dict[str, Any]) -> list[str]:
+    raw = snp.get("clumped_snps")
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if not isinstance(raw, list):
+        return []
+    return [str(c).strip() for c in raw if c and str(c).strip() not in ("", ".")]
+
+
+def _drop_absorbed_by_leads(
+    variants: list[dict[str, Any]],
+    leads: list[dict[str, Any]],
+    *,
+    clump_p2: float,
+    clump_kb: int,
+) -> list[dict[str, Any]]:
+    """Buang varian yang sudah terserap jendela clumping Lead SNP (kriteria greedy yang sama)."""
+    from bisect import bisect_left, bisect_right
+
+    window_bp = int(clump_kb) * 1000
+    anchors: dict[str, list[tuple[int, float]]] = {}
+    for lead in leads:
+        try:
+            pos = int(lead["pos"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        absorb_p = max(float(clump_p2), _lead_p(lead) * 2.0)
+        anchors.setdefault(str(lead.get("chr")), []).append((pos, absorb_p))
+    for items in anchors.values():
+        items.sort()
+    anchor_pos = {c: [pos for pos, _ in items] for c, items in anchors.items()}
+
+    kept: list[dict[str, Any]] = []
+    for v in variants:
+        items = anchors.get(v["chr"])
+        if items:
+            positions = anchor_pos[v["chr"]]
+            lo = bisect_left(positions, v["pos"] - window_bp)
+            hi = bisect_right(positions, v["pos"] + window_bp)
+            if any(v["p"] <= items[i][1] for i in range(lo, hi)):
+                continue
+        kept.append(v)
+    return kept
+
+
+def partition_peaks_at_threshold(
+    assoc_file: Path | str,
+    *,
+    base_leads: list[dict[str, Any]],
+    base_p: float,
+    threshold_p: float,
+    suggestive_p: float = 1e-5,
+    clump_p2: float = 1e-4,
+    clump_kb: int = 100,
+    max_extra_leads: int = 500,
+    max_suggestive_snps: int = 20,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Membagi puncak independen menjadi Lead SNP (`p <= threshold_p`) dan puncak
+    sugestif/eksploratif (`p > threshold_p`) untuk ambang aktif yang dipilih pengguna.
+
+    `base_leads` adalah Lead SNP pipeline hasil clumping pada `base_p`; semuanya
+    dipertahankan apa adanya. Clumping greedy hanya dilanjutkan untuk varian
+    `p > base_p` yang tidak terserap jendela Lead SNP pipeline, sehingga hasilnya
+    setara dengan clumping greedy sekali jalan pada ambang yang lebih longgar.
+    """
+    threshold_p = float(threshold_p)
+    base_p = float(base_p)
+    leads = [dict(s) for s in base_leads if _lead_p(s) <= threshold_p]
+    # Lead pipeline yang tidak lolos ambang aktif selalu ditampilkan utuh (tanpa batas jumlah).
+    demoted = [
+        {**s, "is_candidate": True, "is_suggestive": True}
+        for s in base_leads
+        if _lead_p(s) > threshold_p
+    ]
+    beyond: list[dict[str, Any]] = []
+
+    assoc_path = Path(assoc_file)
+    if assoc_path.is_file():
+        excluded: set[str] = set()
+        for s in base_leads:
+            if s.get("snp"):
+                excluded.add(str(s["snp"]))
+            excluded.update(_clumped_ids(s))
+        ceiling = max(threshold_p, float(suggestive_p), float(clump_p2), 0.05)
+        variants = _load_clump_variants(
+            assoc_path, max_p=ceiling, min_p_exclusive=base_p, exclude_snps=excluded
+        )
+        variants = _drop_absorbed_by_leads(
+            variants, base_leads, clump_p2=float(clump_p2), clump_kb=int(clump_kb)
+        )
+        lead_room = int(max_extra_leads) if threshold_p > base_p else 0
+        extra = _clump_variant_rows(
+            variants,
+            max_lead_p=ceiling,
+            clump_p2=float(clump_p2),
+            clump_kb=int(clump_kb),
+            max_count=lead_room + int(max_suggestive_snps),
+        )
+        leads.extend(e for e in extra if e["p"] <= threshold_p)
+        beyond.extend(
+            {**e, "is_candidate": True, "is_suggestive": True}
+            for e in extra
+            if e["p"] > threshold_p
+        )
+
+    demoted.sort(key=_lead_p)
+    beyond.sort(key=_lead_p)
+    if any(_lead_p(s) <= float(suggestive_p) for s in (*demoted, *beyond)):
+        beyond = [s for s in beyond if _lead_p(s) <= float(suggestive_p)]
+    else:
+        beyond = [s for s in beyond if _lead_p(s) <= 0.05]
+    return leads, demoted + beyond[: int(max_suggestive_snps)]
+
+
 def extract_suggestive_peaks(
     assoc_file: Path | str,
     *,
@@ -261,35 +383,24 @@ def extract_suggestive_peaks(
     suggestive_p: float = 1e-5,
     clump_p2: float = 1e-4,
     clump_kb: int = 100,
-    exclude_snps: set[str] | None = None,
+    lead_snps: list[dict[str, Any]] | None = None,
     max_suggestive_snps: int = 20,
 ) -> list[dict[str, Any]]:
     """
     Mengumpulkan puncak sugestif / kandidat eksploratif terpisah (`p > selected_p`)
-    tanpa mencampurkannya ke daftar Lead SNP signifikan utama.
+    tanpa mencampurkannya ke daftar Lead SNP signifikan utama. Varian di dalam
+    jendela clumping `lead_snps` dianggap sudah terserap, bukan puncak baru.
     """
-    assoc_path = Path(assoc_file)
-    if not assoc_path.is_file():
+    if not Path(assoc_file).is_file():
         return []
-
-    exploratory_ceiling = max(float(suggestive_p), float(clump_p2), 0.05)
-    variants = _load_clump_variants(
-        assoc_path,
-        max_p=exploratory_ceiling,
-        min_p_exclusive=float(selected_p),
-        exclude_snps=exclude_snps,
-    )
-    if not variants:
-        return []
-
-    has_suggestive = any(v["p"] <= float(suggestive_p) for v in variants)
-    cutoff = float(suggestive_p) if has_suggestive else 0.05
-    return _clump_variant_rows(
-        variants,
-        max_lead_p=cutoff,
+    _, suggestive = partition_peaks_at_threshold(
+        assoc_file,
+        base_leads=list(lead_snps or []),
+        base_p=float(selected_p),
+        threshold_p=float(selected_p),
+        suggestive_p=float(suggestive_p),
         clump_p2=float(clump_p2),
         clump_kb=int(clump_kb),
-        max_count=int(max_suggestive_snps),
-        is_candidate=True,
-        is_suggestive=True,
+        max_suggestive_snps=int(max_suggestive_snps),
     )
+    return suggestive

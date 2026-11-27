@@ -555,3 +555,152 @@ def test_postgwas_restores_orig_coords_and_preserves_pseudo_matching(tmp_path, m
     csv_by_snp = {r["SNP"]: r for r in csv_rows}
     assert csv_by_snp["chr7:5500"]["Orig_Chr"] == "chr7"
     assert csv_by_snp["chr7:5500"]["Orig_Pos"] == "5500"
+
+
+_THRESHOLD_ROWS = [
+    "chr\tpos\trs\ta1\ta0\taf\tbeta\tse\tp\tn",
+    "1\t1000\trs_lead\tA\tG\t0.3\t0.5\t0.08\t1e-9\t100",
+    "1\t5000\trs_near\tA\tG\t0.3\t0.4\t0.08\t3e-6\t100",
+    "2\t1000\trs_mid\tC\tT\t0.2\t0.3\t0.08\t2e-6\t100",
+    "3\t1000\trs_sug\tG\tA\t0.4\t0.2\t0.08\t8e-6\t100",
+    "4\t1000\trs_weak\tT\tC\t0.5\t0.1\t0.08\t0.01\t100",
+]
+_BASE_LEAD = {"snp": "rs_lead", "chr": "1", "pos": 1000, "p": 1e-9, "n_clumped": 1, "clumped_snps": []}
+
+
+def _write_threshold_assoc(path):
+    path.write_text("\n".join(_THRESHOLD_ROWS) + "\n", encoding="utf-8")
+    return path
+
+
+def test_suggestive_peaks_skip_variants_inside_lead_window(tmp_path):
+    from app.services.postgwas_service import extract_suggestive_peaks
+
+    assoc = _write_threshold_assoc(tmp_path / "assoc.tsv")
+    suggestive = extract_suggestive_peaks(
+        assoc_file=assoc,
+        selected_p=5e-7,
+        suggestive_p=1e-5,
+        clump_p2=1e-4,
+        clump_kb=100,
+        lead_snps=[_BASE_LEAD],
+    )
+    # rs_near (3e-6) berada 4 kb dari rs_lead -> terserap, bukan puncak independen.
+    assert [s["snp"] for s in suggestive] == ["rs_mid", "rs_sug"]
+
+
+def test_partition_looser_threshold_promotes_independent_peaks(tmp_path):
+    from app.services.postgwas_service import partition_peaks_at_threshold
+
+    assoc = _write_threshold_assoc(tmp_path / "assoc.tsv")
+    leads, beyond = partition_peaks_at_threshold(
+        assoc,
+        base_leads=[_BASE_LEAD],
+        base_p=5e-7,
+        threshold_p=1e-5,
+        suggestive_p=1e-5,
+        clump_p2=1e-4,
+        clump_kb=100,
+    )
+    assert [s["snp"] for s in leads] == ["rs_lead", "rs_mid", "rs_sug"]
+    assert all(s["p"] <= 1e-5 for s in leads)
+    assert [s["snp"] for s in beyond] == ["rs_weak"]
+    assert all(s["p"] > 1e-5 for s in beyond)
+
+
+def test_partition_stricter_threshold_demotes_pipeline_leads(tmp_path):
+    from app.services.postgwas_service import partition_peaks_at_threshold
+
+    assoc = _write_threshold_assoc(tmp_path / "assoc.tsv")
+    leads, beyond = partition_peaks_at_threshold(
+        assoc,
+        base_leads=[_BASE_LEAD],
+        base_p=5e-7,
+        threshold_p=1e-10,
+        suggestive_p=1e-5,
+        clump_p2=1e-4,
+        clump_kb=100,
+    )
+    assert leads == []
+    assert [s["snp"] for s in beyond] == ["rs_lead", "rs_mid", "rs_sug"]
+    assert beyond[0]["is_suggestive"] is True
+
+
+def test_lead_snps_endpoint_follows_active_threshold(tmp_path, monkeypatch):
+    import json
+    import uuid
+    from app.api.routes.results import get_lead_snps_data
+    from app.core.config import settings
+
+    class _EmptyQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return None
+
+    class _EmptyDB:
+        def query(self, *args, **kwargs):
+            return _EmptyQuery()
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    job_id = uuid.uuid4()
+    job_root = tmp_path / "jobs" / str(job_id)
+    (job_root / "gwas").mkdir(parents=True)
+    (job_root / "postgwas").mkdir(parents=True)
+    _write_threshold_assoc(job_root / "gwas" / "gwas_results.normalized.tsv")
+    (job_root / "postgwas" / "thresholds.json").write_text(
+        json.dumps({"selected_p": 5e-7, "selected_method": "bonferroni", "suggestive": 1e-5}),
+        encoding="utf-8",
+    )
+    lead_file = job_root / "postgwas" / "lead_snps.json"
+    stored = {
+        "count": 1,
+        "snps": [_BASE_LEAD],
+        "suggestive_count": 2,
+        "suggestive": [
+            {"snp": "rs_mid", "chr": "2", "pos": 1000, "p": 2e-6},
+            {"snp": "rs_sug", "chr": "3", "pos": 1000, "p": 8e-6},
+        ],
+        "selected_p": 5e-7,
+        "clump": {"method": "greedy", "kb": 100, "p2": 1e-4, "r2": 0.2},
+    }
+    lead_file.write_text(json.dumps(stored), encoding="utf-8")
+
+    base = get_lead_snps_data(job_id=job_id, db=_EmptyDB())
+    assert [s["snp"] for s in base["snps"]] == ["rs_lead"]
+
+    same = get_lead_snps_data(job_id=job_id, db=_EmptyDB(), p_threshold=5e-7)
+    assert same["recomputed"] is False
+    assert [s["snp"] for s in same["snps"]] == ["rs_lead"]
+
+    looser = get_lead_snps_data(job_id=job_id, db=_EmptyDB(), p_threshold=1e-5)
+    assert looser["recomputed"] is True
+    assert looser["threshold_p"] == pytest.approx(1e-5)
+    assert looser["pipeline_p"] == pytest.approx(5e-7)
+    assert [s["snp"] for s in looser["snps"]] == ["rs_lead", "rs_mid", "rs_sug"]
+    assert looser["count"] == 3
+    assert all(s["p"] > 1e-5 for s in looser["suggestive"])
+    assert all("orig_chr" in s for s in looser["snps"])
+
+    stricter = get_lead_snps_data(job_id=job_id, db=_EmptyDB(), p_threshold=1e-10)
+    assert stricter["snps"] == []
+    assert [s["snp"] for s in stricter["suggestive"]] == ["rs_lead", "rs_mid", "rs_sug"]
+
+    # Endpoint tetap read-only terhadap hasil pipeline di disk.
+    assert json.loads(lead_file.read_text(encoding="utf-8")) == stored
+
+
+def test_partition_keeps_all_demoted_leads_beyond_suggestive_cap(tmp_path):
+    from app.services.postgwas_service import partition_peaks_at_threshold
+
+    assoc = _write_threshold_assoc(tmp_path / "assoc.tsv")
+    base = [
+        {"snp": f"rs_base{i}", "chr": str(10 + i), "pos": 1000, "p": 1e-9 * (i + 1)}
+        for i in range(25)
+    ]
+    leads, beyond = partition_peaks_at_threshold(
+        assoc, base_leads=base, base_p=5e-7, threshold_p=1e-12, max_suggestive_snps=20
+    )
+    assert leads == []
+    assert [s["snp"] for s in beyond[:25]] == [f"rs_base{i}" for i in range(25)]

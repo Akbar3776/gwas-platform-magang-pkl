@@ -11,7 +11,7 @@ import logging
 import os
 from pathlib import Path
 import threading
-from typing import Any
+from typing import Annotated, Any
 import uuid
 
 import pandas as pd
@@ -356,7 +356,7 @@ def _cached_greedy_clumping(
         assoc_file=assoc_file,
         selected_p=sel_p,
         suggestive_p=sug_p,
-        exclude_snps={s["snp"] for s in snps if s.get("snp")},
+        lead_snps=snps,
     )
     return (
         tuple(dict(item) for item in snps),
@@ -364,8 +364,114 @@ def _cached_greedy_clumping(
     )
 
 
+@lru_cache(maxsize=64)
+def _cached_threshold_partition(
+    norm_assoc_str: str,
+    mtime_ns: int,
+    size_bytes: int,
+    base_leads_json: str,
+    base_p: float,
+    threshold_p: float,
+    sug_p: float,
+    clump_p2: float,
+    clump_kb: int,
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    from app.services.postgwas_service import partition_peaks_at_threshold
+
+    leads, suggestive = partition_peaks_at_threshold(
+        Path(norm_assoc_str),
+        base_leads=json.loads(base_leads_json),
+        base_p=base_p,
+        threshold_p=threshold_p,
+        suggestive_p=sug_p,
+        clump_p2=clump_p2,
+        clump_kb=clump_kb,
+    )
+    return tuple(leads), tuple(suggestive)
+
+
+def _find_normalized_assoc(job_id: uuid.UUID | str) -> Path | None:
+    job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
+    candidates = [
+        job_root / "gwas" / "gwas_results.normalized.tsv",
+        job_root / "postgwas" / "gwas_results.normalized.tsv",
+        job_root / "gwas" / "gwas_lmm.assoc.txt",
+        job_root / "gwas" / "gwas_glm.assoc.txt",
+    ]
+    return next((p for p in candidates if p.is_file()), None)
+
+
+def _apply_active_threshold(
+    job_id: uuid.UUID, db: Session, payload: dict[str, Any], threshold_p: float
+) -> dict[str, Any]:
+    """Bagi ulang Lead SNP / peak sugestif agar sesuai ambang aktif pilihan pengguna."""
+    import math
+
+    from app.services.chromosome_service import restore_coord
+
+    thresh = _load_job_json_result(job_id, db, ResultType.THRESHOLDS, "postgwas", "thresholds.json")
+    thresh = thresh if isinstance(thresh, dict) else {}
+    base_p_raw = payload.get("selected_p", thresh.get("selected_p"))
+    out = {**payload, "threshold_p": threshold_p, "pipeline_p": base_p_raw, "recomputed": False}
+    norm_assoc = _find_normalized_assoc(job_id)
+    if base_p_raw is None or norm_assoc is None:
+        return out
+    base_p = float(base_p_raw)
+    if math.isclose(threshold_p, base_p, rel_tol=1e-6):
+        return out
+
+    clump = payload.get("clump") if isinstance(payload.get("clump"), dict) else {}
+    job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
+    params = (job.parameters if job is not None else None) or {}
+    job_clump = params.get("clump") if isinstance(params.get("clump"), dict) else {}
+    clump_kb = int(clump.get("kb") or job_clump.get("kb") or params.get("chosen_ld_decay_kb") or 100)
+    clump_p2 = float(clump.get("p2") or job_clump.get("p2") or 1e-4)
+    sug_p = float(thresh.get("suggestive") or 1e-5)
+
+    st = norm_assoc.stat()
+    leads, suggestive = _cached_threshold_partition(
+        str(norm_assoc),
+        st.st_mtime_ns,
+        st.st_size,
+        json.dumps(payload.get("snps") or [], sort_keys=True, default=str),
+        base_p,
+        float(threshold_p),
+        sug_p,
+        clump_p2,
+        clump_kb,
+    )
+    split_map = load_split_map(job_id)
+    leads = [dict(s) for s in leads]
+    suggestive = [dict(s) for s in suggestive]
+    for item in (*leads, *suggestive):
+        if "orig_chr" not in item:
+            item["orig_chr"], item["orig_pos"] = restore_coord(item.get("chr"), item.get("pos"), split_map)
+    return {
+        **out,
+        "count": len(leads),
+        "snps": leads,
+        "suggestive_count": len(suggestive),
+        "suggestive": suggestive,
+        "recomputed": True,
+    }
+
+
 @router.get("/{job_id}/lead-snps", summary="Daftar Lead SNPs independen hasil clumping (Fase 4F)")
-def get_lead_snps_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
+def get_lead_snps_data(
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    p_threshold: Annotated[
+        float | None,
+        Query(gt=0, le=1, description="Ambang p aktif; Lead SNP dibagi ulang agar p <= ambang ini."),
+    ] = None,
+) -> dict[str, Any]:
+    payload = _load_lead_snps_payload(job_id, db)
+    if p_threshold is None or not isinstance(payload, dict) or payload.get("status") in ("not_available", "skipped"):
+        return payload
+    return _apply_active_threshold(job_id, db, payload, float(p_threshold))
+
+
+def _load_lead_snps_payload(job_id: uuid.UUID, db: Session) -> dict[str, Any]:
     data = _load_job_json_result(
         job_id, db, ResultType.LEAD_SNPS, "postgwas", "lead_snps.json"
     )
@@ -376,14 +482,7 @@ def get_lead_snps_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict
         or (not raw_snps and not has_suggestive_field)
     )
     if needs_fallback:
-        job_root = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id)
-        candidates = [
-            job_root / "gwas" / "gwas_results.normalized.tsv",
-            job_root / "postgwas" / "gwas_results.normalized.tsv",
-            job_root / "gwas" / "gwas_lmm.assoc.txt",
-            job_root / "gwas" / "gwas_glm.assoc.txt",
-        ]
-        norm_assoc = next((p for p in candidates if p.is_file()), None)
+        norm_assoc = _find_normalized_assoc(job_id)
         if norm_assoc is not None:
             thresh_data = _load_job_json_result(job_id, db, ResultType.THRESHOLDS, "postgwas", "thresholds.json")
             sel_p = float(thresh_data.get("selected_p") or 5e-8) if isinstance(thresh_data, dict) else 5e-8

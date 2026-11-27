@@ -267,7 +267,7 @@ def run_postgwas_analysis(
             suggestive_p=suggestive_p,
             clump_p2=clump_cfg.p2,
             clump_kb=clump_kb,
-            exclude_snps={s["snp"] for s in lead_snps if s.get("snp")},
+            lead_snps=lead_snps,
         )
 
         split_map = load_split_map(job_id)
@@ -281,6 +281,14 @@ def run_postgwas_analysis(
             "snps": lead_snps,
             "suggestive_count": len(suggestive_snps),
             "suggestive": suggestive_snps,
+            "selected_p": selected_p,
+            "selected_method": thresholds.get("selected_method"),
+            "clump": {
+                "method": "plink2" if ran_plink_clump else "greedy",
+                "kb": int(clump_kb),
+                "p2": float(clump_cfg.p2),
+                "r2": float(clump_cfg.r2),
+            },
         }
         lead_snps_file = workspace / "lead_snps.json"
         write_json(lead_snps_file, lead_snps_payload)
