@@ -249,4 +249,54 @@ describe("Uploaders persist uploaded state across parent re-renders (A11)", () =
       expect(matches).toHaveLength(3);
     });
   });
+
+  test("GoMappingUploader accepts generic .gz, shows skipped-lines warning when n_invalid_lines > 0, and surfaces detail.message (G05)", async () => {
+    uploadGoAnnotation.mockResolvedValueOnce({
+      filename: "Asa.GO.gz",
+      format: "tsv",
+      compressed: true,
+      decompressed_bytes: 1812624,
+      n_genes: 28317,
+      n_mappings: 75526,
+      n_invalid_lines: 3,
+    });
+
+    const { rerender } = render(<GoMappingUploader datasetId="ds-1" />);
+    const goInput = screen.getByLabelText(/File Pemetaan GO/i);
+    expect(goInput).toHaveAttribute("accept", expect.stringContaining(".gz"));
+    expect(goInput.getAttribute("accept").split(",")).toContain(".gz");
+
+    const gzFile = new File(["gz"], "Asa.GO.gz", { type: "application/gzip" });
+    fireEvent.change(goInput, { target: { files: [gzFile] } });
+
+    await waitFor(() => {
+      expect(uploadGoAnnotation).toHaveBeenCalledWith("ds-1", gzFile, expect.any(Function));
+      expect(screen.getByText("Asa.GO.gz")).toBeInTheDocument();
+      expect(screen.getByText(/3 baris dilewati karena format tidak valid/i)).toBeInTheDocument();
+    });
+
+    uploadGoAnnotation.mockResolvedValueOnce({
+      filename: "clean.GO.gz",
+      format: "tsv",
+      compressed: true,
+      decompressed_bytes: 500,
+      n_genes: 10,
+      n_mappings: 12,
+      n_invalid_lines: 0,
+    });
+    rerender(<GoMappingUploader datasetId="ds-1" />);
+    fireEvent.change(goInput, { target: { files: [new File(["ok"], "clean.GO.gz", { type: "application/gzip" })] } });
+    await waitFor(() => {
+      expect(screen.getByText("clean.GO.gz")).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/baris dilewati karena format tidak valid/i)).not.toBeInTheDocument();
+
+    uploadGoAnnotation.mockRejectedValueOnce({
+      response: { data: { detail: { code: "GZIP_INVALID", message: "Berkas .gz tidak valid." } } },
+    });
+    fireEvent.change(goInput, { target: { files: [new File(["bad"], "broken.gz", { type: "application/gzip" })] } });
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent("Berkas .gz tidak valid.");
+    });
+  });
 });

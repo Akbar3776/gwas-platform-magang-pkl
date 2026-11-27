@@ -4,7 +4,7 @@ import { deleteGoAnnotation, uploadGoAnnotation } from "../api/jobsApi";
 import { UploadProgressBar } from "./UploadProgressBar";
 
 /**
- * Dropzone unggah file pemetaan Gene Ontology (.tsv/.txt/.gaf/.gaf.gz) opsional.
+ * Dropzone unggah file pemetaan Gene Ontology (.tsv/.txt/.gaf/.tab/.go/.gz) opsional.
  */
 export function GoMappingUploader({
   datasetId,
@@ -55,6 +55,9 @@ export function GoMappingUploader({
         n_genes: res?.n_genes ?? null,
         n_mappings: res?.n_mappings ?? null,
         format: res?.format ?? null,
+        n_invalid_lines: res?.n_invalid_lines ?? 0,
+        compressed: Boolean(res?.compressed),
+        decompressed_bytes: res?.decompressed_bytes ?? null,
       };
       setMeta(nextMeta);
       onChangedRef.current?.(nextMeta);
@@ -97,7 +100,7 @@ export function GoMappingUploader({
             File Pemetaan GO (Opsional)
           </strong>
           <p style={{ margin: "4px 0 0", fontSize: 12, color: "#64748b" }}>
-            TSV (`gene_id\tGO:0006357[\tBP\tname]`) atau GAF 2.x (`.tsv`, `.txt`, `.gaf`, `.gaf.gz`) jika GFF3 belum memiliki atribut `Ontology_term`.
+            TSV (`gene_id\tGO:0006357[\tBP\tname]`) atau GAF 2.x (`.tsv`, `.txt`, `.gaf`, `.tab`, `.go`). File `.gz` bernama apa pun (mis. `Asa.GO.gz`) diterima; format diperiksa server dengan batas ukuran unggahan dan dekompresi.
           </p>
         </div>
 
@@ -106,7 +109,7 @@ export function GoMappingUploader({
           id="go-mapping-file-input"
           className="sr-only"
           type="file"
-          accept=".tsv,.txt,.gaf,.gaf.gz"
+          accept=".tsv,.txt,.gaf,.tab,.go,.gz"
           disabled={busy}
           onChange={(e) => {
             const file = e.target.files?.[0];
@@ -163,6 +166,11 @@ export function GoMappingUploader({
               <strong>{meta.filename}</strong>
               {typeof meta.n_genes === "number" ? ` · ${meta.n_genes} gen terdeteksi` : ""}
               {typeof meta.n_mappings === "number" ? ` (${meta.n_mappings} entri GO)` : ""}
+              {typeof meta.n_invalid_lines === "number" && meta.n_invalid_lines > 0 ? (
+                <span style={{ display: "block", marginTop: 2, color: "#92400e" }}>
+                  {meta.n_invalid_lines} baris dilewati karena format tidak valid
+                </span>
+              ) : null}
             </span>
             <button
               type="button"
