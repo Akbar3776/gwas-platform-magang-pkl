@@ -644,7 +644,7 @@ def upload_go_annotation_file(
                     "Berkas berakhiran .gz tidak memiliki header gzip yang valid.",
                     http_status=status.HTTP_400_BAD_REQUEST,
                 )
-            _, summary = parse_go_annotation_file(part_path)
+            parsed_annotations, summary = parse_go_annotation_file(part_path)
         except UploadValidationError as err:
             logger.warning("Unggahan GO ditolak dataset=%s kode=%s", dataset.id, err.code)
             _raise_upload_err(err)
@@ -680,6 +680,23 @@ def upload_go_annotation_file(
                 },
             )
 
+        try:
+            ontology = load_go_ontology_safe()
+            if ontology is not None:
+                _, obo_meta, n_genes_out, n_mappings_out = normalize_go_annotations_with_obo(
+                    parsed_annotations, ontology
+                )
+            else:
+                obo_meta = None
+                n_genes_out = summary["n_genes_raw"]
+                n_mappings_out = summary["n_mappings_raw"]
+        except Exception:
+            logger.exception("Gagal menormalisasi pemetaan GO pada dataset=%s", dataset.id)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "GO_PARSE_ERROR", "message": "Berkas pemetaan GO gagal dibaca atau formatnya rusak."},
+            ) from None
+
         canonical_name = "go_annotation.tsv.gz" if compression == "gzip" else "go_annotation.tsv"
         target_path = ds_dir / canonical_name
         if not _under_storage(target_path):
@@ -696,17 +713,6 @@ def upload_go_annotation_file(
                 old_path.unlink(missing_ok=True)
     finally:
         part_path.unlink(missing_ok=True)
-
-    parsed_annotations, summary = parse_go_annotation_file(target_path)
-    ontology = load_go_ontology_safe()
-    if ontology is not None:
-        _, obo_meta, n_genes_out, n_mappings_out = normalize_go_annotations_with_obo(
-            parsed_annotations, ontology
-        )
-    else:
-        obo_meta = None
-        n_genes_out = summary["n_genes_raw"]
-        n_mappings_out = summary["n_mappings_raw"]
 
     meta = dict(dataset.extra_metadata or {})
     go_meta = {

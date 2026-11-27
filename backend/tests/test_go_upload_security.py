@@ -389,3 +389,59 @@ def test_go_csv_export_neutralizes_formula_injection_and_matches_client_rules(tm
     assert '\'=HYPERLINK("x")' in tbl_by_gene
     assert tbl_by_gene['\'=HYPERLINK("x")'][1] == "'-"
     assert tbl_by_gene['\'=HYPERLINK("x")'][2].startswith("'@SUM(1)")
+
+
+def test_upload_go_parses_only_once_and_preserves_old_on_obo_error(tmp_path: Path, monkeypatch):
+    from app.services import go_enrichment_service as go_svc
+    from app.services.go_ontology_service import clear_go_ontology_cache
+
+    owner, _other, ds, db = _make_fake_env(tmp_path, monkeypatch)
+
+    parse_calls = 0
+    orig_parse = go_svc.parse_go_annotation_file
+
+    def _spy_parse(path):
+        nonlocal parse_calls
+        parse_calls += 1
+        return orig_parse(path)
+
+    monkeypatch.setattr(go_svc, "parse_go_annotation_file", _spy_parse)
+
+    good_bytes = _gz_bytes(b"Asa7G00001.1\tGO:0006357\n")
+    out = upload_routes.upload_go_annotation_file(
+        file_id=ds.id,
+        file=UploadFile(file=io.BytesIO(good_bytes), filename="initial.GO.gz"),
+        db=db,
+        user=owner,
+    )
+    assert parse_calls == 1
+    assert out["n_genes_raw"] == 1
+    assert out["n_mappings_raw"] == 1
+    assert out["n_genes"] == 1
+    assert out["n_mappings"] == 1
+
+    saved_before = Path(ds.extra_metadata["go_annotation"]["path"]).read_bytes()
+    meta_before = dict(ds.extra_metadata["go_annotation"])
+
+    fixture_obo = Path(__file__).parent / "fixtures" / "go_mini.obo"
+    monkeypatch.setattr(settings, "GO_OBO_PATH", str(fixture_obo))
+    clear_go_ontology_cache()
+    monkeypatch.setattr(
+        go_svc,
+        "normalize_go_annotations_with_obo",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("obo normalization boom")),
+    )
+
+    with pytest.raises(HTTPException) as exc_err:
+        upload_routes.upload_go_annotation_file(
+            file_id=ds.id,
+            file=UploadFile(file=io.BytesIO(_gz_bytes(b"Asa2G00002.1\tGO:0009651\n")), filename="second.GO.gz"),
+            db=db,
+            user=owner,
+        )
+    _assert_safe_error(exc_err.value, 400, "GO_PARSE_ERROR", tmp_path)
+    assert Path(ds.extra_metadata["go_annotation"]["path"]).read_bytes() == saved_before
+    assert ds.extra_metadata["go_annotation"] == meta_before
+    ds_dir = tmp_path / "datasets" / str(ds.id)
+    assert list(ds_dir.glob("*.part*")) == []
+    assert list(ds_dir.glob(".go_annotation*")) == []

@@ -10,6 +10,7 @@ import math
 import os
 from pathlib import Path
 from typing import Any
+import uuid
 
 from app.core.config import settings
 from app.services.gene_id_utils import GENE_ID_RE, strip_isoform_suffix
@@ -212,7 +213,7 @@ def build_besthit_index(src_path: Path | str, dest_path: Path | str) -> dict[str
 
     n_ties = 0
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = dest.with_name(f"{dest.name}.part.{os.getpid()}")
+    tmp_path = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.part")
     try:
         with gzip.open(tmp_path, "wt", encoding="utf-8", compresslevel=6) as out:
             out.write(_INDEX_HEADER)

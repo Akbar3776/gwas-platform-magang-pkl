@@ -240,3 +240,34 @@ def test_validation_rejects_no_valid_rows_and_low_ratio_and_query_cap(tmp_path, 
         build_besthit_index(too_many_queries, tmp_path / "out3.tsv.gz")
     assert exc_q.value.code == "TOO_MANY_QUERIES"
     assert exc_q.value.http_status == 413
+
+
+def test_parallel_build_besthit_index_uses_unique_temp_files(tmp_path):
+    import threading
+
+    src_a = tmp_path / "a.tsv"
+    src_b = tmp_path / "b.tsv"
+    src_a.write_text("\n".join(_blast_row(f"QA{i}", "AT1G00001.1") for i in range(50)) + "\n", encoding="utf-8")
+    src_b.write_text("\n".join(_blast_row(f"QB{i}", "AT2G00002.1") for i in range(50)) + "\n", encoding="utf-8")
+    dest = tmp_path / "shared_ortholog.tsv.gz"
+
+    barrier = threading.Barrier(2, timeout=20)
+    errors: list[BaseException] = []
+
+    def _run(src):
+        try:
+            barrier.wait()
+            build_besthit_index(src, dest)
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_run, args=(src_a,)), threading.Thread(target=_run, args=(src_b,))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, errors
+    loaded = load_besthit_index(dest)
+    assert set(loaded) == {f"QA{i}" for i in range(50)} or set(loaded) == {f"QB{i}" for i in range(50)}
+    assert list(tmp_path.glob("*part*")) == []
