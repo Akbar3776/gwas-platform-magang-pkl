@@ -247,3 +247,71 @@ def test_refresh_go_if_stale_tracks_ortholog_add_replace_and_delete(tmp_path: Pa
     assert refreshed3 is True
     assert res3["go_table"][0]["ortholog"] == "-"
     assert res3["go_table"][0]["ortholog_detail"] is None
+
+
+def test_corrupt_ortholog_index_does_not_recompute_on_every_get(tmp_path: Path, monkeypatch):
+    from app.services import go_enrichment_service as go_svc
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    gff, go_tsv, _orth_idx = _write_mini_inputs(tmp_path)
+
+    corrupt_idx = tmp_path / "corrupt_ortholog.tsv.gz"
+    corrupt_idx.write_bytes(b"\x1f\x8b\x08\x00truncated_gzip")
+
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=uuid.uuid4(),
+        original_filename="c.vcf",
+        storage_path=str(tmp_path / "c.vcf"),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+        annotation_file_path=str(gff),
+        extra_metadata={
+            "go_annotation": {"path": str(go_tsv)},
+            "ortholog": {"path": str(corrupt_idx)},
+        },
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=ds.id,
+        triggered_by=ds.owner_id,
+        overall_status=JobStatus.COMPLETED,
+        parameters={"annotation": {"feature_type": "gene"}, "contig_filter": {"pattern": ""}},
+    )
+
+    class _DB:
+        def query(self, *args):
+            class _Q:
+                def filter(self, *a):
+                    return self
+
+                def first(self):
+                    return ds
+
+            return _Q()
+
+    db = _DB()
+    anno_dir = tmp_path / "jobs" / str(job.id) / "annotation"
+    anno_dir.mkdir(parents=True, exist_ok=True)
+    cand_payload = {
+        "rows": [{"nearest_gene": "Asa7G00205", "category": "Genik", "snp": "S1"}],
+        "candidate_genes_list": ["Asa7G00205"],
+    }
+
+    calls = 0
+    orig_run = go_svc.run_go_enrichment_analysis
+
+    def _spy(**kwargs):
+        nonlocal calls
+        calls += 1
+        return orig_run(**kwargs)
+
+    monkeypatch.setattr(go_svc, "run_go_enrichment_analysis", _spy)
+
+    first, r1 = results_routes.refresh_go_if_stale(db, job, cand_payload, anno_dir)
+    second, r2 = results_routes.refresh_go_if_stale(db, job, cand_payload, anno_dir)
+    assert calls == 1
+    assert r1 is True
+    assert r2 is False
+    assert first["go_stats"]["ortholog"] == {"available": False}
+    assert second["go_stats"]["ortholog"] == {"available": False}

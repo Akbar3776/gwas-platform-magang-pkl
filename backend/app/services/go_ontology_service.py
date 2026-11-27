@@ -7,13 +7,16 @@ import functools
 import hashlib
 import logging
 from pathlib import Path
+import threading
 from types import MappingProxyType
-from typing import Literal, Mapping
+from typing import Callable, Literal, Mapping
 
 from app.core.config import settings
-from app.services.upload_validation import open_lines_bounded
+from app.services.upload_validation import UploadValidationError, open_lines_bounded
 
 logger = logging.getLogger(__name__)
+_OBO_LOGGED_KEYS: set[tuple[str, str, int | None, int | None]] = set()
+_OBO_LOG_LOCK = threading.Lock()
 
 _NAMESPACE_TO_ASPECT: dict[str, Literal["BP", "CC", "MF"]] = {
     "biological_process": "BP",
@@ -223,22 +226,49 @@ def _load_go_ontology_cached(
 def clear_go_ontology_cache() -> None:
     """Mengosongkan cache ontologi GO in-process (berguna untuk isolasi test)."""
     _load_go_ontology_cached.cache_clear()
+    with _OBO_LOG_LOCK:
+        _OBO_LOGGED_KEYS.clear()
 
 
-def load_go_ontology(path: str | Path | None = None) -> GoOntology | None:
-    """Memuat file OBO GO dari path atau settings.GO_OBO_PATH dengan cache mtime+size."""
+def _resolve_obo_path(path: str | Path | None = None) -> Path:
     if path is None:
         raw_path = str(settings.GO_OBO_PATH or "").strip()
-        resolved = (
+        return (
             Path(raw_path)
             if raw_path
             else Path(settings.STORAGE_ROOT) / "reference" / "go" / "go-basic.obo"
         )
-    else:
-        resolved = Path(path)
+    return Path(path)
+
+
+def _log_obo_once(
+    kind: str,
+    resolved: Path,
+    mtime_ns: int | None,
+    size: int | None,
+    log_fn: Callable[..., None],
+    msg: str,
+    *args: object,
+) -> None:
+    key = (kind, str(resolved), mtime_ns, size)
+    with _OBO_LOG_LOCK:
+        if key in _OBO_LOGGED_KEYS:
+            return
+        _OBO_LOGGED_KEYS.add(key)
+    log_fn(msg, *args)
+
+
+def load_go_ontology(path: str | Path | None = None) -> GoOntology | None:
+    """Memuat file OBO GO dari path atau settings.GO_OBO_PATH dengan cache mtime+size."""
+    resolved = _resolve_obo_path(path)
 
     if not resolved.is_file():
-        logger.warning(
+        _log_obo_once(
+            "missing",
+            resolved,
+            None,
+            None,
+            logger.warning,
             "Ontologi GO tidak ditemukan (GO_OBO_PATH=%s); domain/nama diambil dari file pemetaan bila ada.",
             resolved,
         )
@@ -253,3 +283,30 @@ def load_go_ontology(path: str | Path | None = None) -> GoOntology | None:
         settings.GO_OBO_MAX_LINES,
         settings.UPLOAD_TEXT_MAX_LINE_BYTES,
     )
+
+
+def load_go_ontology_safe(path: str | Path | None = None) -> GoOntology | None:
+    """Memuat OBO GO dengan toleransi penuh terhadap berkas rusak/melebihi batas (kembali None)."""
+    try:
+        return load_go_ontology(path)
+    except (UploadValidationError, OSError, ValueError):
+        resolved = _resolve_obo_path(path)
+        try:
+            st = resolved.stat()
+            mtime_ns: int | None = st.st_mtime_ns
+            size: int | None = st.st_size
+            target = resolved.resolve()
+        except OSError:
+            mtime_ns = None
+            size = None
+            target = resolved
+        _log_obo_once(
+            "error",
+            target,
+            mtime_ns,
+            size,
+            logger.exception,
+            "Gagal memuat ontologi GO (path=%s); melanjutkan tanpa normalisasi OBO.",
+            target,
+        )
+        return None

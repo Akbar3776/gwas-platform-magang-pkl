@@ -719,7 +719,7 @@ def refresh_go_if_stale(
 ) -> tuple[dict[str, Any] | None, bool]:
     """Menyegarkan hasil GO job secara lazy dan non-destruktif bila fingerprint input berubah."""
     from app.services import go_enrichment_service as go_svc
-    from app.services.go_ontology_service import load_go_ontology
+    from app.services.go_ontology_service import load_go_ontology_safe
 
     with _job_refresh_lock(job, anno_dir):
         if gff_path is None:
@@ -749,7 +749,7 @@ def refresh_go_if_stale(
         expected_fp = go_svc.compute_go_fingerprint(
             mapping_sha256=go_svc.file_sha256_cached(go_mapping_path),
             gff_sha256=go_svc.file_sha256_cached(gff_path),
-            obo=load_go_ontology(),
+            obo=load_go_ontology_safe(),
             ortholog_sha256=go_svc.file_sha256_cached(ortholog_index_path),
             feature_type=feature_type,
             contig_pattern=contig_pattern,

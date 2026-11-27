@@ -591,7 +591,7 @@ def upload_go_annotation_file(
         normalize_go_annotations_with_obo,
         parse_go_annotation_file,
     )
-    from app.services.go_ontology_service import load_go_ontology
+    from app.services.go_ontology_service import load_go_ontology_safe
     from app.services.upload_validation import (
         UploadValidationError,
         copy_upload_bounded,
@@ -698,7 +698,7 @@ def upload_go_annotation_file(
         part_path.unlink(missing_ok=True)
 
     parsed_annotations, summary = parse_go_annotation_file(target_path)
-    ontology = load_go_ontology()
+    ontology = load_go_ontology_safe()
     if ontology is not None:
         _, obo_meta, n_genes_out, n_mappings_out = normalize_go_annotations_with_obo(
             parsed_annotations, ontology

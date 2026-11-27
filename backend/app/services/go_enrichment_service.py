@@ -29,7 +29,7 @@ from scipy.stats import hypergeom
 from app.core.config import settings
 from app.services.chromosome_service import is_non_primary_contig
 from app.services.gene_id_utils import GENE_ID_RE, strip_isoform_suffix
-from app.services.go_ontology_service import GoOntology, load_go_ontology
+from app.services.go_ontology_service import GoOntology, load_go_ontology_safe
 from app.services.ortholog_service import OrthologHit, build_ortholog_lookup, load_besthit_index
 from app.services.upload_validation import UploadValidationError, open_lines_bounded
 
@@ -812,22 +812,21 @@ def run_go_enrichment_analysis(
             "enrichment_terms": [],
         }
 
-    ontology = load_go_ontology()
+    ontology = load_go_ontology_safe()
     ortholog_available = False
     ortholog_sha: str | None = None
     ortholog_n_queries = 0
     ortholog_lookup = None
     if ortholog_index_path is not None and Path(ortholog_index_path).is_file():
+        ortholog_sha = file_sha256_cached(ortholog_index_path)
         try:
             raw_ortholog_index = load_besthit_index(ortholog_index_path)
             ortholog_lookup = build_ortholog_lookup(raw_ortholog_index)
             ortholog_n_queries = len(raw_ortholog_index)
-            ortholog_sha = file_sha256_cached(ortholog_index_path)
             ortholog_available = True
         except Exception as exc:
             logger.warning("Indeks ortolog dilewati: %s", exc)
             ortholog_lookup = None
-            ortholog_sha = None
             ortholog_n_queries = 0
             ortholog_available = False
 
