@@ -327,3 +327,65 @@ def test_resolve_dataset_go_mapping_path_single_resolver_and_txt_gz(tmp_path: Pa
 
     job = AnalysisJob(id=uuid.uuid4(), dataset_id=ds.id, triggered_by=ds.owner_id, overall_status=JobStatus.COMPLETED)
     assert results_routes._resolve_dataset_go_mapping_path(_FakeDB(), job) == txt_gz
+
+
+def test_go_csv_export_neutralizes_formula_injection_and_matches_client_rules(tmp_path: Path, monkeypatch):
+    import csv
+    from app.services.go_enrichment_service import csv_safe_cell, run_go_enrichment_analysis
+
+    monkeypatch.delenv("ALLOW_SYNTHETIC_ANNOTATION", raising=False)
+    assert csv_safe_cell("-") == "'-"
+    assert csv_safe_cell("-0.42") == "-0.42"
+    assert csv_safe_cell("-1.5e-8") == "-1.5e-8"
+    assert csv_safe_cell("\t1") == "'\t1"
+    assert csv_safe_cell("=HYPERLINK(\"x\")") == "'=HYPERLINK(\"x\")"
+    assert csv_safe_cell(None) == ""
+    assert csv_safe_cell(True) == "True"
+    assert csv_safe_cell(-0.42) == "-0.42"
+
+    tsv = tmp_path / "go.tsv"
+    tsv.write_text('G_REF\tGO:0006357\tBP\t@SUM(1)\nG_OK\tGO:0009651\tBP\t-0.42\n', encoding="utf-8")
+    # Tambahkan explicit GO pada kandidat agar =HYPERLINK("x") yang tidak divalidasi GFF juga teruji di CSV
+    out_dir = tmp_path / "out"
+    res = run_go_enrichment_analysis(
+        mapped_rows=[
+            {
+                "snp": "s1",
+                "chr": "1",
+                "pos": 100,
+                "p": 1e-8,
+                "nearest_gene": '=HYPERLINK("x")',
+                "category": "Genik",
+                "closest_gene": {"gene_id": '=HYPERLINK("x")', "go_ids": ["GO:0006357"]},
+            },
+            {
+                "snp": "s2",
+                "chr": "1",
+                "pos": 200,
+                "p": 1e-8,
+                "nearest_gene": "G_OK",
+                "category": "Genik",
+            },
+        ],
+        candidate_genes_list=['=HYPERLINK("x")', "G_OK"],
+        trait_name="T",
+        output_dir=out_dir,
+        go_mapping_path=tsv,
+    )
+    # JSON tidak disanitasi
+    assert res["go_table"][0]["gene_id"] == '=HYPERLINK("x")'
+    assert res["go_table"][0]["ortholog"] == "-"
+
+    with (out_dir / "Hasil_GO_Enrichment.csv").open("r", encoding="utf-8", newline="") as ef:
+        enrich_rows = list(csv.reader(ef))
+    enrich_by_go = {r[0]: r for r in enrich_rows[1:]}
+    assert enrich_by_go["GO:0006357"][1] == "'@SUM(1)"
+    assert enrich_by_go["GO:0006357"][8] == '\'=HYPERLINK("x")'
+    assert enrich_by_go["GO:0009651"][1] == "-0.42"
+
+    with (out_dir / "Tabel_GO_Kandidat.csv").open("r", encoding="utf-8", newline="") as tf:
+        tbl_rows = list(csv.reader(tf))
+    tbl_by_gene = {r[0]: r for r in tbl_rows[1:]}
+    assert '\'=HYPERLINK("x")' in tbl_by_gene
+    assert tbl_by_gene['\'=HYPERLINK("x")'][1] == "'-"
+    assert tbl_by_gene['\'=HYPERLINK("x")'][2].startswith("'@SUM(1)")

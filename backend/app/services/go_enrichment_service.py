@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -222,6 +223,28 @@ def parse_go_annotation_file(mapping_path: str | Path) -> tuple[dict[str, list[d
         "decompressed_bytes": int(read_stats.get("decompressed_bytes", 0)),
     }
     return annotations, summary
+
+
+_FORMULA_PREFIX_RE = re.compile(r"^[=+\-@\t\r]")
+_NUMERIC_STRING_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
+
+
+def csv_safe_cell(value: Any) -> str:
+    """Menetralkan sel CSV terhadap formula injection, identik dengan frontend/src/utils/csv.js."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        txt = str(value)
+    elif isinstance(value, (int, float)):
+        return str(value) if math.isfinite(value) else ""
+    else:
+        txt = str(value)
+
+    if _FORMULA_PREFIX_RE.match(txt):
+        if not txt.startswith(("\t", "\r")) and _NUMERIC_STRING_RE.fullmatch(txt.strip()):
+            return txt
+        return f"'{txt}"
+    return txt
 
 
 def _quickgo_url(go_id: str) -> str:
@@ -622,15 +645,18 @@ def run_go_enrichment_analysis(
             ])
             for t in raw_terms:
                 writer.writerow([
-                    t["go_id"],
-                    t["description"],
-                    t["ontology"],
-                    t["gene_ratio_str"],
-                    t["bg_ratio"],
-                    t["pvalue"],
-                    t["p_adjust"],
-                    t["count"],
-                    t["gene_id_str"],
+                    csv_safe_cell(v)
+                    for v in (
+                        t["go_id"],
+                        t["description"],
+                        t["ontology"],
+                        t["gene_ratio_str"],
+                        t["bg_ratio"],
+                        t["pvalue"],
+                        t["p_adjust"],
+                        t["count"],
+                        t["gene_id_str"],
+                    )
                 ])
 
         table_csv = out_path / "Tabel_GO_Kandidat.csv"
@@ -646,12 +672,15 @@ def run_go_enrichment_analysis(
             ])
             for row in go_table:
                 writer.writerow([
-                    row["gene_id"],
-                    row["ortholog"],
-                    row["biological_process"],
-                    row["cellular_component"],
-                    row["molecular_function"],
-                    row["source_url"] or row.get("source", "unavailable"),
+                    csv_safe_cell(v)
+                    for v in (
+                        row["gene_id"],
+                        row["ortholog"],
+                        row["biological_process"],
+                        row["cellular_component"],
+                        row["molecular_function"],
+                        row["source_url"] or row.get("source", "unavailable"),
+                    )
                 ])
 
     return result_payload
