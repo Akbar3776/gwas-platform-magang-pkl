@@ -106,3 +106,31 @@ def test_env_example_files_share_same_keys_except_compose_only():
     backend_keys = set(re.findall(r"(?m)^([A-Z0-9_]+)=", backend_text))
     assert root_keys - backend_keys == {"POSTGRES_HOST_PORT", "TLS_CERT_DIR", "ACME_WEBROOT"}
     assert backend_keys - root_keys == set()
+
+
+def test_go_upload_limit_settings_defaults_and_validation(monkeypatch):
+    for key in (
+        "GO_MAPPING_MAX_UPLOAD_BYTES",
+        "GO_MAPPING_MAX_DECOMPRESSED_BYTES",
+        "GO_MAPPING_MAX_LINES",
+        "GO_MAPPING_MIN_VALID_RATIO",
+        "UPLOAD_TEXT_MAX_LINE_BYTES",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    cfg = config.Settings()
+    assert cfg.GO_MAPPING_MAX_UPLOAD_BYTES == 52_428_800
+    assert cfg.GO_MAPPING_MAX_DECOMPRESSED_BYTES == 134_217_728
+    assert cfg.GO_MAPPING_MAX_LINES == 1_000_000
+    assert cfg.GO_MAPPING_MIN_VALID_RATIO == 0.5
+    assert cfg.UPLOAD_TEXT_MAX_LINE_BYTES == 65_536
+
+    for bad_overrides in (
+        {"GO_MAPPING_MAX_UPLOAD_BYTES": 0},
+        {"GO_MAPPING_MAX_DECOMPRESSED_BYTES": -1},
+        {"GO_MAPPING_MAX_LINES": 0},
+        {"UPLOAD_TEXT_MAX_LINE_BYTES": 0},
+        {"GO_MAPPING_MIN_VALID_RATIO": 0.0},
+        {"GO_MAPPING_MIN_VALID_RATIO": 1.1},
+    ):
+        with pytest.raises(ValueError):
+            config.Settings(**bad_overrides)

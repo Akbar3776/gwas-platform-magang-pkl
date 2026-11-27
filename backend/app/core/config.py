@@ -98,6 +98,13 @@ class Settings(BaseSettings):
         DEFAULT_NON_PRIMARY_CONTIG_REGEX,
     )
 
+    # -- Batasan Unggahan Pemetaan GO & Teks Terbatas (G01) --
+    GO_MAPPING_MAX_UPLOAD_BYTES: int = int(os.getenv("GO_MAPPING_MAX_UPLOAD_BYTES", "52428800"))
+    GO_MAPPING_MAX_DECOMPRESSED_BYTES: int = int(os.getenv("GO_MAPPING_MAX_DECOMPRESSED_BYTES", "134217728"))
+    GO_MAPPING_MAX_LINES: int = int(os.getenv("GO_MAPPING_MAX_LINES", "1000000"))
+    GO_MAPPING_MIN_VALID_RATIO: float = float(os.getenv("GO_MAPPING_MIN_VALID_RATIO", "0.5"))
+    UPLOAD_TEXT_MAX_LINE_BYTES: int = int(os.getenv("UPLOAD_TEXT_MAX_LINE_BYTES", "65536"))
+
     @model_validator(mode="after")
     def validate_workflow_settings(self) -> "Settings":
         if self.CHROM_SPLIT_THRESHOLD_BP <= 0:
@@ -117,6 +124,16 @@ class Settings(BaseSettings):
                 re.compile(self.NON_PRIMARY_CONTIG_REGEX)
             except re.error as exc:
                 raise ValueError(f"NON_PRIMARY_CONTIG_REGEX tidak valid: {exc}") from exc
+        if self.GO_MAPPING_MAX_UPLOAD_BYTES <= 0:
+            raise ValueError("GO_MAPPING_MAX_UPLOAD_BYTES harus lebih besar dari 0.")
+        if self.GO_MAPPING_MAX_DECOMPRESSED_BYTES <= 0:
+            raise ValueError("GO_MAPPING_MAX_DECOMPRESSED_BYTES harus lebih besar dari 0.")
+        if self.GO_MAPPING_MAX_LINES <= 0:
+            raise ValueError("GO_MAPPING_MAX_LINES harus lebih besar dari 0.")
+        if self.UPLOAD_TEXT_MAX_LINE_BYTES <= 0:
+            raise ValueError("UPLOAD_TEXT_MAX_LINE_BYTES harus lebih besar dari 0.")
+        if not (0.0 < self.GO_MAPPING_MIN_VALID_RATIO <= 1.0):
+            raise ValueError("GO_MAPPING_MIN_VALID_RATIO harus berada dalam rentang (0, 1].")
         return self
 
     if _HAS_PYDANTIC_SETTINGS:
