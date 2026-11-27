@@ -408,4 +408,68 @@ describe("Annotation Synthetic Banner & Heuristic Labels", () => {
     expect(screen.getByText(/Desain Primer KASP Dilewati/i)).toBeInTheDocument();
     expect(screen.getByText(/FASTA referensi tidak tersedia/i)).toBeInTheDocument();
   });
+
+  test("GoEnrichmentPanel renders unknown GO column and go_stats summary bar safely (G10)", () => {
+    const { rerender } = render(
+      <GoEnrichmentPanel
+        jobId="job-1"
+        goData={{
+          status: "completed",
+          synthetic: false,
+          trait: "Trait",
+          go_stats: {
+            obo: {
+              available: true,
+              version: "releases/2026-07-26",
+              n_rows_obsolete_dropped: 3634,
+            },
+            match: { pct_gff_features_matched: 49.17 },
+            background: { n_universe: 25346 },
+          },
+          go_table: [
+            {
+              gene_id: "GeneUnk",
+              ortholog: "-",
+              biological_process: "-",
+              cellular_component: "-",
+              molecular_function: "-",
+              unknown_go: "GO:7777777",
+              unknown_ids: ["GO:7777777"],
+              source: "mapping",
+            },
+          ],
+          enrichment_terms: [],
+        }}
+      />
+    );
+
+    expect(screen.getByRole("columnheader", { name: /Domain tidak diketahui/i })).toBeInTheDocument();
+    expect(screen.getByText("GO:7777777")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Ontologi GO releases\/2026-07-26/i)
+    ).toHaveTextContent(/background 25\.346 gen.*obsolete dibuang 3\.634/i);
+
+    // Payload lama tanpa go_stats -> tidak crash dan baris info tidak dirender
+    rerender(
+      <GoEnrichmentPanel
+        jobId="job-legacy"
+        goData={{
+          status: "completed",
+          synthetic: false,
+          go_table: [
+            {
+              gene_id: "GeneLegacy",
+              ortholog: "-",
+              biological_process: "GO:0006357",
+              cellular_component: "-",
+              molecular_function: "-",
+            },
+          ],
+          enrichment_terms: [],
+        }}
+      />
+    );
+    expect(screen.getByText("GeneLegacy")).toBeInTheDocument();
+    expect(screen.queryByText(/Ontologi GO/i)).not.toBeInTheDocument();
+  });
 });

@@ -217,18 +217,33 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
 
   const handleDownloadGoTableCsv = () => {
     if (!goTable.length) return;
-    const headers = ["Gene_ID", "Ortholog", "Biological_Process", "Cellular_Component", "Molecular_Function", "Source"];
+    const headers = [
+      "Gene_ID",
+      "Ortholog",
+      "Biological_Process",
+      "Cellular_Component",
+      "Molecular_Function",
+      "Unknown_Domain",
+      "Source",
+    ];
     const rows = goTable.map((r) => [
       r.gene_id || "",
       r.ortholog || "",
       r.biological_process || "",
       r.cellular_component || "",
       r.molecular_function || "",
+      r.unknown_go && r.unknown_go !== "-"
+        ? r.unknown_go
+        : Array.isArray(r.unknown_ids) && r.unknown_ids.length
+        ? r.unknown_ids.join(", ")
+        : "-",
       r.source_url || "",
     ]);
     const blob = new Blob([toCsv(headers, rows)], { type: "text/csv;charset=utf-8" });
     saveBlob(blob, `Tabel_GO_Kandidat_${jobId || "gwas"}.csv`);
   };
+
+  const goStats = goData?.go_stats || null;
 
   const isSynthetic = Boolean(
     goData?.synthetic ||
@@ -257,6 +272,24 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
           }}
         >
           ⚠️ Data simulasi — bukan hasil analisis. Hasil GO di bawah dibangkitkan untuk mode demo (`ALLOW_SYNTHETIC_ANNOTATION=true`).
+        </div>
+      )}
+
+      {goStats && (
+        <div
+          style={{
+            background: "#f8fafc",
+            border: "1px solid #e2e8f0",
+            color: "#334155",
+            borderRadius: 8,
+            padding: "8px 12px",
+            fontSize: 12,
+          }}
+        >
+          Ontologi GO {goStats.obo?.available ? goStats.obo.version || "-" : "tidak tersedia"} ·{" "}
+          {Number(goStats.match?.pct_gff_features_matched ?? 0).toLocaleString("id-ID")}% gen GFF ber-GO · background{" "}
+          {Number(goStats.background?.n_universe ?? 0).toLocaleString("id-ID")} gen · obsolete dibuang{" "}
+          {Number(goStats.obo?.n_rows_obsolete_dropped ?? 0).toLocaleString("id-ID")}
         </div>
       )}
 
@@ -383,6 +416,7 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
                   <th style={{ padding: "8px 12px" }}>Biological Process</th>
                   <th style={{ padding: "8px 12px" }}>Cellular Component</th>
                   <th style={{ padding: "8px 12px" }}>Molecular Function</th>
+                  <th style={{ padding: "8px 12px" }}>Domain tidak diketahui</th>
                   <th style={{ padding: "8px 12px" }}>Source</th>
                 </tr>
               </thead>
@@ -402,6 +436,13 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
                     <td style={{ padding: "8px 12px", color: "#0f172a" }}>{row.biological_process || "-"}</td>
                     <td style={{ padding: "8px 12px", color: "#334155" }}>{row.cellular_component || "-"}</td>
                     <td style={{ padding: "8px 12px", color: "#334155" }}>{row.molecular_function || "-"}</td>
+                    <td style={{ padding: "8px 12px", color: "#475569" }}>
+                      {row.unknown_go && row.unknown_go !== "-"
+                        ? row.unknown_go
+                        : Array.isArray(row.unknown_ids) && row.unknown_ids.length > 0
+                        ? row.unknown_ids.join(", ")
+                        : "-"}
+                    </td>
                     <td style={{ padding: "8px 12px" }}>
                       {row.source_url ? (
                         <a
