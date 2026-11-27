@@ -472,4 +472,54 @@ describe("Annotation Synthetic Banner & Heuristic Labels", () => {
     expect(screen.getByText("GeneLegacy")).toBeInTheDocument();
     expect(screen.queryByText(/Ontologi GO/i)).not.toBeInTheDocument();
   });
+
+  test("GoEnrichmentPanel renders BLAST ortholog column, tooltip detail, and handles missing detail (G16)", () => {
+    render(
+      <GoEnrichmentPanel
+        jobId="job-orth"
+        goData={{
+          status: "completed",
+          synthetic: false,
+          go_table: [
+            {
+              gene_id: "Asa7G00205",
+              ortholog: "AT3G05510",
+              ortholog_detail: {
+                subject_id: "AT3G05510.2",
+                pident: 29.07,
+                evalue: 2e-21,
+                bitscore: 99.4,
+                n_loci_at_best: 2,
+              },
+              biological_process: "GO:0006357",
+              cellular_component: "-",
+              molecular_function: "-",
+              source: "mapping",
+            },
+            {
+              gene_id: "AsaNoOrth",
+              ortholog: "-",
+              ortholog_detail: null,
+              biological_process: "-",
+              cellular_component: "-",
+              molecular_function: "-",
+              source: "unavailable",
+            },
+          ],
+          enrichment_terms: [],
+        }}
+      />
+    );
+
+    expect(
+      screen.getByRole("columnheader", { name: /Ortolog \/ Homolog \(BLAST best hit\)/i })
+    ).toBeInTheDocument();
+
+    const orthCell = screen.getByText("AT3G05510").closest("td");
+    expect(orthCell).toHaveAttribute(
+      "title",
+      expect.stringMatching(/identitas 29,07% · e-value 2e-21 · bitscore 99,4 \(\+1 lokus setara\)/i)
+    );
+    expect(orthCell.querySelector("a")).toBeNull();
+  });
 });

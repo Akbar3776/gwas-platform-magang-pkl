@@ -12,6 +12,18 @@ function interpolateColor(t) {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
+function formatOrthologTitle(detail) {
+  if (!detail) return undefined;
+  const pident = Number(detail.pident).toLocaleString("id-ID", { maximumFractionDigits: 2 });
+  const evalue = String(detail.evalue);
+  const bitscore = Number(detail.bitscore).toLocaleString("id-ID", { maximumFractionDigits: 2 });
+  const tieNote =
+    typeof detail.n_loci_at_best === "number" && detail.n_loci_at_best > 1
+      ? ` (+${(detail.n_loci_at_best - 1).toLocaleString("id-ID")} lokus setara)`
+      : "";
+  return `identitas ${pident}% · e-value ${evalue} · bitscore ${bitscore}${tieNote}`;
+}
+
 export function GoEnrichmentPanel({ goData = null, jobId = null }) {
   const canvasRef = useRef(null);
   const [ontologyFilter, setOntologyFilter] = useState("BP");
@@ -412,7 +424,7 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
               <thead>
                 <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
                   <th style={{ padding: "8px 12px" }}>Lokus / Gen</th>
-                  <th style={{ padding: "8px 12px" }}>Ortolog / Homolog</th>
+                  <th style={{ padding: "8px 12px" }}>Ortolog / Homolog (BLAST best hit)</th>
                   <th style={{ padding: "8px 12px" }}>Biological Process</th>
                   <th style={{ padding: "8px 12px" }}>Cellular Component</th>
                   <th style={{ padding: "8px 12px" }}>Molecular Function</th>
@@ -432,7 +444,12 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
                     }}
                   >
                     <td style={{ padding: "8px 12px", fontWeight: 700, color: "#1e40af" }}>{row.gene_id}</td>
-                    <td style={{ padding: "8px 12px", color: "#334155", fontWeight: 500 }}>{row.ortholog || "-"}</td>
+                    <td
+                      style={{ padding: "8px 12px", color: "#334155", fontWeight: 500 }}
+                      title={formatOrthologTitle(row.ortholog_detail)}
+                    >
+                      {row.ortholog || "-"}
+                    </td>
                     <td style={{ padding: "8px 12px", color: "#0f172a" }}>{row.biological_process || "-"}</td>
                     <td style={{ padding: "8px 12px", color: "#334155" }}>{row.cellular_component || "-"}</td>
                     <td style={{ padding: "8px 12px", color: "#334155" }}>{row.molecular_function || "-"}</td>
