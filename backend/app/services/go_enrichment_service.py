@@ -24,6 +24,7 @@ import numpy as np
 from scipy.stats import hypergeom
 
 from app.core.config import settings
+from app.services.chromosome_service import is_non_primary_contig
 from app.services.gene_id_utils import GENE_ID_RE, strip_isoform_suffix
 from app.services.go_ontology_service import GoOntology, load_go_ontology
 from app.services.upload_validation import UploadValidationError, open_lines_bounded
@@ -610,8 +611,22 @@ def format_go_log_lines(
     )
 
     bg = stats.get("background") or {}
-    bg_desc = "dari file pemetaan" if bg.get("source", "mapping_file") == "mapping_file" else "semua fitur GFF"
-    lines.append(f"[GO] Background: {_fmt_id_int(int(bg.get('n_universe', 0)))} gen ({bg_desc}).")
+    bg_source = bg.get("source", "mapping_file")
+    pat_src = bg.get("pattern_source", "none")
+    if bg_source == "mapping_file":
+        bg_desc = "dari file pemetaan"
+    elif pat_src == "job":
+        bg_desc = "pola kontig dari job"
+    elif pat_src == "legacy_none":
+        bg_desc = "tanpa filter kontig (job historis)"
+    elif pat_src == "settings":
+        bg_desc = "pola kontig dari settings"
+    else:
+        bg_desc = "semua fitur GFF"
+    lines.append(
+        f"[GO] Background: {_fmt_id_int(int(bg.get('n_universe', 0)))} gen ({bg_desc}); "
+        f"{_fmt_id_int(int(bg.get('n_excluded_non_primary', 0)))} gen di kontig non-utama dikeluarkan."
+    )
 
     if n_gff > 0 and mapping.get("available") and float(match.get("pct_gff_features_matched", 0.0)) < 10.0:
         gff_ex = ", ".join(sample_gff_ids or []) or "-"
@@ -623,6 +638,15 @@ def format_go_log_lines(
     return lines
 
 
+def resolve_job_contig_pattern(job_parameters: dict[str, Any] | None) -> tuple[str, str]:
+    """Mengambil pola filter kontig yang dipakai job, atau legacy_none untuk job historis."""
+    params = job_parameters if isinstance(job_parameters, dict) else {}
+    cf = params.get("contig_filter")
+    if isinstance(cf, dict):
+        return str(cf.get("pattern") or ""), "job"
+    return "", "legacy_none"
+
+
 def run_go_enrichment_analysis(
     mapped_rows: list[dict[str, Any]],
     candidate_genes_list: list[str] | None = None,
@@ -632,6 +656,8 @@ def run_go_enrichment_analysis(
     gff_genes_by_chr: dict[str, list[dict[str, Any]]] | None = None,
     go_mapping_path: str | Path | None = None,
     feature_type: str = "gene",
+    contig_filter_pattern: str | None = None,
+    contig_pattern_source: str | None = None,
 ) -> dict[str, Any]:
     """
     Menjalankan pemetaan Tabel GO dan analisis pengayaan hipergeometrik (GO Enrichment)
@@ -751,9 +777,17 @@ def run_go_enrichment_analysis(
                     cur["description"] = t["description"]
 
     # Bangun semesta latar belakang di ruang kunci GFF (jika tersedia) atau level gen file pemetaan
+    if contig_filter_pattern is None:
+        effective_pattern = str(settings.NON_PRIMARY_CONTIG_REGEX or "").strip()
+        effective_pattern_source = contig_pattern_source or "settings"
+    else:
+        effective_pattern = str(contig_filter_pattern).strip()
+        effective_pattern_source = contig_pattern_source or "job"
+
     bg_gene_to_go: dict[str, set[str]] = {}
     n_gff_features = len(gff_features)
     n_gff_features_matched = 0
+    n_excluded_non_primary = 0
     gff_keys: set[str] = set()
     gff_base_keys: set[str] = set()
 
@@ -789,10 +823,13 @@ def run_go_enrichment_analysis(
 
             if feat_go_ids:
                 n_gff_features_matched += 1
+                if effective_pattern and is_non_primary_contig(str(feat.get("gff_chrom") or ""), effective_pattern):
+                    n_excluded_non_primary += 1
+                    continue
                 bg_gene_to_go.setdefault(fkey, set()).update(feat_go_ids)
 
         if bg_gene_to_go:
-            bg_source = "gff_all"
+            bg_source = "gff_primary" if effective_pattern else "gff_all"
         else:
             bg_source = "mapping_file"
             for bkey, term_map in index.base.items():
@@ -972,7 +1009,10 @@ def run_go_enrichment_analysis(
         },
         "background": {
             "source": bg_source,
+            "pattern": effective_pattern,
+            "pattern_source": effective_pattern_source,
             "n_universe": n_bg_total,
+            "n_excluded_non_primary": n_excluded_non_primary,
             "n_mapping_genes_not_in_gff": n_mapping_genes_not_in_gff,
             "n_candidates_outside_universe": n_candidates_outside_universe,
         },
