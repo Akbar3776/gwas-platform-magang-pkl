@@ -522,4 +522,49 @@ describe("Annotation Synthetic Banner & Heuristic Labels", () => {
     );
     expect(orthCell.querySelector("a")).toBeNull();
   });
+
+  test("GoEnrichmentPanel renders accessible warning banner when stale=true and hides when not stale (G22)", () => {
+    const basePayload = {
+      status: "completed",
+      synthetic: false,
+      go_table: [
+        {
+          gene_id: "Asa7G00205",
+          ortholog: "AT3G05510",
+          biological_process: "GO:0006357",
+          cellular_component: "-",
+          molecular_function: "-",
+          source: "mapping",
+        },
+      ],
+      enrichment_terms: [],
+    };
+
+    const { rerender } = render(
+      <GoEnrichmentPanel
+        jobId="job-stale-gff"
+        goData={{ ...basePayload, stale: true, stale_reason: "gff_unavailable" }}
+      />
+    );
+
+    const gffBanner = screen.getByRole("status");
+    expect(gffBanner).toHaveTextContent(/hasil sebelumnya/i);
+    expect(gffBanner).toHaveTextContent(/GFF3/i);
+    expect(gffBanner.querySelector('[aria-hidden="true"]')).not.toBeNull();
+
+    rerender(
+      <GoEnrichmentPanel
+        jobId="job-stale-err"
+        goData={{ ...basePayload, stale: true, stale_reason: "recompute_failed" }}
+      />
+    );
+    const errBanner = screen.getByRole("status");
+    expect(errBanner).toHaveTextContent(/menghitung ulang/i);
+
+    rerender(<GoEnrichmentPanel jobId="job-fresh" goData={{ ...basePayload, stale: false }} />);
+    expect(screen.queryByRole("status")).toBeNull();
+
+    rerender(<GoEnrichmentPanel jobId="job-clean" goData={basePayload} />);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
 });

@@ -262,9 +262,16 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
       goTable.some((r) => Boolean(r?.synthetic)) ||
       allTerms.some((t) => Boolean(t?.synthetic))
   );
+  const isStale = Boolean(goData?.stale);
+  const staleReasonText =
+    goData?.stale_reason === "gff_unavailable"
+      ? " Berkas anotasi GFF3 dataset tidak tersedia di penyimpanan."
+      : goData?.stale_reason === "recompute_failed"
+      ? " Terjadi kendala saat menghitung ulang anotasi GO di server."
+      : "";
   const isUnavailable = goData?.status === "unavailable";
 
-  if (!goData || (!goTable.length && !allTerms.length && !isSynthetic && !isUnavailable)) {
+  if (!goData || (!goTable.length && !allTerms.length && !isSynthetic && !isStale && !isUnavailable)) {
     return null;
   }
 
@@ -284,6 +291,31 @@ export function GoEnrichmentPanel({ goData = null, jobId = null }) {
           }}
         >
           ⚠️ Data simulasi — bukan hasil analisis. Hasil GO di bawah dibangkitkan untuk mode demo (`ALLOW_SYNTHETIC_ANNOTATION=true`).
+        </div>
+      )}
+
+      {isStale && (
+        <div
+          role="status"
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            background: "#fffbeb",
+            border: "1px solid #f59e0b",
+            color: "#92400e",
+            borderRadius: 8,
+            padding: "10px 14px",
+            fontSize: 12.5,
+            lineHeight: 1.45,
+          }}
+        >
+          <span aria-hidden="true" style={{ flexShrink: 0 }}>
+            ⚠️
+          </span>
+          <span>
+            <strong>Menampilkan hasil sebelumnya:</strong> hasil GO gagal disegarkan saat pembaruan input.{staleReasonText}
+          </span>
         </div>
       )}
 
