@@ -114,6 +114,13 @@ RUN wget -q "https://s3.amazonaws.com/plink2-assets/beta1/plink2_linux_x86_64_${
     && chmod +x /usr/local/bin/plink2 \
     && rm -f /tmp/plink2.zip
 
+ARG GO_OBO_RELEASE=2026-08-05
+RUN mkdir -p /opt/go \
+    && wget -q "https://release.geneontology.org/${GO_OBO_RELEASE}/ontology/go-basic.obo" -O /opt/go/go-basic.obo \
+    && echo "b08d45b268b8c24ccb2513dbbbc7d4df9f6521c099b413f79eb31e06e0fa3bcc  /opt/go/go-basic.obo" | sha256sum -c - \
+    && chmod 0444 /opt/go/go-basic.obo
+ENV GO_OBO_PATH=/opt/go/go-basic.obo
+
 COPY ./app ./app
 COPY alembic.ini ./
 COPY ./alembic ./alembic
