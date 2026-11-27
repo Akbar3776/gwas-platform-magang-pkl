@@ -137,4 +137,35 @@ describe("WorkspaceExplorer error & loading state resilience (A33)", () => {
       );
     });
   });
+
+  test("menampilkan badge ✓ Ortolog ketika dataset memiliki indeks ortolog (G16)", async () => {
+    fetchUploadedDatasets.mockResolvedValueOnce([
+      {
+        file_id: "ds-orth",
+        original_filename: "garlic.vcf.gz",
+        file_size_bytes: 1024,
+        upload_status: "uploaded",
+        file_exists: true,
+        has_go_annotation: true,
+        go_annotation_filename: "Asa.GO.gz",
+        has_ortholog: true,
+        ortholog_filename: "Asa_Ath.blast.gz",
+        ortholog_n_genes: 47736,
+        uploaded_at: "2026-11-26T10:00:00Z",
+      },
+    ]);
+    fetchUserJobs.mockResolvedValueOnce([]);
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <WorkspaceExplorer />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("✓ GO")).toBeInTheDocument();
+      expect(screen.getByText("✓ Ortolog")).toBeInTheDocument();
+    });
+    expect(screen.getByText("✓ Ortolog")).toHaveAttribute("title", "Asa_Ath.blast.gz");
+  });
 });

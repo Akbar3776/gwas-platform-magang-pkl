@@ -416,12 +416,13 @@ export function WorkspaceExplorer({
                         )}
                       </td>
                       <td style={{ padding: "8px 10px" }}>
-                        {ds.has_annotation || ds.has_reference || ds.has_go_annotation ? (
+                        {ds.has_annotation || ds.has_reference || ds.has_go_annotation || ds.has_ortholog ? (
                           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                             {[
                               { enabled: ds.has_annotation, label: "✓ GFF3", title: ds.annotation_filename, bg: "#f5f3ff", color: "#6d28d9", border: "#ddd6fe" },
                               { enabled: ds.has_reference, label: "✓ FASTA", title: ds.reference_filename, bg: "#ecfeff", color: "#0e7490", border: "#a5f3fc" },
                               { enabled: ds.has_go_annotation, label: "✓ GO", title: ds.go_annotation_filename, bg: "#fef3c7", color: "#92400e", border: "#fde68a" },
+                              { enabled: ds.has_ortholog, label: "✓ Ortolog", title: ds.ortholog_filename, bg: "#e0f2fe", color: "#0369a1", border: "#bae6fd" },
                             ]
                               .filter((pill) => pill.enabled)
                               .map((pill) => (
