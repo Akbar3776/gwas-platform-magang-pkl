@@ -122,11 +122,23 @@ def test_run_go_populates_ortholog_column_detail_csv_and_stats(tmp_path: Path):
     assert orth_stats["n_queries"] == 4
     assert orth_stats["n_candidates_with_ortholog"] == 4
 
-    # CSV exports Ortholog column
+    # CSV exports Ortholog dan Unknown_Domain column dengan urutan persis
     with (tmp_path / "out" / "Tabel_GO_Kandidat.csv").open("r", encoding="utf-8", newline="") as fh:
-        csv_rows = list(csv.DictReader(fh))
+        reader = csv.DictReader(fh)
+        assert reader.fieldnames == [
+            "Gene_ID",
+            "Ortholog",
+            "Biological_Process",
+            "Cellular_Component",
+            "Molecular_Function",
+            "Unknown_Domain",
+            "Source",
+        ]
+        csv_rows = list(reader)
     csv_by_gene = {r["Gene_ID"]: r for r in csv_rows}
     assert csv_by_gene["Asa7G00205.1"]["Ortholog"] == "AT3G05510"
+    assert csv_by_gene["Asa7G00205.1"]["Unknown_Domain"] == "GO:0006357"
+    assert csv_by_gene["AsaHitNoGo"]["Unknown_Domain"] == "'-"
     assert csv_by_gene["AsaNoHit"]["Ortholog"] == "'-"
 
     # Without ortholog index -> available False, "-" & None
@@ -143,7 +155,9 @@ def test_run_go_populates_ortholog_column_detail_csv_and_stats(tmp_path: Path):
 def test_csv_ortholog_formula_cell_neutralized(tmp_path: Path):
     import gzip
 
-    gff, go_tsv, _ = _write_mini_inputs(tmp_path)
+    gff, _go_tsv, _ = _write_mini_inputs(tmp_path)
+    go_formula = tmp_path / "formula.go.tsv"
+    go_formula.write_text("Asa7G00205\tGO:9999999\tunknown\t=CMD()\n", encoding="utf-8")
     idx = tmp_path / "custom_orth.tsv.gz"
     with gzip.open(idx, "wt", encoding="utf-8") as fh:
         fh.write("query_id\tsubject_locus\tsubject_id\tpident\tevalue\tbitscore\tn_hits\tn_loci_at_best\n")
@@ -155,12 +169,13 @@ def test_csv_ortholog_formula_cell_neutralized(tmp_path: Path):
         candidate_genes_list=["Asa7G00205"],
         output_dir=tmp_path / "out_csv",
         gff_path=gff,
-        go_mapping_path=go_tsv,
+        go_mapping_path=go_formula,
         ortholog_index_path=idx,
     )
     with (tmp_path / "out_csv" / "Tabel_GO_Kandidat.csv").open("r", encoding="utf-8", newline="") as fh:
         csv_rows = list(csv.DictReader(fh))
     assert csv_rows[0]["Ortholog"] == "'=CMD()"
+    assert csv_rows[0]["Unknown_Domain"] == "'=CMD() (GO:9999999)"
 
 
 def test_refresh_go_if_stale_tracks_ortholog_add_replace_and_delete(tmp_path: Path, monkeypatch):

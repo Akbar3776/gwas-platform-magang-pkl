@@ -385,10 +385,20 @@ def test_go_csv_export_neutralizes_formula_injection_and_matches_client_rules(tm
 
     with (out_dir / "Tabel_GO_Kandidat.csv").open("r", encoding="utf-8", newline="") as tf:
         tbl_rows = list(csv.reader(tf))
+    assert tbl_rows[0] == [
+        "Gene_ID",
+        "Ortholog",
+        "Biological_Process",
+        "Cellular_Component",
+        "Molecular_Function",
+        "Unknown_Domain",
+        "Source",
+    ]
     tbl_by_gene = {r[0]: r for r in tbl_rows[1:]}
     assert '\'=HYPERLINK("x")' in tbl_by_gene
     assert tbl_by_gene['\'=HYPERLINK("x")'][1] == "'-"
     assert tbl_by_gene['\'=HYPERLINK("x")'][2].startswith("'@SUM(1)")
+    assert tbl_by_gene['\'=HYPERLINK("x")'][5] == "'-"
 
 
 def test_upload_go_parses_only_once_and_preserves_old_on_obo_error(tmp_path: Path, monkeypatch):

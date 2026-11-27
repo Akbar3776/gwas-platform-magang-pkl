@@ -287,6 +287,7 @@ ORTHOLOG_MAX_QUERIES=500000
 - **Universe Background & Penyegaran Lazy:**
   - Universe background GO mengikuti pola filter kontig yang tersimpan pada `job.parameters["contig_filter"]["pattern"]` (job pra-Phase 5 tanpa key tersebut tidak memfilter kontig; pemanggilan tanpa job memakai `NON_PRIMARY_CONTIG_REGEX`).
   - Membuka hasil GO (`GET /api/v1/results/{job_id}/go-enrichment` atau `/candidate-genes`) akan menyegarkan hasil secara *lazy* dan non-destruktif (`go_enrichment.previous.json`) apabila fingerprint input (mapping GO, GFF, OBO, indeks ortolog, `feature_type`, pola kontig, flag sintetis) berubah.
+  - Ekspor `Tabel_GO_Kandidat.csv` menyertakan kolom `Gene_ID`, `Ortholog`, `Biological_Process`, `Cellular_Component`, `Molecular_Function`, `Unknown_Domain`, dan `Source` dengan netralisasi sel aman CSV.
 
 ---
 

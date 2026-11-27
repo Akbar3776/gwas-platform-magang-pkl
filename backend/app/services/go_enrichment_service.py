@@ -843,7 +843,7 @@ def run_go_enrichment_analysis(
             parse_summary = {}
 
     n_genes_raw = int(parse_summary.get("n_genes_raw", len(raw_annotations)))
-    n_pairs_raw = int(parse_summary.get("n_pairs_raw", sum(len(v) for v in raw_annotations.values())))
+    n_pairs_raw = int(parse_summary.get("n_mappings_raw", sum(len(v) for v in raw_annotations.values())))
 
     if ontology is not None:
         uploaded_annotations, obo_stats, n_genes_norm, n_pairs_norm = normalize_go_annotations_with_obo(
@@ -1212,6 +1212,7 @@ def run_go_enrichment_analysis(
                 "Biological_Process",
                 "Cellular_Component",
                 "Molecular_Function",
+                "Unknown_Domain",
                 "Source",
             ])
             for row in go_table:
@@ -1223,6 +1224,7 @@ def run_go_enrichment_analysis(
                         row["biological_process"],
                         row["cellular_component"],
                         row["molecular_function"],
+                        row["unknown_go"],
                         row["source_url"] or row.get("source", "unavailable"),
                     )
                 ])

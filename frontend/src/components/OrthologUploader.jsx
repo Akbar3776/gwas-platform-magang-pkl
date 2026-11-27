@@ -71,9 +71,7 @@ export function OrthologUploader({
     setBusy(true);
     setErrorMessage(null);
     try {
-      if (typeof deleteOrtholog === "function") {
-        await deleteOrtholog(datasetId);
-      }
+      await deleteOrtholog(datasetId);
       setMeta(null);
       onChangedRef.current?.(null);
     } catch (err) {
