@@ -120,32 +120,7 @@ export default function GwasResultsPanel({ jobId }) {
   const [activeThresholdMethod, setActiveThresholdMethod] = useState("bonferroni");
 
   const thresholdsRes = useResource(fetchThresholdsData, jobId, { fallbackMessage: "Gagal memuat ambang batas." });
-  const leadSnpsRes = useResource(fetchLeadSnpsData, jobId, { fallbackMessage: "Gagal memuat Lead SNPs." });
-  const inspectionRes = useResource(fetchInspectionData, jobId, { fallbackMessage: "Gagal memuat data inspeksi." });
-  const qcRes = useResource(fetchQcComparisonData, jobId, { fallbackMessage: "Gagal memuat data perbandingan QC." });
-  const pcaRes = useResource(fetchPcaData, jobId, { fallbackMessage: "Gagal memuat data PCA." });
-  const kinshipRes = useResource(fetchKinshipData, jobId, { fallbackMessage: "Gagal memuat matriks kinship." });
-  const ldDecayRes = useResource(fetchLdDecayData, jobId, { fallbackMessage: "Gagal memuat kurva LD decay." });
-  const modelRecRes = useResource(fetchModelRecommendationData, jobId, { fallbackMessage: "Gagal memuat rekomendasi model." });
-  const peakRes = useResource(fetchPeakComparisonData, jobId, { fallbackMessage: "Gagal memuat perbandingan puncak." });
-  const multilocusRes = useResource(fetchMultilocusResultsData, jobId, { fallbackMessage: "Gagal memuat hasil multi-locus." });
-  const annotationRes = useResource(fetchCandidateGenesData, jobId, { fallbackMessage: "Gagal memuat anotasi kandidat." });
-  const goRes = useResource(fetchGoEnrichmentData, jobId, { fallbackMessage: "Gagal memuat data GO enrichment." });
-  const primersRes = useResource(fetchPrimersData, jobId, { fallbackMessage: "Gagal memuat data Primer3." });
-
   const thresholdsData = thresholdsRes.data;
-  const leadSnpsData = leadSnpsRes.data;
-  const inspectionData = inspectionRes.data;
-  const qcData = qcRes.data;
-  const pcaData = pcaRes.data;
-  const kinshipData = kinshipRes.data;
-  const ldDecayData = ldDecayRes.data;
-  const modelRecData = modelRecRes.data;
-  const peakData = peakRes.data;
-  const multilocusSummary = multilocusRes.data;
-  const annotationData = annotationRes.data;
-  const goEnrichmentData = goRes.data;
-  const primersData = primersRes.data;
 
   // Sinkronkan metode ambang aktif dengan rekomendasi/output pipeline
   useEffect(() => {
@@ -164,6 +139,46 @@ export default function GwasResultsPanel({ jobId }) {
     if (m === "lod") return thresholdsData.lod_p || Math.pow(10, -Number(thresholdsData.lod_score || 5.6));
     return 5e-8;
   }, [thresholdsData, activeThresholdMethod]);
+
+  // Lead SNP dibagi ulang oleh backend sesuai ambang aktif; tunggu ambang selesai dimuat
+  // agar tidak memuat dua kali (ambang default lalu ambang pipeline).
+  const hasThresholds = Boolean(
+    thresholdsData && thresholdsData.status !== "not_available" && thresholdsData.status !== "skipped"
+  );
+  const leadSnpsThreshold = hasThresholds ? computedThreshold : null;
+  const leadSnpsRes = useResource(
+    (id, signal) => fetchLeadSnpsData(id, signal, leadSnpsThreshold),
+    jobId,
+    {
+      enabled: !thresholdsRes.isLoading,
+      key: leadSnpsThreshold,
+      fallbackMessage: "Gagal memuat Lead SNPs.",
+    }
+  );
+  const inspectionRes = useResource(fetchInspectionData, jobId, { fallbackMessage: "Gagal memuat data inspeksi." });
+  const qcRes = useResource(fetchQcComparisonData, jobId, { fallbackMessage: "Gagal memuat data perbandingan QC." });
+  const pcaRes = useResource(fetchPcaData, jobId, { fallbackMessage: "Gagal memuat data PCA." });
+  const kinshipRes = useResource(fetchKinshipData, jobId, { fallbackMessage: "Gagal memuat matriks kinship." });
+  const ldDecayRes = useResource(fetchLdDecayData, jobId, { fallbackMessage: "Gagal memuat kurva LD decay." });
+  const modelRecRes = useResource(fetchModelRecommendationData, jobId, { fallbackMessage: "Gagal memuat rekomendasi model." });
+  const peakRes = useResource(fetchPeakComparisonData, jobId, { fallbackMessage: "Gagal memuat perbandingan puncak." });
+  const multilocusRes = useResource(fetchMultilocusResultsData, jobId, { fallbackMessage: "Gagal memuat hasil multi-locus." });
+  const annotationRes = useResource(fetchCandidateGenesData, jobId, { fallbackMessage: "Gagal memuat anotasi kandidat." });
+  const goRes = useResource(fetchGoEnrichmentData, jobId, { fallbackMessage: "Gagal memuat data GO enrichment." });
+  const primersRes = useResource(fetchPrimersData, jobId, { fallbackMessage: "Gagal memuat data Primer3." });
+
+  const leadSnpsData = leadSnpsRes.data;
+  const inspectionData = inspectionRes.data;
+  const qcData = qcRes.data;
+  const pcaData = pcaRes.data;
+  const kinshipData = kinshipRes.data;
+  const ldDecayData = ldDecayRes.data;
+  const modelRecData = modelRecRes.data;
+  const peakData = peakRes.data;
+  const multilocusSummary = multilocusRes.data;
+  const annotationData = annotationRes.data;
+  const goEnrichmentData = goRes.data;
+  const primersData = primersRes.data;
 
   const activeThresholdLabel = useMemo(() => {
     const m = (activeThresholdMethod || "bonferroni").toLowerCase();
@@ -407,6 +422,8 @@ export default function GwasResultsPanel({ jobId }) {
               suggestiveSnps={suggestiveSnpsList}
               activeThreshold={computedThreshold}
               activeThresholdMethod={activeThresholdLabel}
+              pipelineThreshold={hasThresholds ? Number(thresholdsData.selected_p) || null : null}
+              isLoading={leadSnpsRes.isLoading}
               jobId={jobId}
             />
           </div>

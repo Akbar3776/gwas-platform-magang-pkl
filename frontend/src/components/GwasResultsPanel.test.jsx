@@ -163,8 +163,38 @@ describe("GwasResultsPanel multi-locus Manhattan & QQ plots (A23)", () => {
       expect(screen.getByText(/0 Lokus Teridentifikasi/i)).toBeInTheDocument();
     });
     expect(screen.getByText(/Tidak ada Lead SNPs terdeteksi/i)).toBeInTheDocument();
-    expect(screen.getByText(/Peak Sugestif/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Peak Sugestif/i })).toBeInTheDocument();
     expect(screen.getByText("rs_sug_1")).toBeInTheDocument();
+    expect(gwasApi.fetchLeadSnpsData).toHaveBeenCalledWith("job-a45-1", expect.anything(), 5e-8);
+  });
+
+  test("refetches Lead SNPs with the active threshold when the method changes", async () => {
+    gwasApi.fetchThresholdsData.mockResolvedValue({
+      bonferroni: 5e-8,
+      suggestive: 1e-5,
+      selected_method: "bonferroni",
+      selected_p: 5e-8,
+    });
+    gwasApi.fetchLeadSnpsData.mockImplementation((_id, _signal, pThreshold) =>
+      Promise.resolve(
+        pThreshold === 1e-5
+          ? { snps: [{ snp: "rs_loose", chr: "2", pos: 1000, p: 3e-6 }], suggestive: [] }
+          : { snps: [], suggestive: [{ snp: "rs_loose", chr: "2", pos: 1000, p: 3e-6 }] }
+      )
+    );
+
+    render(<GwasResultsPanel jobId="job-thr-1" />);
+    fireEvent.click(await screen.findByRole("tab", { name: /Ambang Batas & Lead SNPs/i }));
+    await screen.findByText(/0 Lokus Teridentifikasi/i);
+
+    fireEvent.click(screen.getByText("Suggestive"));
+
+    await waitFor(() => {
+      expect(gwasApi.fetchLeadSnpsData).toHaveBeenLastCalledWith("job-thr-1", expect.anything(), 1e-5);
+    });
+    await screen.findByText(/1 Lokus Teridentifikasi/i);
+    expect(screen.queryByRole("heading", { name: /Peak Sugestif/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("note")).toHaveTextContent(/berbeda dari ambang pipeline/i);
   });
 
   test("keeps tabs accessible on 409 Manhattan error so QC tab renders and shows per-tab error state (A32)", async () => {

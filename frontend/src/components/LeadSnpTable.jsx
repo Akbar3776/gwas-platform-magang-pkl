@@ -26,15 +26,21 @@ function formatPos(pos) {
   return isNaN(num) ? String(pos) : num.toLocaleString("id-ID");
 }
 
+function pValue(s) {
+  const num = Number(s?.p);
+  return Number.isFinite(num) ? num : null;
+}
+
 export function LeadSnpTable({
   leadSnps = [],
   suggestiveSnps = [],
   activeThreshold = null,
   activeThresholdMethod = "Bonferroni",
+  pipelineThreshold = null,
+  isLoading = false,
   jobId = null,
 }) {
   const [filterText, setFilterText] = useState("");
-  const [onlySignificant, setOnlySignificant] = useState(false);
   const [expandedSnp, setExpandedSnp] = useState(null);
   const [sortField, setSortField] = useState("p");
   const [sortAsc, setSortAsc] = useState(true);
@@ -42,9 +48,20 @@ export function LeadSnpTable({
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
+  const threshold =
+    typeof activeThreshold === "number" && Number.isFinite(activeThreshold) && activeThreshold > 0
+      ? activeThreshold
+      : null;
+  const thresholdText = threshold ? `${activeThresholdMethod} ≤ ${threshold.toExponential(2)}` : null;
+  const differsFromPipeline =
+    threshold !== null &&
+    typeof pipelineThreshold === "number" &&
+    pipelineThreshold > 0 &&
+    Math.abs(threshold - pipelineThreshold) > 1e-6 * Math.max(threshold, pipelineThreshold);
+
   useEffect(() => {
     setCurrentPage(1);
-  }, [filterText, onlySignificant, sortField, sortAsc]);
+  }, [filterText, sortField, sortAsc, threshold]);
 
   const safeLeadSnps = useMemo(() => {
     let rawList = leadSnps;
@@ -70,13 +87,26 @@ export function LeadSnpTable({
     return [];
   }, [suggestiveSnps, leadSnps]);
 
-  const numPassThreshold = useMemo(() => {
-    if (!activeThreshold || typeof activeThreshold !== "number") return safeLeadSnps.length;
+  // Tabel utama hanya memuat SNP yang lolos ambang aktif; sisanya (mis. data lama yang
+  // belum dibagi ulang backend) dipindah ke bagian peak sugestif.
+  const significantSnps = useMemo(() => {
+    if (threshold === null) return safeLeadSnps;
     return safeLeadSnps.filter((s) => {
-      const pNum = Number(s.p);
-      return !isNaN(pNum) && pNum <= activeThreshold;
-    }).length;
-  }, [safeLeadSnps, activeThreshold]);
+      const p = pValue(s);
+      return p !== null && p <= threshold;
+    });
+  }, [safeLeadSnps, threshold]);
+
+  const belowThresholdSnps = useMemo(() => {
+    const demoted =
+      threshold === null
+        ? []
+        : safeLeadSnps.filter((s) => {
+            const p = pValue(s);
+            return p === null || p > threshold;
+          });
+    return [...demoted, ...safeSuggestiveSnps].sort((a, b) => (pValue(a) ?? 1) - (pValue(b) ?? 1));
+  }, [safeLeadSnps, safeSuggestiveSnps, threshold]);
 
   const handleSort = (field) => {
     if (sortField === field) {
@@ -89,18 +119,14 @@ export function LeadSnpTable({
 
   const filtered = useMemo(() => {
     const q = filterText.toLowerCase().trim();
-    return safeLeadSnps.filter((s) => {
-      const pNum = Number(s.p);
-      if (onlySignificant && activeThreshold && !isNaN(pNum)) {
-        if (pNum > activeThreshold) return false;
-      }
-      if (!q) return true;
+    if (!q) return significantSnps;
+    return significantSnps.filter((s) => {
       const snpStr = String(s.snp || "").toLowerCase();
       const chrStr = String(s.chr || "").toLowerCase();
       const posStr = String(s.pos || "");
       return snpStr.includes(q) || chrStr.includes(q) || posStr.includes(q);
     });
-  }, [safeLeadSnps, filterText, onlySignificant, activeThreshold]);
+  }, [significantSnps, filterText]);
 
   const sortedRows = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -148,26 +174,20 @@ export function LeadSnpTable({
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <div>
           <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#0f172a" }}>
-            Tabel Lead SNPs Independen ({safeLeadSnps.length} Lokus Teridentifikasi)
+            Tabel Lead SNPs Independen ({isLoading ? "…" : significantSnps.length} Lokus Teridentifikasi)
           </h4>
           <p style={{ margin: "3px 0 0", fontSize: 12, color: "#64748b" }}>
             Hasil pengelompokan varian (*clumping*) berdasarkan Linkage Disequilibrium.
-            {activeThreshold && typeof activeThreshold === "number" && (
-              numPassThreshold > 0 ? (
-                <span style={{ marginLeft: 6, fontWeight: 600, color: "#15803d" }}>
-                  ({numPassThreshold} lokus signifikan pada ambang {activeThresholdMethod} ≤ {activeThreshold.toExponential(2)})
-                </span>
-              ) : (
-                <span style={{ marginLeft: 6, fontWeight: 600, color: "#b45309" }}>
-                  (0 lokus mencapai ambang {activeThresholdMethod} ≤ {activeThreshold.toExponential(2)}; menampilkan {safeLeadSnps.length} kandidat puncak teratas untuk eksplorasi)
-                </span>
-              )
+            {thresholdText && (
+              <span style={{ marginLeft: 6, fontWeight: 600, color: "#15803d" }}>
+                (ambang aktif {thresholdText})
+              </span>
             )}
           </p>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          {jobId && safeLeadSnps.length > 0 && (
+          {jobId && significantSnps.length + belowThresholdSnps.length > 0 && (
             <button
               type="button"
               onClick={handleDownloadTsv}
@@ -186,34 +206,8 @@ export function LeadSnpTable({
                 gap: 4,
               }}
             >
-              📥 {isDownloading ? "Mengunduh..." : "Unduh TSV"}
+              📥 {isDownloading ? "Mengunduh..." : differsFromPipeline ? "Unduh TSV (ambang pipeline)" : "Unduh TSV"}
             </button>
-          )}
-
-          {activeThreshold && (
-            <label
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                fontSize: 12,
-                cursor: "pointer",
-                background: onlySignificant ? "#eff6ff" : "#f8fafc",
-                border: `1px solid ${onlySignificant ? "#93c5fd" : "#cbd5e1"}`,
-                padding: "5px 10px",
-                borderRadius: 6,
-                color: onlySignificant ? "#1e40af" : "#475569",
-                fontWeight: onlySignificant ? 700 : 500,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={onlySignificant}
-                onChange={(e) => setOnlySignificant(e.target.checked)}
-                style={{ cursor: "pointer" }}
-              />
-              Hanya Signifikan ({numPassThreshold})
-            </label>
           )}
 
           <input
@@ -232,39 +226,41 @@ export function LeadSnpTable({
         </div>
       </div>
 
+      {differsFromPipeline && (
+        <div
+          role="note"
+          style={{
+            padding: "8px 12px",
+            background: "#eff6ff",
+            borderRadius: 6,
+            color: "#1e3a8a",
+            fontSize: 12,
+            border: "1px solid #bfdbfe",
+          }}
+        >
+          ℹ️ Ambang aktif ({thresholdText}) berbeda dari ambang pipeline (≤ {pipelineThreshold.toExponential(2)}).
+          Lead SNP pipeline dipertahankan; puncak tambahan dihitung ulang dengan clumping jendela posisi.
+          Anotasi gen, GO, primer, dan file TSV unduhan tetap memakai Lead SNP pipeline.
+        </div>
+      )}
+
       {/* Empty States */}
-      {sortedRows.length === 0 ? (
+      {isLoading ? (
+        <div role="status" style={{ padding: 24, textAlign: "center", background: "#f8fafc", borderRadius: 8, color: "#64748b", fontSize: 13 }}>
+          Memuat Lead SNPs{thresholdText ? ` untuk ambang ${thresholdText}` : ""}...
+        </div>
+      ) : sortedRows.length === 0 ? (
         <div style={{ padding: 24, textAlign: "center", background: "#f8fafc", borderRadius: 8, color: "#64748b", fontSize: 13 }}>
-          {onlySignificant && numPassThreshold === 0 ? (
-            <div>
-              <div style={{ fontSize: 20, marginBottom: 6 }}>ℹ️</div>
-              <strong>Tidak ada lokus yang mencapai ambang signifikan {activeThresholdMethod} (≤ {activeThreshold?.toExponential(2)}).</strong>
-              <p style={{ margin: "6px 0 10px", fontSize: 12 }}>
-                Terdapat {safeLeadSnps.length} kandidat puncak teratas yang dapat dieksplorasi.
-              </p>
-              <button
-                type="button"
-                onClick={() => setOnlySignificant(false)}
-                style={{
-                  padding: "4px 12px",
-                  fontSize: 12,
-                  borderRadius: 6,
-                  border: "1px solid #93c5fd",
-                  background: "#eff6ff",
-                  color: "#1e40af",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                Lihat Seluruh Kandidat Puncak
-              </button>
-            </div>
-          ) : safeLeadSnps.length === 0 ? (
+          {significantSnps.length === 0 ? (
             <div>
               <div style={{ fontSize: 20, marginBottom: 6 }}>🎯</div>
-              <strong>Tidak ada Lead SNPs terdeteksi.</strong>
+              <strong>
+                Tidak ada Lead SNPs terdeteksi{thresholdText ? ` pada ambang ${thresholdText}` : ""}.
+              </strong>
               <p style={{ margin: "4px 0 0", fontSize: 12 }}>
-                Tidak ada varian yang mencapai kriteria clumping pada dataset ini.
+                {belowThresholdSnps.length > 0
+                  ? `Lihat ${belowThresholdSnps.length} peak sugestif / kandidat eksploratif di bawah, atau pilih ambang yang lebih longgar.`
+                  : "Tidak ada varian yang mencapai kriteria clumping pada dataset ini."}
               </p>
             </div>
           ) : (
@@ -272,10 +268,7 @@ export function LeadSnpTable({
               Tidak ada SNP yang cocok dengan kata kunci pencarian.
               <button
                 type="button"
-                onClick={() => {
-                  setFilterText("");
-                  setOnlySignificant(false);
-                }}
+                onClick={() => setFilterText("")}
                 style={{
                   marginLeft: 8,
                   padding: "3px 8px",
@@ -305,7 +298,6 @@ export function LeadSnpTable({
                   { key: "allele", label: "Alel", sortable: false },
                   { key: "p", label: "P-value", sortable: true },
                   { key: "beta", label: "Beta (SE)", sortable: true },
-                  { key: "status", label: "Status Ambang", sortable: false },
                   { key: "clumped", label: "Varian Ter-clump", sortable: false },
                 ].map((col) =>
                   col.sortable ? (
@@ -347,9 +339,6 @@ export function LeadSnpTable({
             <tbody>
               {paginatedRows.map((s, idx) => {
                 const isExpanded = expandedSnp === s.snp;
-                const pNum = Number(s.p);
-                const isValidP = !isNaN(pNum) && pNum > 0;
-                const isSig = activeThreshold && isValidP && pNum <= activeThreshold;
 
                 let clumpedList = [];
                 if (Array.isArray(s.clumped_snps)) {
@@ -382,30 +371,11 @@ export function LeadSnpTable({
                       <td style={{ padding: "8px 12px" }}>
                         <span style={{ fontWeight: 600 }}>{alleleStr}</span>
                       </td>
-                      <td style={{ padding: "8px 12px", fontWeight: 700, color: isSig ? "#dc2626" : "#475569" }}>
+                      <td style={{ padding: "8px 12px", fontWeight: 700, color: threshold ? "#dc2626" : "#475569" }}>
                         {formatP(s.p)}
                       </td>
                       <td style={{ padding: "8px 12px" }}>
                         {formatBeta(s.beta)}{formatSe(s.se)}
-                      </td>
-                      <td style={{ padding: "8px 12px" }}>
-                        {activeThreshold ? (
-                          <span
-                            style={{
-                              padding: "2px 8px",
-                              borderRadius: 4,
-                              fontSize: 10,
-                              fontWeight: 700,
-                              background: isSig ? "#f0fdf4" : "#eff6ff",
-                              color: isSig ? "#15803d" : "#1d4ed8",
-                              border: `1px solid ${isSig ? "#bbf7d0" : "#bfdbfe"}`,
-                            }}
-                          >
-                            {isSig ? `Signifikan (${activeThresholdMethod})` : "Kandidat Puncak"}
-                          </span>
-                        ) : (
-                          <span style={{ color: "#94a3b8" }}>-</span>
-                        )}
                       </td>
                       <td style={{ padding: "8px 12px" }}>
                         {nClumped > 0 ? (
@@ -432,7 +402,7 @@ export function LeadSnpTable({
                     </tr>
                     {isExpanded && clumpedList.length > 0 && (
                       <tr style={{ background: "#f8fafc" }}>
-                        <td colSpan={8} style={{ padding: "8px 16px", fontSize: 11, color: "#475569" }}>
+                        <td colSpan={7} style={{ padding: "8px 16px", fontSize: 11, color: "#475569" }}>
                           <strong>Varian dalam jendela LD ({clumpedList.length}):</strong> {clumpedList.join(", ")}
                         </td>
                       </tr>
@@ -454,7 +424,7 @@ export function LeadSnpTable({
         </div>
       )}
 
-      {safeSuggestiveSnps.length > 0 && (
+      {!isLoading && belowThresholdSnps.length > 0 && (
         <div
           style={{
             marginTop: 8,
@@ -468,10 +438,10 @@ export function LeadSnpTable({
         >
           <div>
             <h5 style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: "#92400e" }}>
-              Peak Sugestif / Kandidat Eksploratif ({safeSuggestiveSnps.length})
+              Peak Sugestif / Kandidat Eksploratif ({belowThresholdSnps.length})
             </h5>
             <p style={{ margin: "3px 0 0", fontSize: 12, color: "#78350f" }}>
-              Puncak eksploratif di bawah ambang signifikan utama; tidak digolongkan sebagai Lead SNP signifikan.
+              Puncak independen yang tidak lolos ambang aktif{thresholdText ? ` (${thresholdText})` : ""}; tidak digolongkan sebagai Lead SNP signifikan.
             </p>
           </div>
           <div style={{ overflowX: "auto", border: "1px solid #fcd34d", borderRadius: 6, background: "#fff" }}>
@@ -487,7 +457,7 @@ export function LeadSnpTable({
                 </tr>
               </thead>
               <tbody>
-                {safeSuggestiveSnps.map((s, idx) => {
+                {belowThresholdSnps.map((s, idx) => {
                   const a1 = s.a1 || s.alt || "-";
                   const a0 = s.a0 || s.ref || "-";
                   const alleleStr = a1 === "-" && a0 === "-" ? "-" : `${a1}/${a0}`;

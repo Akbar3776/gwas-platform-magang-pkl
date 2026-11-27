@@ -33,6 +33,27 @@ describe("Tables accessibility (A36)", () => {
     expect(chrTh).toHaveAttribute("aria-sort", "ascending");
   });
 
+  test("LeadSnpTable keeps only SNPs passing the active threshold in the main table", () => {
+    render(
+      <LeadSnpTable
+        leadSnps={[
+          { snp: "rs_sig", chr: 1, pos: 500, p: 1e-9 },
+          { snp: "rs_above", chr: 2, pos: 1200, p: 2e-6 },
+        ]}
+        suggestiveSnps={[{ snp: "rs_sug", chr: 3, pos: 900, p: 8e-6 }]}
+        activeThreshold={5e-7}
+        activeThresholdMethod="Bonferroni"
+      />
+    );
+
+    expect(screen.getByText(/1 Lokus Teridentifikasi/i)).toBeInTheDocument();
+    const tables = screen.getAllByRole("table");
+    expect(within(tables[0]).getByText("rs_sig")).toBeInTheDocument();
+    expect(within(tables[0]).queryByText("rs_above")).not.toBeInTheDocument();
+    const lowerRows = within(tables[1]).getAllByRole("row").slice(1);
+    expect(lowerRows.map((r) => r.cells[0].textContent)).toEqual(["rs_above", "rs_sug"]);
+  });
+
   test("PeakComparisonTable filter cards use native buttons with aria-pressed", () => {
     render(
       <PeakComparisonTable
