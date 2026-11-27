@@ -119,8 +119,12 @@ export async function fetchThresholdsData(jobId, signal) {
 /**
  * Mengambil daftar Lead SNPs hasil clumping (Fase 4F).
  */
-export async function fetchLeadSnpsData(jobId, signal) {
-  const response = await apiFetch(`/results/${jobId}/lead-snps`, {
+export async function fetchLeadSnpsData(jobId, signal, pThreshold = null) {
+  const query =
+    typeof pThreshold === "number" && Number.isFinite(pThreshold) && pThreshold > 0
+      ? `?p_threshold=${encodeURIComponent(String(pThreshold))}`
+      : "";
+  const response = await apiFetch(`/results/${jobId}/lead-snps${query}`, {
     signal,
     headers: { Accept: "application/json" },
   });

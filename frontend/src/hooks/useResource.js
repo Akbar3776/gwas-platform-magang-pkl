@@ -4,12 +4,13 @@ import { formatApiError } from "../api/formatApiError";
 /**
  * Hook generik untuk mengambil resource API per `jobId` dengan AbortController,
  * active-controller guard agar response basi tidak menimpa job aktif,
- * serta status `isLoading`, `error`, dan `refetch`.
+ * serta status `isLoading`, `error`, dan `refetch`. Ubah `key` untuk memuat ulang
+ * resource yang sama dengan parameter berbeda (fetcher terbaru selalu dipakai).
  */
 export function useResource(
   fetcher,
   jobId,
-  { enabled = true, fallbackMessage = "Gagal memuat data." } = {}
+  { enabled = true, fallbackMessage = "Gagal memuat data.", key = null } = {}
 ) {
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(Boolean(enabled && jobId));
@@ -52,7 +53,8 @@ export function useResource(
         if (controllerRef.current !== controller) return;
         setIsLoading(false);
       });
-  }, [enabled, fallbackMessage, jobId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `key` sengaja memicu muat ulang
+  }, [enabled, fallbackMessage, jobId, key]);
 
   useEffect(() => {
     load();
