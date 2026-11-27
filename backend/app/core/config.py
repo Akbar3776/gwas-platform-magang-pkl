@@ -110,6 +110,14 @@ class Settings(BaseSettings):
     GO_OBO_MAX_BYTES: int = int(os.getenv("GO_OBO_MAX_BYTES", "209715200"))
     GO_OBO_MAX_LINES: int = int(os.getenv("GO_OBO_MAX_LINES", "2000000"))
 
+    # -- Batas Unggahan Indeks Ortolog BLAST (G13) --
+    ORTHOLOG_MAX_UPLOAD_BYTES: int = int(os.getenv("ORTHOLOG_MAX_UPLOAD_BYTES", "99614720"))
+    ORTHOLOG_MAX_DECOMPRESSED_BYTES: int = int(
+        os.getenv("ORTHOLOG_MAX_DECOMPRESSED_BYTES", "536870912")
+    )
+    ORTHOLOG_MAX_LINES: int = int(os.getenv("ORTHOLOG_MAX_LINES", "10000000"))
+    ORTHOLOG_MAX_QUERIES: int = int(os.getenv("ORTHOLOG_MAX_QUERIES", "500000"))
+
     @model_validator(mode="after")
     def validate_workflow_settings(self) -> "Settings":
         if self.CHROM_SPLIT_THRESHOLD_BP <= 0:
@@ -143,6 +151,14 @@ class Settings(BaseSettings):
             raise ValueError("GO_OBO_MAX_BYTES harus lebih besar dari 0.")
         if self.GO_OBO_MAX_LINES <= 0:
             raise ValueError("GO_OBO_MAX_LINES harus lebih besar dari 0.")
+        if self.ORTHOLOG_MAX_UPLOAD_BYTES <= 0:
+            raise ValueError("ORTHOLOG_MAX_UPLOAD_BYTES harus lebih besar dari 0.")
+        if self.ORTHOLOG_MAX_DECOMPRESSED_BYTES <= 0:
+            raise ValueError("ORTHOLOG_MAX_DECOMPRESSED_BYTES harus lebih besar dari 0.")
+        if self.ORTHOLOG_MAX_LINES <= 0:
+            raise ValueError("ORTHOLOG_MAX_LINES harus lebih besar dari 0.")
+        if self.ORTHOLOG_MAX_QUERIES <= 0:
+            raise ValueError("ORTHOLOG_MAX_QUERIES harus lebih besar dari 0.")
         return self
 
     if _HAS_PYDANTIC_SETTINGS:

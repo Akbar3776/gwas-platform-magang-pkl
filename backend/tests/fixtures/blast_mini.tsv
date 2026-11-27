@@ -1,0 +1,8 @@
+Query_id	Subject_id	alignment_length	mismatches	gap_openings	query_start	query_end	subject_start	subject_end	%identity	e-value	bit_score
+# komentar diabaikan
+Asa7G00205	AT3G05510.2	29.07	258	141	6	1	232	115	356	2e-21	99.4
+Asa7G00205	AT5G01010.1	25.10	200	130	5	10	200	50	240	1e-12	72.0
+Asa1G00001	AT1G00010.2	45.00	100	50	1	1	100	1	100	1e-30	120.0
+Asa1G00001	AT1G00010.1	45.00	100	50	1	1	100	1	100	1e-30	120.0
+Asa2G00002	AT2G00020.1	50.00	120	40	0	1	120	1	120	1e-25	110.0
+Asa2G00002	AT2G00010.1	50.00	120	40	0	1	120	1	120	1e-25	110.0

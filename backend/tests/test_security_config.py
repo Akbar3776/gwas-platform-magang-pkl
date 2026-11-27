@@ -136,3 +136,27 @@ def test_go_upload_limit_settings_defaults_and_validation(monkeypatch):
     ):
         with pytest.raises(ValueError):
             config.Settings(**bad_overrides)
+
+
+def test_ortholog_settings_defaults_and_validation(monkeypatch):
+    for key in (
+        "ORTHOLOG_MAX_UPLOAD_BYTES",
+        "ORTHOLOG_MAX_DECOMPRESSED_BYTES",
+        "ORTHOLOG_MAX_LINES",
+        "ORTHOLOG_MAX_QUERIES",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    cfg = config.Settings()
+    assert cfg.ORTHOLOG_MAX_UPLOAD_BYTES == 99_614_720
+    assert cfg.ORTHOLOG_MAX_DECOMPRESSED_BYTES == 536_870_912
+    assert cfg.ORTHOLOG_MAX_LINES == 10_000_000
+    assert cfg.ORTHOLOG_MAX_QUERIES == 500_000
+
+    for bad_overrides in (
+        {"ORTHOLOG_MAX_UPLOAD_BYTES": 0},
+        {"ORTHOLOG_MAX_DECOMPRESSED_BYTES": -1},
+        {"ORTHOLOG_MAX_LINES": 0},
+        {"ORTHOLOG_MAX_QUERIES": 0},
+    ):
+        with pytest.raises(ValueError):
+            config.Settings(**bad_overrides)
