@@ -131,6 +131,8 @@ def test_go_upload_limit_settings_defaults_and_validation(monkeypatch):
         {"UPLOAD_TEXT_MAX_LINE_BYTES": 0},
         {"GO_MAPPING_MIN_VALID_RATIO": 0.0},
         {"GO_MAPPING_MIN_VALID_RATIO": 1.1},
+        {"GO_OBO_MAX_BYTES": 0},
+        {"GO_OBO_MAX_LINES": 0},
     ):
         with pytest.raises(ValueError):
             config.Settings(**bad_overrides)

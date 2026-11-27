@@ -1,0 +1,86 @@
+format-version: 1.2
+data-version: releases/2099-01-01
+ontology: go
+
+[Term]
+id: GO:0006357
+name: regulation of transcription by RNA polymerase II
+namespace: biological_process
+
+[Term]
+id: GO:0016020
+name: membrane
+namespace: cellular_component
+alt_id: GO:0016021
+
+[Term]
+id: GO:0008146
+name: sulfotransferase activity
+namespace: molecular_function
+
+[Term]
+id: GO:0045259
+name: proton-transporting ATP synthase complex
+namespace: cellular_component
+
+[Term]
+id: GO:0000275
+name: obsolete mitochondrial proton-transporting ATP synthase complex, catalytic core F(1)
+namespace: cellular_component
+is_obsolete: true
+replaced_by: GO:0045259
+
+[Term]
+id: GO:9000001
+name: obsolete step one
+namespace: biological_process
+is_obsolete: true
+replaced_by: GO:9000002
+
+[Term]
+id: GO:9000002
+name: obsolete step two
+namespace: biological_process
+is_obsolete: true
+replaced_by: GO:0006357
+
+[Term]
+id: GO:0055114
+name: obsolete oxidation-reduction process
+namespace: biological_process
+is_obsolete: true
+consider: GO:0016491
+
+[Term]
+id: GO:9000003
+name: obsolete ambiguous
+namespace: biological_process
+is_obsolete: true
+replaced_by: GO:0006357
+replaced_by: GO:0008146
+
+[Term]
+id: GO:9000004
+name: obsolete cycle A
+namespace: biological_process
+is_obsolete: true
+replaced_by: GO:9000005
+
+[Term]
+id: GO:9000005
+name: obsolete cycle B
+namespace: biological_process
+is_obsolete: true
+replaced_by: GO:9000004
+
+[Term]
+id: GO:9000006
+name: obsolete pointing to alt
+namespace: cellular_component
+is_obsolete: true
+replaced_by: GO:0016021
+
+[Typedef]
+id: part_of
+name: part of
+namespace: external

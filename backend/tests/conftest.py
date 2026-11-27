@@ -145,6 +145,21 @@ def _isolate_storage_root(tmp_path_factory, monkeypatch):
     yield root
 
 
+@pytest.fixture(autouse=True)
+def _isolate_go_obo(tmp_path_factory, monkeypatch):
+    """Isolasi test dari ENV GO_OBO_PATH host/container dan bersihkan cache OBO antar test."""
+    from app.core.config import settings
+    from app.services.go_ontology_service import clear_go_ontology_cache
+
+    absent = tmp_path_factory.mktemp("go_obo_absent") / "go-basic.obo"
+    monkeypatch.setattr(settings, "GO_OBO_PATH", str(absent))
+    clear_go_ontology_cache()
+    try:
+        yield
+    finally:
+        clear_go_ontology_cache()
+
+
 @pytest.fixture
 def overflow_dataset(tmp_path, monkeypatch):
     """Fixture dataset dengan kromosom chr7 melebihi ambang split terskala untuk uji migrasi."""

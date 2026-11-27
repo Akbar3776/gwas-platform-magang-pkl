@@ -105,6 +105,11 @@ class Settings(BaseSettings):
     GO_MAPPING_MIN_VALID_RATIO: float = float(os.getenv("GO_MAPPING_MIN_VALID_RATIO", "0.5"))
     UPLOAD_TEXT_MAX_LINE_BYTES: int = int(os.getenv("UPLOAD_TEXT_MAX_LINE_BYTES", "65536"))
 
+    # -- Ontologi GO Lokal (G07) --
+    GO_OBO_PATH: str = os.getenv("GO_OBO_PATH", "")
+    GO_OBO_MAX_BYTES: int = int(os.getenv("GO_OBO_MAX_BYTES", "209715200"))
+    GO_OBO_MAX_LINES: int = int(os.getenv("GO_OBO_MAX_LINES", "2000000"))
+
     @model_validator(mode="after")
     def validate_workflow_settings(self) -> "Settings":
         if self.CHROM_SPLIT_THRESHOLD_BP <= 0:
@@ -134,6 +139,10 @@ class Settings(BaseSettings):
             raise ValueError("UPLOAD_TEXT_MAX_LINE_BYTES harus lebih besar dari 0.")
         if not (0.0 < self.GO_MAPPING_MIN_VALID_RATIO <= 1.0):
             raise ValueError("GO_MAPPING_MIN_VALID_RATIO harus berada dalam rentang (0, 1].")
+        if self.GO_OBO_MAX_BYTES <= 0:
+            raise ValueError("GO_OBO_MAX_BYTES harus lebih besar dari 0.")
+        if self.GO_OBO_MAX_LINES <= 0:
+            raise ValueError("GO_OBO_MAX_LINES harus lebih besar dari 0.")
         return self
 
     if _HAS_PYDANTIC_SETTINGS:
