@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 
 from app.core.config import settings
+from app.db.engine.models import AnalysisJob, Dataset, JobStatus, UploadStatus
+from app.services import annotation_service
 from app.services.go_enrichment_service import (
     resolve_job_contig_pattern,
     run_go_enrichment_analysis,
@@ -88,3 +91,72 @@ def test_background_universe_filters_non_primary_contigs_and_keeps_legacy_candid
         )
     assert res_fb["go_stats"]["background"]["source"] == "mapping_file"
     assert any("Background GFF kosong" in r.message for r in caplog.records)
+
+
+def test_results_recompute_passes_job_feature_type_and_contig_pattern(tmp_path: Path, monkeypatch):
+    from app.api.routes import results as results_routes
+
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    gff = tmp_path / "datasets" / "anno.gff3"
+    gff.parent.mkdir(parents=True, exist_ok=True)
+    gff.write_text(
+        "##gff-version 3\n"
+        "chr1\tEVM\tmRNA\t100\t200\t.\t+\t.\tID=G1.1;Ontology_term=GO:0006357\n",
+        encoding="utf-8",
+    )
+    ds = Dataset(
+        id=uuid.uuid4(),
+        owner_id=uuid.uuid4(),
+        original_filename="c.vcf",
+        storage_path=str(tmp_path / "c.vcf"),
+        annotation_file_path=str(gff),
+        file_size_bytes=10,
+        upload_status=UploadStatus.UPLOADED,
+    )
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        dataset_id=ds.id,
+        triggered_by=ds.owner_id,
+        overall_status=JobStatus.COMPLETED,
+        parameters={
+            "annotation": {"feature_type": "mRNA"},
+            "contig_filter": {"pattern": settings.NON_PRIMARY_CONTIG_REGEX},
+        },
+    )
+
+    seen_feature_types: list[str] = []
+    orig_parse = annotation_service.parse_gff3_genes
+
+    def _spy_parse(path, feature_type="gene"):
+        seen_feature_types.append(feature_type)
+        return orig_parse(path, feature_type=feature_type)
+
+    monkeypatch.setattr(annotation_service, "parse_gff3_genes", _spy_parse)
+
+    class _FakeDB:
+        def query(self, model):
+            class _Q:
+                def filter(self, *a):
+                    return self
+
+                def first(self):
+                    if model is Dataset:
+                        return ds
+                    if model is AnalysisJob:
+                        return job
+                    return None
+
+            return _Q()
+
+    anno_dir = tmp_path / "jobs" / str(job.id) / "annotation"
+    anno_dir.mkdir(parents=True, exist_ok=True)
+    (anno_dir / "candidate_genes.json").write_text(
+        '{"rows": [{"snp": "s1", "chr": "1", "pos": 150, "nearest_gene": "G1.1", "category": "Genik"}], "candidate_genes_list": ["G1.1"]}',
+        encoding="utf-8",
+    )
+
+    out = results_routes.get_go_enrichment_data(job.id, db=_FakeDB())
+    assert seen_feature_types
+    assert all(ft == "mRNA" for ft in seen_feature_types)
+    assert out["status"] == "completed"
+    assert out["go_stats"]["background"]["pattern_source"] == "job"

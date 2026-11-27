@@ -8,6 +8,7 @@ from __future__ import annotations
 from functools import lru_cache
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 import uuid
@@ -560,6 +561,7 @@ def _resolve_dataset_fasta_path(db: Session, job: AnalysisJob | None) -> Path | 
 def _normalize_candidate_genes_payload(
     data: dict[str, Any],
     *,
+    job: AnalysisJob | None = None,
     gff_path: Path | None = None,
     go_mapping_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -642,20 +644,6 @@ def _normalize_candidate_genes_payload(
     win_kb = int(data.get("window_kb") or max(1, round(win_bp / 1000)))
     sorted_genes = sorted(unique_genes)
 
-    go_enrichment = data.get("go_enrichment")
-    if not isinstance(go_enrichment, dict) or not go_enrichment.get("go_table"):
-        try:
-            from app.services.go_enrichment_service import run_go_enrichment_analysis
-
-            go_enrichment = run_go_enrichment_analysis(
-                mapped_rows=normalized_rows,
-                candidate_genes_list=sorted_genes,
-                gff_path=gff_path,
-                go_mapping_path=go_mapping_path,
-            )
-        except Exception:
-            go_enrichment = None
-
     return {
         **data,
         "status": "completed",
@@ -666,8 +654,133 @@ def _normalize_candidate_genes_payload(
         "candidate_genes_list": sorted_genes,
         "rows": normalized_rows,
         "mappings": normalized_rows,
-        "go_enrichment": go_enrichment,
+        "go_enrichment": data.get("go_enrichment"),
     }
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def refresh_go_if_stale(
+    db: Session,
+    job: AnalysisJob | None,
+    cand_payload: dict[str, Any] | None,
+    anno_dir: Path,
+    *,
+    cached_go: dict[str, Any] | None = None,
+    gff_path: Path | None = None,
+    go_mapping_path: Path | None = None,
+) -> tuple[dict[str, Any] | None, bool]:
+    """Menyegarkan hasil GO job secara lazy dan non-destruktif bila fingerprint input berubah."""
+    from app.services import go_enrichment_service as go_svc
+    from app.services.go_ontology_service import load_go_ontology
+
+    if gff_path is None:
+        gff_path = _resolve_dataset_gff_path(db, job)
+    if go_mapping_path is None:
+        go_mapping_path = _resolve_dataset_go_mapping_path(db, job)
+
+    go_file = anno_dir / "go_enrichment.json"
+    current_go: dict[str, Any] | None = cached_go if isinstance(cached_go, dict) else None
+    if current_go is None and go_file.is_file():
+        try:
+            loaded = json.loads(go_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                current_go = loaded
+        except Exception:
+            current_go = None
+    if current_go is None and isinstance(cand_payload, dict) and isinstance(cand_payload.get("go_enrichment"), dict):
+        current_go = cand_payload["go_enrichment"]
+
+    params = job.parameters if job is not None else None
+    feature_type = go_svc.resolve_job_feature_type(params)
+    contig_pattern, contig_pattern_source = go_svc.resolve_job_contig_pattern(params)
+    trait_label = str(((params or {}).get("phenotype") or {}).get("trait") or "Candidate Genes")
+
+    expected_fp = go_svc.compute_go_fingerprint(
+        mapping_sha256=go_svc.file_sha256_cached(go_mapping_path),
+        gff_sha256=go_svc.file_sha256_cached(gff_path),
+        obo=load_go_ontology(),
+        ortholog_sha256=None,
+        feature_type=feature_type,
+        contig_pattern=contig_pattern,
+        allow_synthetic=go_svc._allow_synthetic_annotation(),
+    )
+    stored_fp = (
+        ((current_go.get("go_stats") or {}).get("fingerprint"))
+        if isinstance(current_go, dict)
+        else None
+    )
+    if isinstance(current_go, dict) and stored_fp == expected_fp and stored_fp is not None:
+        return current_go, False
+
+    gff_available = bool(gff_path is not None and gff_path.is_file())
+    if not gff_available and isinstance(current_go, dict):
+        bg_src = str(((current_go.get("go_stats") or {}).get("background") or {}).get("source") or "")
+        made_with_gff = bg_src.startswith("gff_") or (
+            not current_go.get("go_stats") and bool(current_go.get("go_table"))
+        )
+        if made_with_gff:
+            return {**current_go, "stale": True, "stale_reason": "gff_unavailable"}, False
+
+    if not isinstance(cand_payload, dict):
+        return current_go, False
+    mapped_rows = cand_payload.get("rows") or cand_payload.get("mappings") or []
+    cand_genes = cand_payload.get("candidate_genes_list") or []
+    if not mapped_rows and not cand_genes:
+        return current_go, False
+
+    try:
+        new_go = go_svc.run_go_enrichment_analysis(
+            mapped_rows=mapped_rows,
+            candidate_genes_list=cand_genes,
+            trait_name=trait_label,
+            output_dir=anno_dir,
+            gff_path=gff_path,
+            go_mapping_path=go_mapping_path,
+            feature_type=feature_type,
+            contig_filter_pattern=contig_pattern,
+            contig_pattern_source=contig_pattern_source,
+        )
+    except Exception:
+        logger.exception("Gagal menyegarkan hasil GO untuk job=%s", getattr(job, "id", None))
+        if isinstance(current_go, dict):
+            return {**current_go, "stale": True, "stale_reason": "recompute_failed"}, False
+        return None, False
+
+    if go_file.is_file():
+        try:
+            prev_payload = json.loads(go_file.read_text(encoding="utf-8"))
+        except Exception:
+            prev_payload = current_go
+        if isinstance(prev_payload, dict):
+            _write_json_atomic(anno_dir / "go_enrichment.previous.json", prev_payload)
+    elif isinstance(current_go, dict):
+        _write_json_atomic(anno_dir / "go_enrichment.previous.json", current_go)
+
+    _write_json_atomic(go_file, new_go)
+    cand_file = anno_dir / "candidate_genes.json"
+    if cand_file.is_file() or isinstance(cand_payload, dict):
+        try:
+            base_cand = (
+                json.loads(cand_file.read_text(encoding="utf-8"))
+                if cand_file.is_file()
+                else dict(cand_payload)
+            )
+            if isinstance(base_cand, dict):
+                base_cand["go_enrichment"] = new_go
+                _write_json_atomic(cand_file, base_cand)
+        except Exception:
+            logger.exception("Gagal memperbarui candidate_genes.json untuk job=%s", getattr(job, "id", None))
+
+    return new_go, True
 
 
 @router.get("/{job_id}/candidate-genes", summary="Pemetaan anotasi gen kandidat GFF3 & GO (Fase 5)")
@@ -678,12 +791,25 @@ def get_candidate_genes_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -
     job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
     gff_candidate = _resolve_dataset_gff_path(db, job)
     go_mapping_candidate = _resolve_dataset_go_mapping_path(db, job)
+    anno_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "annotation"
     if isinstance(data, dict) and (data.get("rows") or data.get("mappings")):
-        return _normalize_candidate_genes_payload(
+        norm = _normalize_candidate_genes_payload(
             data,
+            job=job,
             gff_path=gff_candidate,
             go_mapping_path=go_mapping_candidate,
         )
+        refreshed_go, _ = refresh_go_if_stale(
+            db,
+            job,
+            norm,
+            anno_dir,
+            gff_path=gff_candidate,
+            go_mapping_path=go_mapping_candidate,
+        )
+        if refreshed_go is not None:
+            norm["go_enrichment"] = refreshed_go
+        return norm
 
     # Pemulihan on-the-fly jika dataset memiliki file GFF3 dan job memiliki Lead SNPs
     if job is not None and job.dataset_id is not None:
@@ -734,12 +860,21 @@ def get_candidate_genes_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -
                         "window_kb": win_kb,
                         "counts": category_counts,
                         "rows": mapped_rows,
-                    }, gff_path=gff_candidate, go_mapping_path=go_mapping_candidate)
+                    }, job=job, gff_path=gff_candidate, go_mapping_path=go_mapping_candidate)
 
-                    anno_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "annotation"
                     anno_dir.mkdir(parents=True, exist_ok=True)
                     cand_file = anno_dir / "candidate_genes.json"
-                    cand_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                    _write_json_atomic(cand_file, payload)
+                    refreshed_go, _ = refresh_go_if_stale(
+                        db,
+                        job,
+                        payload,
+                        anno_dir,
+                        gff_path=gff_candidate,
+                        go_mapping_path=go_mapping_candidate,
+                    )
+                    if refreshed_go is not None:
+                        payload["go_enrichment"] = refreshed_go
 
                     go_genes = payload.get("candidate_genes_list") or []
                     (anno_dir / "Daftar_Gen_Untuk_GO.txt").write_text(
@@ -777,38 +912,31 @@ def get_candidate_genes_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -
 def get_go_enrichment_data(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
     anno_dir = Path(settings.STORAGE_ROOT) / "jobs" / str(job_id) / "annotation"
     go_file = anno_dir / "go_enrichment.json"
+    cached_go: dict[str, Any] | None = None
     if go_file.is_file():
         try:
             loaded = json.loads(go_file.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict) and loaded.get("go_table"):
-                return loaded
+            if isinstance(loaded, dict) and (loaded.get("go_table") or loaded.get("status")):
+                cached_go = loaded
         except Exception:
-            pass
+            cached_go = None
 
-    cand = get_candidate_genes_data(job_id, db)
-    if isinstance(cand, dict) and isinstance(cand.get("go_enrichment"), dict):
-        go_payload = cand["go_enrichment"]
-        try:
-            from app.services.go_enrichment_service import run_go_enrichment_analysis
+    job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
+    cand_raw = _load_job_json_result(
+        job_id, db, ResultType.CANDIDATE_GENES, "annotation", "candidate_genes.json"
+    )
+    if isinstance(cand_raw, dict) and (cand_raw.get("rows") or cand_raw.get("mappings")):
+        cand_norm = _normalize_candidate_genes_payload(cand_raw, job=job)
+        refreshed, _ = refresh_go_if_stale(db, job, cand_norm, anno_dir, cached_go=cached_go)
+        if isinstance(refreshed, dict):
+            return refreshed
+    else:
+        cand = get_candidate_genes_data(job_id, db)
+        if isinstance(cand, dict) and isinstance(cand.get("go_enrichment"), dict):
+            return cand["go_enrichment"]
 
-            job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
-            trait_label = str(
-                (((job.parameters if job else None) or {}).get("phenotype") or {}).get("trait")
-                or "Candidate Genes"
-            )
-            go_payload = run_go_enrichment_analysis(
-                mapped_rows=cand.get("rows") or [],
-                candidate_genes_list=cand.get("candidate_genes_list") or [],
-                trait_name=trait_label,
-                output_dir=anno_dir,
-                gff_path=_resolve_dataset_gff_path(db, job),
-                go_mapping_path=_resolve_dataset_go_mapping_path(db, job),
-            )
-            go_file.write_text(json.dumps(go_payload, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-        return go_payload
-
+    if isinstance(cached_go, dict):
+        return cached_go
     return {"status": "not_available", "job_id": str(job_id), "go_table": [], "enrichment_terms": []}
 
 

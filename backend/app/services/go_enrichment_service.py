@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+import functools
+import hashlib
+import json
 import logging
 import math
 from pathlib import Path
@@ -647,6 +650,62 @@ def resolve_job_contig_pattern(job_parameters: dict[str, Any] | None) -> tuple[s
     return "", "legacy_none"
 
 
+def resolve_job_feature_type(job_parameters: dict[str, Any] | None) -> str:
+    """Mengambil feature_type GFF3 dari parameter job dengan default 'gene'."""
+    params = job_parameters if isinstance(job_parameters, dict) else {}
+    anno = params.get("annotation")
+    if isinstance(anno, dict) and anno.get("feature_type"):
+        return str(anno["feature_type"])
+    return "gene"
+
+
+GO_ALGO_VERSION = 2
+
+
+@functools.lru_cache(maxsize=64)
+def _file_sha256_cached_impl(resolved_path: str, mtime_ns: int, size: int) -> str:
+    digest = hashlib.sha256()
+    with Path(resolved_path).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def file_sha256_cached(path: str | Path | None) -> str | None:
+    """Menghitung SHA-256 berkas secara streaming dengan cache (path, mtime_ns, size)."""
+    if path is None:
+        return None
+    p = Path(path)
+    if not p.is_file():
+        return None
+    st = p.stat()
+    return _file_sha256_cached_impl(str(p.resolve()), st.st_mtime_ns, st.st_size)
+
+
+def compute_go_fingerprint(
+    *,
+    mapping_sha256: str | None,
+    gff_sha256: str | None,
+    obo: GoOntology | None,
+    ortholog_sha256: str | None,
+    feature_type: str,
+    contig_pattern: str,
+    allow_synthetic: bool,
+) -> str:
+    """Menghitung fingerprint deterministik seluruh input GO enrichment untuk deteksi cache usang."""
+    payload = {
+        "algo": GO_ALGO_VERSION,
+        "mapping": mapping_sha256,
+        "gff": gff_sha256,
+        "obo": (obo.version, obo.sha256) if obo is not None else None,
+        "ortholog": ortholog_sha256,
+        "feature_type": feature_type,
+        "contig_pattern": contig_pattern,
+        "synthetic": allow_synthetic,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 def run_go_enrichment_analysis(
     mapped_rows: list[dict[str, Any]],
     candidate_genes_list: list[str] | None = None,
@@ -986,10 +1045,24 @@ def run_go_enrichment_analysis(
 
     pct_cand_matched = round(((n_cand_exact + n_cand_isoform) / len(go_table)) * 100, 2) if go_table else 0.0
     pct_gff_matched = round((n_gff_features_matched / n_gff_features) * 100, 2) if n_gff_features > 0 else 0.0
+    mapping_sha = file_sha256_cached(go_mapping_path) if mapping_available else None
+    gff_sha = file_sha256_cached(gff_path)
+    fingerprint = compute_go_fingerprint(
+        mapping_sha256=mapping_sha,
+        gff_sha256=gff_sha,
+        obo=ontology,
+        ortholog_sha256=None,
+        feature_type=feature_type,
+        contig_pattern=effective_pattern,
+        allow_synthetic=allow_synthetic,
+    )
 
     go_stats = {
+        "algo_version": GO_ALGO_VERSION,
+        "fingerprint": fingerprint,
         "mapping": {
             "available": mapping_available,
+            "sha256": mapping_sha,
             "n_genes_raw": n_genes_raw,
             "n_pairs_raw": n_pairs_raw,
             "n_genes": n_genes_norm,
