@@ -13,18 +13,18 @@ gen beranotasi GO (`>= 1` istilah GO), diikuti koreksi FDR Benjamini-Hochberg.
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 import logging
 import math
-import os
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from scipy.stats import hypergeom
 
 from app.core.config import settings
-from app.services.gene_id_utils import GENE_ID_RE
+from app.services.gene_id_utils import GENE_ID_RE, strip_isoform_suffix
 from app.services.upload_validation import UploadValidationError, open_lines_bounded
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,8 @@ _DOMAIN_MAP = {
 
 
 def _allow_synthetic_annotation() -> bool:
+    import os
+
     return os.getenv("ALLOW_SYNTHETIC_ANNOTATION", "").strip().lower() in ("1", "true", "yes")
 
 
@@ -225,6 +227,72 @@ def parse_go_annotation_file(mapping_path: str | Path) -> tuple[dict[str, list[d
     return annotations, summary
 
 
+@dataclass
+class GoAnnotationIndex:
+    """Indeks pemetaan GO dengan pencocokan exact lalu fallback satu level isoform."""
+
+    exact: dict[str, dict[str, dict[str, str]]]
+    base: dict[str, dict[str, dict[str, str]]]
+
+    def lookup(
+        self,
+        gene_id: Any,
+    ) -> tuple[list[dict[str, str]], Literal["exact", "isoform_fallback", "none"]]:
+        k = _normalize_gene_key(gene_id)
+        if not k:
+            return [], "none"
+        if k in self.exact:
+            return list(self.exact[k].values()), "exact"
+        if k in self.base:
+            return list(self.base[k].values()), "isoform_fallback"
+        base_k = strip_isoform_suffix(k)
+        if base_k != k:
+            if base_k in self.exact:
+                return list(self.exact[base_k].values()), "isoform_fallback"
+            if base_k in self.base:
+                return list(self.base[base_k].values()), "isoform_fallback"
+        return [], "none"
+
+
+def build_go_annotation_index(
+    annotations: dict[str, list[dict[str, str]]],
+) -> GoAnnotationIndex:
+    """Membangun GoAnnotationIndex (exact dan base level gen) dari hasil parse pemetaan GO."""
+    exact: dict[str, dict[str, dict[str, str]]] = {}
+    base: dict[str, dict[str, dict[str, str]]] = {}
+
+    for gkey, term_list in annotations.items():
+        norm_key = _normalize_gene_key(gkey)
+        if not norm_key:
+            continue
+        exact_map = exact.setdefault(norm_key, {})
+        base_key = strip_isoform_suffix(norm_key)
+        base_map = base.setdefault(base_key, {})
+
+        for term in term_list:
+            go_id = str(term.get("go_id") or "").strip().upper()
+            if not go_id:
+                continue
+            domain = term.get("ontology") or "unknown"
+            desc = term.get("description") or ""
+            for target_map in (exact_map, base_map):
+                existing = target_map.get(go_id)
+                if existing is None:
+                    target_map[go_id] = {
+                        "go_id": go_id,
+                        "ontology": domain,
+                        "description": desc,
+                        "gene_raw": term.get("gene_raw", norm_key),
+                    }
+                else:
+                    if existing.get("ontology", "unknown") == "unknown" and domain != "unknown":
+                        existing["ontology"] = domain
+                    if not existing.get("description") and desc:
+                        existing["description"] = desc
+
+    return GoAnnotationIndex(exact=exact, base=base)
+
+
 _FORMULA_PREFIX_RE = re.compile(r"^[=+\-@\t\r]")
 _NUMERIC_STRING_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
 
@@ -279,12 +347,18 @@ def _merge_gene_go_terms(
     ))
     if clean_gff:
         resolved: list[dict[str, str]] = []
-        for go_id in clean_gff:
+        seen_ids: set[str] = set()
+        for raw_go_id in clean_gff:
+            go_id = raw_go_id
+            if go_id in seen_ids:
+                continue
+            seen_ids.add(go_id)
             extra = uploaded_lookup_by_go.get(go_id)
-            ontology = extra["ontology"] if extra else "unknown"
-            desc = (extra["description"] if extra and extra.get("description") else go_id)
-            resolved.append({"go_id": go_id, "ontology": ontology, "description": desc})
-        return resolved, "gff3", "GFF3 Ontology_term"
+            ontology_val = extra["ontology"] if extra else "unknown"
+            desc = extra["description"] if extra and extra.get("description") else go_id
+            resolved.append({"go_id": go_id, "ontology": ontology_val, "description": desc})
+        if resolved:
+            return resolved, "gff3", "GFF3 Ontology_term"
 
     if uploaded_terms:
         resolved = [
@@ -359,19 +433,21 @@ def _resolve_gene_go_entry(
     }
 
 
-def _collect_gff_go_map(
+def _collect_gff_features(
     gff_path: str | Path | None,
     gff_genes_by_chr: dict[str, list[dict[str, Any]]] | None,
     feature_type: str = "gene",
-) -> dict[str, list[str]]:
+) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
     if gff_genes_by_chr is None and gff_path is not None and Path(gff_path).is_file():
         from app.services.annotation_service import parse_gff3_genes
 
         gff_genes_by_chr, _ = parse_gff3_genes(gff_path, feature_type=feature_type)
 
+    features: list[dict[str, Any]] = []
     out: dict[str, list[str]] = {}
     for glist in (gff_genes_by_chr or {}).values():
         for g in glist:
+            features.append(g)
             gkey = _normalize_gene_key(g.get("gene_id"))
             if not gkey:
                 continue
@@ -381,7 +457,69 @@ def _collect_gff_go_map(
                 for tid in go_ids:
                     if tid not in existing:
                         existing.append(tid)
-    return out
+    return features, out
+
+
+def _fmt_id_int(value: int) -> str:
+    return f"{value:,}".replace(",", ".")
+
+
+def _fmt_id_pct(value: float) -> str:
+    rounded = round(float(value), 2)
+    if rounded.is_integer():
+        return str(int(rounded))
+    return f"{rounded:.2f}".rstrip("0").rstrip(".").replace(".", ",")
+
+
+def format_go_log_lines(
+    payload: dict[str, Any],
+    *,
+    sample_gff_ids: list[str] | None = None,
+    sample_mapping_ids: list[str] | None = None,
+) -> list[str]:
+    """Menyusun ringkasan baris log [GO] dan [WARN] berbahasa Indonesia untuk tahap anotasi."""
+    stats = payload.get("go_stats") or {}
+    if not stats:
+        return []
+
+    lines: list[str] = []
+    mapping = stats.get("mapping") or {}
+    if mapping.get("available"):
+        lines.append(
+            f"[GO] Pemetaan: {_fmt_id_int(int(mapping.get('n_genes_raw', 0)))} gen / "
+            f"{_fmt_id_int(int(mapping.get('n_pairs_raw', 0)))} pasangan mentah -> "
+            f"{_fmt_id_int(int(mapping.get('n_genes', 0)))} gen / "
+            f"{_fmt_id_int(int(mapping.get('n_pairs', 0)))} pasangan (gen, GO) unik setelah normalisasi."
+        )
+
+    match = stats.get("match") or {}
+    n_cand = int(match.get("n_candidates", 0))
+    n_exact = int(match.get("n_exact", 0))
+    n_iso = int(match.get("n_isoform_fallback", 0))
+    n_cand_matched = n_exact + n_iso
+    n_gff = int(match.get("n_gff_features", 0))
+    n_gff_matched = int(match.get("n_gff_features_matched", 0))
+    pct_cand = _fmt_id_pct(float(match.get("pct_candidates_matched", 0.0)))
+    pct_gff = _fmt_id_pct(float(match.get("pct_gff_features_matched", 0.0)))
+    lines.append(
+        f"[GO] Kecocokan ID (feature_type={match.get('feature_type', 'gene')}): "
+        f"kandidat {n_cand_matched}/{n_cand} ({pct_cand}%) "
+        f"[exact {n_exact}, fallback isoform {n_iso}]; "
+        f"seluruh GFF {_fmt_id_int(n_gff_matched)}/{_fmt_id_int(n_gff)} ({pct_gff}%)."
+    )
+
+    bg = stats.get("background") or {}
+    bg_desc = "dari file pemetaan" if bg.get("source", "mapping_file") == "mapping_file" else "semua fitur GFF"
+    lines.append(f"[GO] Background: {_fmt_id_int(int(bg.get('n_universe', 0)))} gen ({bg_desc}).")
+
+    if n_gff > 0 and mapping.get("available") and float(match.get("pct_gff_features_matched", 0.0)) < 10.0:
+        gff_ex = ", ".join(sample_gff_ids or []) or "-"
+        map_ex = ", ".join(sample_mapping_ids or []) or "-"
+        lines.append(
+            f"[WARN] Hanya {pct_gff}% fitur GFF yang memiliki GO. "
+            f"Contoh ID GFF: {gff_ex}; contoh ID file: {map_ex}. Periksa konvensi ID."
+        )
+    return lines
 
 
 def run_go_enrichment_analysis(
@@ -469,14 +607,26 @@ def run_go_enrichment_analysis(
             "enrichment_terms": [],
         }
 
-    gff_go_map = _collect_gff_go_map(gff_path, gff_genes_by_chr, feature_type=feature_type)
-    uploaded_annotations: dict[str, list[dict[str, str]]] = {}
-    if go_mapping_path is not None and Path(go_mapping_path).is_file():
+    gff_features, gff_go_map = _collect_gff_features(gff_path, gff_genes_by_chr, feature_type=feature_type)
+    raw_annotations: dict[str, list[dict[str, str]]] = {}
+    parse_summary: dict[str, Any] = {}
+    mapping_available = bool(go_mapping_path is not None and Path(go_mapping_path).is_file())
+    if mapping_available and go_mapping_path is not None:
         try:
-            uploaded_annotations, _ = parse_go_annotation_file(go_mapping_path)
+            raw_annotations, parse_summary = parse_go_annotation_file(go_mapping_path)
         except UploadValidationError as err:
             logger.warning("Pemetaan GO dilewati: %s", err.code)
-            uploaded_annotations = {}
+            raw_annotations = {}
+            parse_summary = {}
+
+    n_genes_raw = int(parse_summary.get("n_genes_raw", len(raw_annotations)))
+    n_pairs_raw = int(parse_summary.get("n_pairs_raw", sum(len(v) for v in raw_annotations.values())))
+
+    uploaded_annotations = raw_annotations
+    n_genes_norm = n_genes_raw
+    n_pairs_norm = n_pairs_raw
+
+    index = build_go_annotation_index(uploaded_annotations)
 
     uploaded_lookup_by_go: dict[str, dict[str, str]] = {}
     for term_list in uploaded_annotations.values():
@@ -491,35 +641,97 @@ def run_go_enrichment_analysis(
                 if not cur.get("description") and t.get("description"):
                     cur["description"] = t["description"]
 
-    # Bangun semesta latar belakang = semua gen dengan >= 1 GO di GFF3 / file pemetaan GO
+    # Bangun semesta latar belakang di ruang kunci GFF (jika tersedia) atau level gen file pemetaan
     bg_gene_to_go: dict[str, set[str]] = {}
-    for gkey, go_ids in gff_go_map.items():
-        if go_ids:
-            bg_gene_to_go.setdefault(gkey, set()).update(go_ids)
-    for gkey, term_list in uploaded_annotations.items():
-        if gkey not in bg_gene_to_go and term_list:
-            bg_gene_to_go[gkey] = {t["go_id"] for t in term_list}
+    n_gff_features = len(gff_features)
+    n_gff_features_matched = 0
+    gff_keys: set[str] = set()
+    gff_base_keys: set[str] = set()
+
+    if n_gff_features > 0:
+        for feat in gff_features:
+            fkey = _normalize_gene_key(feat.get("gene_id"))
+            if not fkey:
+                continue
+            gff_keys.add(fkey)
+            gff_base_keys.add(strip_isoform_suffix(fkey))
+            feat_explicit = list(
+                dict.fromkeys(
+                    str(tid).strip().upper()
+                    for tid in (feat.get("go_ids") or [])
+                    if _GO_ID_RE.fullmatch(str(tid).strip().upper())
+                )
+            )
+            feat_go_ids = set(feat_explicit)
+
+            if not feat_go_ids:
+                matched_terms, _ = index.lookup(feat.get("gene_id"))
+                feat_go_ids = {t["go_id"] for t in matched_terms}
+
+            if feat_go_ids:
+                n_gff_features_matched += 1
+                bg_gene_to_go.setdefault(fkey, set()).update(feat_go_ids)
+
+        if bg_gene_to_go:
+            bg_source = "gff_all"
+        else:
+            bg_source = "mapping_file"
+            for bkey, term_map in index.base.items():
+                if term_map:
+                    bg_gene_to_go[bkey] = set(term_map.keys())
+            if index.base or n_gff_features_matched > 0:
+                logger.warning("Background GFF kosong (feature_type/pola kontig); memakai file pemetaan.")
+    else:
+        bg_source = "mapping_file"
+        for bkey, term_map in index.base.items():
+            if term_map:
+                bg_gene_to_go[bkey] = set(term_map.keys())
+        if index.base:
+            logger.warning("Background dari file pemetaan (GFF tidak tersedia/kosong).")
+
+    n_mapping_genes_not_in_gff = (
+        sum(1 for b in index.base if b not in gff_keys and b not in gff_base_keys)
+        if n_gff_features > 0
+        else 0
+    )
 
     go_table: list[dict[str, Any]] = []
     term_to_genes: dict[str, dict[str, Any]] = {}
+    n_cand_exact = 0
+    n_cand_isoform = 0
+    n_cand_unmatched = 0
+    n_candidates_outside_universe = 0
 
     for gid in sorted(gene_meta_map.keys()):
         meta = gene_meta_map[gid]
         gkey = _normalize_gene_key(gid)
         explicit_go = list(dict.fromkeys([*(meta.get("go_ids") or []), *gff_go_map.get(gkey, [])]))
+        mapped_terms, match_kind = index.lookup(gid)
 
         resolved = _resolve_gene_go_entry(
             gene_id=gid,
             gene_name=meta.get("gene_name", gid),
             description=meta.get("description", ""),
             explicit_go_ids=explicit_go,
-            uploaded_terms=uploaded_annotations.get(gkey),
+            uploaded_terms=mapped_terms,
             uploaded_lookup_by_go=uploaded_lookup_by_go,
             allow_synthetic=allow_synthetic,
         )
         terms = resolved["terms"]
 
+        if resolved["source"] == "gff3":
+            n_cand_exact += 1
+        elif resolved["source"] == "mapping":
+            if match_kind == "isoform_fallback":
+                n_cand_isoform += 1
+            else:
+                n_cand_exact += 1
+        else:
+            n_cand_unmatched += 1
+
         if resolved["go_terms"] and not resolved["synthetic"]:
+            if gkey not in bg_gene_to_go:
+                n_candidates_outside_universe += 1
             bg_gene_to_go.setdefault(gkey, set()).update(resolved["go_terms"])
 
         go_table.append({
@@ -615,6 +827,37 @@ def run_go_enrichment_analysis(
 
     raw_terms.sort(key=lambda x: (0 if x["ontology"] == "BP" else 1, -x["gene_ratio"], x["p_adjust"]))
 
+    pct_cand_matched = round(((n_cand_exact + n_cand_isoform) / len(go_table)) * 100, 2) if go_table else 0.0
+    pct_gff_matched = round((n_gff_features_matched / n_gff_features) * 100, 2) if n_gff_features > 0 else 0.0
+
+    go_stats = {
+        "mapping": {
+            "available": mapping_available,
+            "n_genes_raw": n_genes_raw,
+            "n_pairs_raw": n_pairs_raw,
+            "n_genes": n_genes_norm,
+            "n_pairs": n_pairs_norm,
+        },
+        "match": {
+            "feature_type": feature_type,
+            "n_candidates": len(go_table),
+            "n_exact": n_cand_exact,
+            "n_isoform_fallback": n_cand_isoform,
+            "n_unmatched": n_cand_unmatched,
+            "pct_candidates_matched": pct_cand_matched,
+            "n_gff_features": n_gff_features,
+            "n_gff_features_matched": n_gff_features_matched,
+            "pct_gff_features_matched": pct_gff_matched,
+        },
+        "background": {
+            "source": bg_source,
+            "n_universe": n_bg_total,
+            "n_mapping_genes_not_in_gff": n_mapping_genes_not_in_gff,
+            "n_candidates_outside_universe": n_candidates_outside_universe,
+        },
+        "ortholog": {"available": False},
+    }
+
     result_payload = {
         "status": "unavailable" if (not raw_terms and not allow_synthetic) else "completed",
         "synthetic": has_synthetic,
@@ -623,7 +866,24 @@ def run_go_enrichment_analysis(
         "background_total": n_bg_total,
         "go_table": go_table,
         "enrichment_terms": raw_terms,
+        "go_stats": go_stats,
     }
+
+    sample_gff = [str(f.get("gene_id")) for f in gff_features[:3] if f.get("gene_id")]
+    sample_map = [
+        str(terms[0].get("gene_raw", gkey))
+        for gkey, terms in list(uploaded_annotations.items())[:3]
+        if terms
+    ]
+    for log_line in format_go_log_lines(
+        result_payload,
+        sample_gff_ids=sample_gff,
+        sample_mapping_ids=sample_map,
+    ):
+        if log_line.startswith("[WARN]"):
+            logger.warning(log_line)
+        else:
+            logger.info(log_line)
 
     if output_dir is not None:
         out_path = Path(output_dir)

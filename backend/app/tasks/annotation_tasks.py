@@ -645,7 +645,10 @@ def run_annotation(
 
         sorted_go_genes = sorted(unique_go_genes)
 
-        from app.services.go_enrichment_service import resolve_dataset_go_mapping_path
+        from app.services.go_enrichment_service import (
+            format_go_log_lines,
+            resolve_dataset_go_mapping_path,
+        )
 
         go_mapping_candidate = resolve_dataset_go_mapping_path(dataset)
 
@@ -661,6 +664,14 @@ def run_annotation(
             feature_type=cfg.feature_type,
         )
         write_json(workspace / "go_enrichment.json", go_enrichment_data)
+        sample_gff_ids = [
+            str(g.get("gene_id"))
+            for glist in genes_by_chr.values()
+            for g in glist[:3]
+            if g.get("gene_id")
+        ][:3]
+        for go_log_line in format_go_log_lines(go_enrichment_data, sample_gff_ids=sample_gff_ids):
+            append_log(log_file, go_log_line)
 
         # Perbarui juga desain primer dengan atribut nearest_gene dari mapped_rows
         if mapped_rows:
@@ -764,6 +775,12 @@ def run_annotation(
                 "kasp_status": (kasp_data or {}).get("status"),
                 "kasp_designed": int((kasp_data or {}).get("designed") or 0),
                 "kasp_total": int((kasp_data or {}).get("total") or 0),
+                "go_status": go_enrichment_data.get("status"),
+                "go_pct_gff_features_matched": float(
+                    ((go_enrichment_data.get("go_stats") or {}).get("match") or {}).get(
+                        "pct_gff_features_matched", 0.0
+                    )
+                ),
             },
             db=db,
         )
