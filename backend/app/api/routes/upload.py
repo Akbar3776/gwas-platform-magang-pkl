@@ -581,7 +581,11 @@ def upload_go_annotation_file(
     user: User = Depends(get_current_user),
 ) -> dict:
     """Mengunggah file pemetaan GO (.tsv/.txt/.gaf/.tab/.go atau .gz generik) per dataset."""
-    from app.services.go_enrichment_service import parse_go_annotation_file
+    from app.services.go_enrichment_service import (
+        normalize_go_annotations_with_obo,
+        parse_go_annotation_file,
+    )
+    from app.services.go_ontology_service import load_go_ontology
     from app.services.upload_validation import (
         UploadValidationError,
         copy_upload_bounded,
@@ -687,6 +691,17 @@ def upload_go_annotation_file(
     finally:
         part_path.unlink(missing_ok=True)
 
+    parsed_annotations, summary = parse_go_annotation_file(target_path)
+    ontology = load_go_ontology()
+    if ontology is not None:
+        _, obo_meta, n_genes_out, n_mappings_out = normalize_go_annotations_with_obo(
+            parsed_annotations, ontology
+        )
+    else:
+        obo_meta = None
+        n_genes_out = summary["n_genes_raw"]
+        n_mappings_out = summary["n_mappings_raw"]
+
     meta = dict(dataset.extra_metadata or {})
     go_meta = {
         "filename": fname,
@@ -698,11 +713,11 @@ def upload_go_annotation_file(
         "sha256": sha256_hex,
         "n_genes_raw": summary["n_genes_raw"],
         "n_mappings_raw": summary["n_mappings_raw"],
-        "n_genes": summary["n_genes_raw"],
-        "n_mappings": summary["n_mappings_raw"],
+        "n_genes": n_genes_out,
+        "n_mappings": n_mappings_out,
         "n_data_lines": n_data,
         "n_invalid_lines": n_invalid,
-        "obo": None,
+        "obo": obo_meta,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
     meta["go_annotation"] = go_meta

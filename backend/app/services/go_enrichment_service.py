@@ -25,6 +25,7 @@ from scipy.stats import hypergeom
 
 from app.core.config import settings
 from app.services.gene_id_utils import GENE_ID_RE, strip_isoform_suffix
+from app.services.go_ontology_service import GoOntology, load_go_ontology
 from app.services.upload_validation import UploadValidationError, open_lines_bounded
 
 logger = logging.getLogger(__name__)
@@ -293,6 +294,72 @@ def build_go_annotation_index(
     return GoAnnotationIndex(exact=exact, base=base)
 
 
+def normalize_go_annotations_with_obo(
+    annotations: dict[str, list[dict[str, str]]],
+    ontology: GoOntology,
+) -> tuple[dict[str, list[dict[str, str]]], dict[str, Any], int, int]:
+    """Menormalkan seluruh pemetaan GO terhadap OBO lokal (alt_id, obsolete, aspek, nama) dan menghitung statistik."""
+    out_by_gene: dict[str, dict[str, dict[str, str]]] = {}
+    n_rows_via_alt_id = 0
+    n_rows_obsolete_remapped = 0
+    n_rows_obsolete_dropped = 0
+    n_terms_unknown = 0
+
+    for gkey, term_list in annotations.items():
+        gene_map = out_by_gene.setdefault(gkey, {})
+        for term in term_list:
+            res = ontology.resolve(term["go_id"])
+            if res.via_alt_id:
+                n_rows_via_alt_id += 1
+            if res.status == "obsolete_dropped" or res.final_id is None:
+                n_rows_obsolete_dropped += 1
+                continue
+            if res.status == "obsolete_remapped":
+                n_rows_obsolete_remapped += 1
+            elif res.status == "unknown":
+                n_terms_unknown += 1
+
+            final_id = res.final_id
+            if res.status != "unknown":
+                domain = res.aspect or "unknown"
+                desc = res.name or final_id
+            else:
+                domain = term.get("ontology") or "unknown"
+                desc = term.get("description") or ""
+
+            existing = gene_map.get(final_id)
+            if existing is None:
+                gene_map[final_id] = {
+                    "go_id": final_id,
+                    "ontology": domain,
+                    "description": desc,
+                    "gene_raw": term.get("gene_raw", gkey),
+                }
+            else:
+                if existing.get("ontology", "unknown") == "unknown" and domain != "unknown":
+                    existing["ontology"] = domain
+                if not existing.get("description") and desc:
+                    existing["description"] = desc
+
+    normalized: dict[str, list[dict[str, str]]] = {
+        gkey: list(tmap.values())
+        for gkey, tmap in out_by_gene.items()
+        if tmap
+    }
+    norm_index = build_go_annotation_index(normalized)
+    obo_stats = {
+        "available": True,
+        "version": ontology.version,
+        "n_rows_via_alt_id": n_rows_via_alt_id,
+        "n_rows_obsolete_remapped": n_rows_obsolete_remapped,
+        "n_rows_obsolete_dropped": n_rows_obsolete_dropped,
+        "n_terms_unknown": n_terms_unknown,
+    }
+    n_genes_norm = len(norm_index.base)
+    n_pairs_norm = sum(len(v) for v in norm_index.base.values())
+    return normalized, obo_stats, n_genes_norm, n_pairs_norm
+
+
 _FORMULA_PREFIX_RE = re.compile(r"^[=+\-@\t\r]")
 _NUMERIC_STRING_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
 
@@ -334,10 +401,11 @@ def _merge_gene_go_terms(
     gff_go_ids: list[str],
     uploaded_terms: list[dict[str, str]],
     uploaded_lookup_by_go: dict[str, dict[str, str]],
+    ontology: GoOntology | None = None,
 ) -> tuple[list[dict[str, str]], str, str]:
     """
     Resolusi istilah GO untuk satu gen:
-    1) Atribut GFF3 `Ontology_term` (diperkaya domain/nama jika GO ID sama ada di file pemetaan)
+    1) Atribut GFF3 `Ontology_term` (diperkaya domain/nama OBO atau file pemetaan)
     2) File pemetaan unggahan (TSV/GAF) bila GFF3 tidak memiliki GO untuk gen ini.
     """
     clean_gff = list(dict.fromkeys(
@@ -349,13 +417,29 @@ def _merge_gene_go_terms(
         resolved: list[dict[str, str]] = []
         seen_ids: set[str] = set()
         for raw_go_id in clean_gff:
-            go_id = raw_go_id
-            if go_id in seen_ids:
-                continue
-            seen_ids.add(go_id)
-            extra = uploaded_lookup_by_go.get(go_id)
-            ontology_val = extra["ontology"] if extra else "unknown"
-            desc = extra["description"] if extra and extra.get("description") else go_id
+            if ontology is not None:
+                res = ontology.resolve(raw_go_id)
+                if res.status == "obsolete_dropped" or res.final_id is None:
+                    continue
+                go_id = res.final_id
+                if go_id in seen_ids:
+                    continue
+                seen_ids.add(go_id)
+                if res.status != "unknown":
+                    ontology_val = res.aspect or "unknown"
+                    desc = res.name or go_id
+                else:
+                    extra = uploaded_lookup_by_go.get(go_id)
+                    ontology_val = extra["ontology"] if extra else "unknown"
+                    desc = extra["description"] if extra and extra.get("description") else go_id
+            else:
+                go_id = raw_go_id
+                if go_id in seen_ids:
+                    continue
+                seen_ids.add(go_id)
+                extra = uploaded_lookup_by_go.get(go_id)
+                ontology_val = extra["ontology"] if extra else "unknown"
+                desc = extra["description"] if extra and extra.get("description") else go_id
             resolved.append({"go_id": go_id, "ontology": ontology_val, "description": desc})
         if resolved:
             return resolved, "gff3", "GFF3 Ontology_term"
@@ -382,6 +466,7 @@ def _resolve_gene_go_entry(
     uploaded_terms: list[dict[str, str]] | None = None,
     uploaded_lookup_by_go: dict[str, dict[str, str]] | None = None,
     allow_synthetic: bool | None = None,
+    ontology: GoOntology | None = None,
 ) -> dict[str, Any]:
     """Memetakan satu gen kandidat ke istilah GO nyata (atau placeholder jika mode sintetis aktif)."""
     if allow_synthetic is None:
@@ -391,6 +476,7 @@ def _resolve_gene_go_entry(
         gff_go_ids=explicit_go_ids or [],
         uploaded_terms=uploaded_terms or [],
         uploaded_lookup_by_go=uploaded_lookup_by_go or {},
+        ontology=ontology,
     )
     if terms:
         go_ids = [t["go_id"] for t in terms]
@@ -490,6 +576,21 @@ def format_go_log_lines(
             f"{_fmt_id_int(int(mapping.get('n_pairs_raw', 0)))} pasangan mentah -> "
             f"{_fmt_id_int(int(mapping.get('n_genes', 0)))} gen / "
             f"{_fmt_id_int(int(mapping.get('n_pairs', 0)))} pasangan (gen, GO) unik setelah normalisasi."
+        )
+
+    obo = stats.get("obo") or {}
+    if obo.get("available"):
+        lines.append(
+            f"[GO] Ontologi {obo.get('version') or '-'}: "
+            f"alt_id->primer {_fmt_id_int(int(obo.get('n_rows_via_alt_id', 0)))} baris, "
+            f"obsolete di-remap {_fmt_id_int(int(obo.get('n_rows_obsolete_remapped', 0)))}, "
+            f"obsolete dibuang {_fmt_id_int(int(obo.get('n_rows_obsolete_dropped', 0)))}, "
+            f"tidak dikenal {_fmt_id_int(int(obo.get('n_terms_unknown', 0)))}."
+        )
+    else:
+        lines.append(
+            f"[WARN] Ontologi GO tidak ditemukan (GO_OBO_PATH={settings.GO_OBO_PATH or 'default'}); "
+            "domain/nama diambil dari file pemetaan bila ada."
         )
 
     match = stats.get("match") or {}
@@ -607,6 +708,8 @@ def run_go_enrichment_analysis(
             "enrichment_terms": [],
         }
 
+    ontology = load_go_ontology()
+
     gff_features, gff_go_map = _collect_gff_features(gff_path, gff_genes_by_chr, feature_type=feature_type)
     raw_annotations: dict[str, list[dict[str, str]]] = {}
     parse_summary: dict[str, Any] = {}
@@ -622,9 +725,15 @@ def run_go_enrichment_analysis(
     n_genes_raw = int(parse_summary.get("n_genes_raw", len(raw_annotations)))
     n_pairs_raw = int(parse_summary.get("n_pairs_raw", sum(len(v) for v in raw_annotations.values())))
 
-    uploaded_annotations = raw_annotations
-    n_genes_norm = n_genes_raw
-    n_pairs_norm = n_pairs_raw
+    if ontology is not None:
+        uploaded_annotations, obo_stats, n_genes_norm, n_pairs_norm = normalize_go_annotations_with_obo(
+            raw_annotations, ontology
+        )
+    else:
+        uploaded_annotations = raw_annotations
+        obo_stats = {"available": False}
+        n_genes_norm = n_genes_raw
+        n_pairs_norm = n_pairs_raw
 
     index = build_go_annotation_index(uploaded_annotations)
 
@@ -662,7 +771,17 @@ def run_go_enrichment_analysis(
                     if _GO_ID_RE.fullmatch(str(tid).strip().upper())
                 )
             )
-            feat_go_ids = set(feat_explicit)
+            if feat_explicit and ontology is not None:
+                norm_feat_ids: set[str] = set()
+                for tid in feat_explicit:
+                    res = ontology.resolve(tid)
+                    if res.status != "obsolete_dropped" and res.final_id is not None:
+                        norm_feat_ids.add(res.final_id)
+                feat_go_ids = norm_feat_ids
+            elif feat_explicit:
+                feat_go_ids = set(feat_explicit)
+            else:
+                feat_go_ids = set()
 
             if not feat_go_ids:
                 matched_terms, _ = index.lookup(feat.get("gene_id"))
@@ -716,6 +835,7 @@ def run_go_enrichment_analysis(
             uploaded_terms=mapped_terms,
             uploaded_lookup_by_go=uploaded_lookup_by_go,
             allow_synthetic=allow_synthetic,
+            ontology=ontology,
         )
         terms = resolved["terms"]
 
@@ -838,6 +958,7 @@ def run_go_enrichment_analysis(
             "n_genes": n_genes_norm,
             "n_pairs": n_pairs_norm,
         },
+        "obo": obo_stats,
         "match": {
             "feature_type": feature_type,
             "n_candidates": len(go_table),

@@ -781,6 +781,19 @@ def run_annotation(
                         "pct_gff_features_matched", 0.0
                     )
                 ),
+                "go_obo_version": (
+                    ((go_enrichment_data.get("go_stats") or {}).get("obo") or {}).get("version")
+                ),
+                "go_n_rows_obsolete_dropped": int(
+                    ((go_enrichment_data.get("go_stats") or {}).get("obo") or {}).get(
+                        "n_rows_obsolete_dropped", 0
+                    )
+                ),
+                "go_n_universe": int(
+                    ((go_enrichment_data.get("go_stats") or {}).get("background") or {}).get(
+                        "n_universe", 0
+                    )
+                ),
             },
             db=db,
         )
