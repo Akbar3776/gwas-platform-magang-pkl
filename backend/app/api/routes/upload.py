@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import gzip
+import logging
 import math
+import os
 from pathlib import Path
 import re
 import shutil
@@ -35,6 +37,7 @@ from app.tasks._common import is_under_storage, remove_job_storage
 from app.tasks.upload_tasks import assemble_dataset_task, assemble_reference_fasta_task
 
 router = APIRouter(prefix="/upload", tags=["upload"])
+logger = logging.getLogger(__name__)
 
 
 def _owned_dataset(file_id: uuid.UUID, user: User, db: Session) -> Dataset:
@@ -552,8 +555,22 @@ def delete_annotation_file(
     return {"deleted": True}
 
 
-_MAX_GO_MAPPING_BYTES = 50 * 1024 * 1024
-_ALLOWED_GO_EXTS = (".tsv", ".txt", ".gaf", ".tsv.gz", ".txt.gz", ".gaf.gz")
+_ALLOWED_GO_PLAIN_EXTS = (".tsv", ".txt", ".gaf", ".tab", ".go")
+_GO_CANONICAL_AND_LEGACY_NAMES = (
+    "go_annotation.tsv.gz",
+    "go_annotation.tsv",
+    "go_annotation.txt",
+    "go_annotation.gaf",
+    "go_annotation.txt.gz",
+    "go_annotation.gaf.gz",
+)
+
+
+def _raise_upload_err(err: Exception) -> None:
+    code = getattr(err, "code", "UPLOAD_VALIDATION_ERROR")
+    message = getattr(err, "message", "Unggahan berkas tidak valid.")
+    http_status = getattr(err, "http_status", status.HTTP_400_BAD_REQUEST)
+    raise HTTPException(status_code=http_status, detail={"code": code, "message": message}) from None
 
 
 @router.post("/{file_id}/go-annotation")
@@ -563,66 +580,143 @@ def upload_go_annotation_file(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
-    """Mengunggah file pemetaan GO (.tsv/.txt/.gaf/.gz) per dataset untuk GO enrichment nyata."""
+    """Mengunggah file pemetaan GO (.tsv/.txt/.gaf/.tab/.go atau .gz generik) per dataset."""
     from app.services.go_enrichment_service import parse_go_annotation_file
+    from app.services.upload_validation import (
+        UploadValidationError,
+        copy_upload_bounded,
+        sniff_compression,
+    )
 
     dataset = _owned_dataset(file_id, user, db)
-    fname = file.filename or "go_annotation.tsv"
+    fname = Path(file.filename or "go_annotation.tsv").name[:255] or "go_annotation.tsv"
     lower_fname = fname.lower()
-    matched_ext = next((ext for ext in _ALLOWED_GO_EXTS if lower_fname.endswith(ext)), None)
-    if matched_ext is None:
+    if not (lower_fname.endswith(".gz") or lower_fname.endswith(_ALLOWED_GO_PLAIN_EXTS)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File pemetaan GO harus berformat .tsv, .txt, .gaf, atau .gz terkompresi.",
+            detail={
+                "code": "GO_EXTENSION",
+                "message": "File pemetaan GO harus berupa teks (.tsv/.txt/.gaf/.tab/.go) atau terkompresi .gz.",
+            },
         )
+
+    jobs = db.query(AnalysisJob).filter(AnalysisJob.dataset_id == dataset.id).all()
+    for j in jobs:
+        if j.deleted_at is None and j.overall_status in ACTIVE_JOB_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "ACTIVE_JOB",
+                    "message": "File pemetaan GO tidak dapat diganti karena ada job yang sedang berjalan.",
+                },
+            )
 
     ds_dir = Path(settings.STORAGE_ROOT) / "datasets" / str(dataset.id)
     ds_dir.mkdir(parents=True, exist_ok=True)
-    target_path = ds_dir / f"go_annotation{matched_ext}"
-    if not _under_storage(target_path):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path penyimpanan tidak valid")
-
-    content = file.file.read(_MAX_GO_MAPPING_BYTES + 1)
-    if len(content) > _MAX_GO_MAPPING_BYTES:
+    part_path = ds_dir / f".go_annotation.{uuid.uuid4().hex}.part"
+    if not _under_storage(part_path):
         raise HTTPException(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail="Ukuran file pemetaan GO melebihi batas 50 MB.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "INVALID_STORAGE_PATH", "message": "Path penyimpanan tidak valid."},
         )
-    target_path.write_bytes(content)
 
     try:
-        _, summary = parse_go_annotation_file(target_path)
-    except Exception as exc:
-        target_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Gagal membaca pemetaan GO: {exc}",
-        ) from exc
+        try:
+            size_bytes, sha256_hex = copy_upload_bounded(
+                file.file,
+                part_path,
+                max_bytes=settings.GO_MAPPING_MAX_UPLOAD_BYTES,
+            )
+            compression = sniff_compression(part_path)
+            if lower_fname.endswith(".gz") and compression != "gzip":
+                raise UploadValidationError(
+                    "GZIP_INVALID",
+                    "Berkas berakhiran .gz tidak memiliki header gzip yang valid.",
+                    http_status=status.HTTP_400_BAD_REQUEST,
+                )
+            _, summary = parse_go_annotation_file(part_path)
+        except UploadValidationError as err:
+            logger.warning("Unggahan GO ditolak dataset=%s kode=%s", dataset.id, err.code)
+            _raise_upload_err(err)
+        except Exception:
+            logger.exception("Gagal membaca pemetaan GO pada dataset=%s", dataset.id)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "GO_PARSE_ERROR", "message": "Berkas pemetaan GO gagal dibaca atau formatnya rusak."},
+            ) from None
 
-    if summary["n_mappings"] == 0:
-        target_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File tidak memuat pasangan gene_id dan GO:xxxxxxx yang valid.",
-        )
+        n_data = int(summary["n_data_lines"])
+        n_invalid = int(summary["n_invalid_lines"])
+        n_valid = n_data - n_invalid
+        if n_valid <= 0 or summary["n_mappings_raw"] <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "NO_VALID_ROWS",
+                    "message": "File tidak memuat pasangan gene_id dan GO:xxxxxxx yang valid.",
+                },
+            )
+
+        if (n_valid / max(n_data, 1)) < settings.GO_MAPPING_MIN_VALID_RATIO:
+            first_bad = summary.get("first_invalid_line") or 1
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "TOO_MANY_INVALID_LINES",
+                    "message": (
+                        f"Terlalu banyak baris tidak valid ({n_invalid} dari {n_data} baris; "
+                        f"baris tidak valid pertama: {first_bad})."
+                    ),
+                },
+            )
+
+        canonical_name = "go_annotation.tsv.gz" if compression == "gzip" else "go_annotation.tsv"
+        target_path = ds_dir / canonical_name
+        if not _under_storage(target_path):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "INVALID_STORAGE_PATH", "message": "Path penyimpanan tidak valid."},
+            )
+        os.replace(part_path, target_path)
+        for old_name in _GO_CANONICAL_AND_LEGACY_NAMES:
+            if old_name == canonical_name:
+                continue
+            old_path = ds_dir / old_name
+            if old_path.exists() and _under_storage(old_path):
+                old_path.unlink(missing_ok=True)
+    finally:
+        part_path.unlink(missing_ok=True)
 
     meta = dict(dataset.extra_metadata or {})
-    meta["go_annotation"] = {
+    go_meta = {
         "filename": fname,
         "path": str(target_path),
         "format": summary["format"],
-        "n_genes": summary["n_genes"],
-        "n_mappings": summary["n_mappings"],
+        "compressed": compression == "gzip",
+        "size_bytes": size_bytes,
+        "decompressed_bytes": summary["decompressed_bytes"],
+        "sha256": sha256_hex,
+        "n_genes_raw": summary["n_genes_raw"],
+        "n_mappings_raw": summary["n_mappings_raw"],
+        "n_genes": summary["n_genes_raw"],
+        "n_mappings": summary["n_mappings_raw"],
+        "n_data_lines": n_data,
+        "n_invalid_lines": n_invalid,
+        "obo": None,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
+    meta["go_annotation"] = go_meta
     dataset.extra_metadata = meta
     db.commit()
 
-    return {
-        "filename": fname,
-        "format": summary["format"],
-        "n_genes": summary["n_genes"],
-        "n_mappings": summary["n_mappings"],
-    }
+    logger.info(
+        "Unggahan GO diterima dataset=%s user=%s sha256=%s baris_valid=%d",
+        dataset.id,
+        user.id,
+        sha256_hex,
+        n_valid,
+    )
+    return {k: v for k, v in go_meta.items() if k != "path"}
 
 
 @router.delete("/{file_id}/go-annotation")

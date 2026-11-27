@@ -237,6 +237,16 @@ def test_upload_go_annotation_endpoint(tmp_path: Path, monkeypatch):
         def get(self, model, oid):
             return ds if model is Dataset and str(oid) == str(ds.id) else None
 
+        def query(self, *args):
+            class _Q:
+                def filter(self, *a):
+                    return self
+
+                def all(self):
+                    return []
+
+            return _Q()
+
         def commit(self):
             pass
 

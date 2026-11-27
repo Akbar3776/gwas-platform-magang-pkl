@@ -13,7 +13,7 @@ gen beranotasi GO (`>= 1` istilah GO), diikuti koreksi FDR Benjamini-Hochberg.
 from __future__ import annotations
 
 import csv
-import gzip
+import logging
 import os
 from pathlib import Path
 import re
@@ -22,7 +22,16 @@ from typing import Any
 import numpy as np
 from scipy.stats import hypergeom
 
+from app.core.config import settings
+from app.services.gene_id_utils import GENE_ID_RE
+from app.services.upload_validation import UploadValidationError, open_lines_bounded
+
+logger = logging.getLogger(__name__)
+
 _GO_ID_RE = re.compile(r"GO:\d{7}", re.IGNORECASE)
+_GO_TOKEN_SPLIT_RE = re.compile(r"[,;|\s]+")
+_GO_HEADER_COL1 = {"gene_id", "gene", "locus", "id"}
+_GO_HEADER_COL2 = {"go_id", "go", "go_term"}
 _DOMAIN_MAP = {
     "BP": "BP",
     "P": "BP",
@@ -40,6 +49,26 @@ def _allow_synthetic_annotation() -> bool:
     return os.getenv("ALLOW_SYNTHETIC_ANNOTATION", "").strip().lower() in ("1", "true", "yes")
 
 
+def _clean_cell_token(raw: str) -> str:
+    return raw.strip().strip('"').strip("'")
+
+
+def _normalize_gene_token(raw: str) -> str:
+    txt = _clean_cell_token(raw)
+    if txt.lower().startswith("gene:"):
+        txt = txt[5:].strip()
+    return txt
+
+
+def _extract_go_tokens(raw: str) -> list[str]:
+    out: list[str] = []
+    for part in _GO_TOKEN_SPLIT_RE.split(raw.strip()):
+        tok = _clean_cell_token(part).upper()
+        if tok and _GO_ID_RE.fullmatch(tok):
+            out.append(tok)
+    return out
+
+
 def _normalize_gene_key(gene_id: Any) -> str:
     txt = str(gene_id or "").strip()
     if txt.lower().startswith("gene:"):
@@ -55,78 +84,112 @@ def _normalize_domain(raw: Any) -> str:
 def parse_go_annotation_file(mapping_path: str | Path) -> tuple[dict[str, list[dict[str, str]]], dict[str, Any]]:
     """
     Membaca file pemetaan GO berformat TSV (`gene_id<TAB>GO:xxxxxxx[<TAB>domain[<TAB>term_name]]`)
-    atau GAF 2.x (`!` header, kolom 2 = gene_id, kolom 5 = GO_ID, kolom 9 = aspek P/F/C).
+    atau GAF 2.x (`!` header, kolom 2 = gene_id, kolom 5 = GO_ID, kolom 9 = aspek P/F/C)
+    dengan pembacaan biner terbatas.
     """
     path = Path(mapping_path)
     if not path.is_file():
         raise FileNotFoundError(f"File pemetaan GO tidak ditemukan: {path}")
 
-    open_fn = gzip.open if path.name.lower().endswith(".gz") else open
     by_gene: dict[str, dict[str, dict[str, str]]] = {}
     detected_formats: set[str] = set()
     n_mappings = 0
+    n_data_lines = 0
+    n_invalid_lines = 0
+    first_invalid_line: int | None = None
+    read_stats: dict[str, int] = {"decompressed_bytes": 0, "lines": 0}
 
-    with open_fn(path, "rt", encoding="utf-8", errors="replace") as handle:
-        for raw_line in handle:
-            line = raw_line.rstrip("\r\n")
-            if not line.strip() or line.lstrip().startswith(("!", "#")):
+    with open_lines_bounded(
+        path,
+        max_decompressed_bytes=settings.GO_MAPPING_MAX_DECOMPRESSED_BYTES,
+        max_lines=settings.GO_MAPPING_MAX_LINES,
+        max_line_bytes=settings.UPLOAD_TEXT_MAX_LINE_BYTES,
+        stats=read_stats,
+    ) as lines:
+        for line_no, line in lines:
+            stripped = line.strip()
+            if not stripped or line.lstrip().startswith(("!", "#")):
                 continue
+
             parts = line.split("\t")
+            if len(parts) >= 2:
+                head0 = _clean_cell_token(parts[0]).lower()
+                head1 = _clean_cell_token(parts[1]).lower()
+                if head0 in _GO_HEADER_COL1 and head1 in _GO_HEADER_COL2:
+                    continue
+
+            n_data_lines += 1
             if len(parts) < 2:
+                n_invalid_lines += 1
+                if first_invalid_line is None:
+                    first_invalid_line = line_no
                 continue
 
-            head0 = parts[0].strip().lower()
-            head1 = parts[1].strip().lower()
-            if head0 in {"gene_id", "gene", "locus", "id"} and head1 in {"go_id", "go", "go_term"}:
-                continue
-
-            # GAF 2.x: >= 9 kolom, kolom 5 (idx 4) memuat GO:xxxxxxx, kolom 9 (idx 8) memuat P/F/C
-            gaf_go_match = _GO_ID_RE.search(parts[4]) if len(parts) >= 9 else None
-            if gaf_go_match is not None:
-                gene_raw = parts[1].strip()
-                go_id = gaf_go_match.group(0).upper()
+            gaf_go_tok = _clean_cell_token(parts[4]).upper() if len(parts) >= 9 else ""
+            if len(parts) >= 9 and _GO_ID_RE.fullmatch(gaf_go_tok):
+                gene_raw = _normalize_gene_token(parts[1])
+                if not GENE_ID_RE.fullmatch(gene_raw):
+                    n_invalid_lines += 1
+                    if first_invalid_line is None:
+                        first_invalid_line = line_no
+                    continue
+                go_tokens = [gaf_go_tok]
                 domain = _normalize_domain(parts[8])
                 term_name = ""
                 detected_formats.add("gaf")
             else:
-                tsv_go_match = _GO_ID_RE.search(parts[1])
-                if tsv_go_match is None:
+                gene_raw = _normalize_gene_token(parts[0])
+                go_tokens = _extract_go_tokens(parts[1])
+                if not GENE_ID_RE.fullmatch(gene_raw) or not go_tokens:
+                    n_invalid_lines += 1
+                    if first_invalid_line is None:
+                        first_invalid_line = line_no
                     continue
-                gene_raw = parts[0].strip()
-                go_id = tsv_go_match.group(0).upper()
                 domain = _normalize_domain(parts[2]) if len(parts) >= 3 else "unknown"
-                term_name = parts[3].strip() if len(parts) >= 4 else ""
+                term_name = _clean_cell_token(parts[3]) if len(parts) >= 4 else ""
                 detected_formats.add("tsv")
 
             gene_key = _normalize_gene_key(gene_raw)
-            if not gene_key:
-                continue
-
             gene_terms = by_gene.setdefault(gene_key, {})
-            existing = gene_terms.get(go_id)
-            if existing is None:
-                gene_terms[go_id] = {
-                    "go_id": go_id,
-                    "ontology": domain,
-                    "description": term_name,
-                    "gene_raw": gene_raw,
-                }
-                n_mappings += 1
-            else:
-                if existing["ontology"] == "unknown" and domain != "unknown":
-                    existing["ontology"] = domain
-                if not existing["description"] and term_name:
-                    existing["description"] = term_name
+            for go_id in go_tokens:
+                existing = gene_terms.get(go_id)
+                if existing is None:
+                    gene_terms[go_id] = {
+                        "go_id": go_id,
+                        "ontology": domain,
+                        "description": term_name,
+                        "gene_raw": gene_raw,
+                    }
+                    n_mappings += 1
+                else:
+                    if existing["ontology"] == "unknown" and domain != "unknown":
+                        existing["ontology"] = domain
+                    if not existing["description"] and term_name:
+                        existing["description"] = term_name
 
     annotations: dict[str, list[dict[str, str]]] = {
         gkey: list(term_map.values())
         for gkey, term_map in by_gene.items()
     }
-    fmt = "gaf" if detected_formats == {"gaf"} else ("tsv" if "tsv" in detected_formats else "unknown")
+    if detected_formats == {"gaf"}:
+        fmt = "gaf"
+    elif detected_formats == {"tsv"}:
+        fmt = "tsv"
+    elif detected_formats:
+        fmt = "mixed"
+    else:
+        fmt = "unknown"
+
     summary = {
         "format": fmt,
         "n_genes": len(annotations),
         "n_mappings": n_mappings,
+        "n_genes_raw": len(annotations),
+        "n_mappings_raw": n_mappings,
+        "n_data_lines": n_data_lines,
+        "n_invalid_lines": n_invalid_lines,
+        "first_invalid_line": first_invalid_line,
+        "decompressed_bytes": int(read_stats.get("decompressed_bytes", 0)),
     }
     return annotations, summary
 
@@ -356,7 +419,11 @@ def run_go_enrichment_analysis(
     gff_go_map = _collect_gff_go_map(gff_path, gff_genes_by_chr, feature_type=feature_type)
     uploaded_annotations: dict[str, list[dict[str, str]]] = {}
     if go_mapping_path is not None and Path(go_mapping_path).is_file():
-        uploaded_annotations, _ = parse_go_annotation_file(go_mapping_path)
+        try:
+            uploaded_annotations, _ = parse_go_annotation_file(go_mapping_path)
+        except UploadValidationError as err:
+            logger.warning("Pemetaan GO dilewati: %s", err.code)
+            uploaded_annotations = {}
 
     uploaded_lookup_by_go: dict[str, dict[str, str]] = {}
     for term_list in uploaded_annotations.values():
