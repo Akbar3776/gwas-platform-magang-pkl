@@ -650,8 +650,10 @@ def run_annotation(
             resolve_dataset_go_mapping_path,
             resolve_job_contig_pattern,
         )
+        from app.services.ortholog_service import resolve_dataset_ortholog_index_path
 
         go_mapping_candidate = resolve_dataset_go_mapping_path(dataset)
+        ortholog_candidate = resolve_dataset_ortholog_index_path(dataset)
         contig_pattern, contig_pattern_source = resolve_job_contig_pattern(job.parameters)
 
         # Jalankan Fase 5.3 Gene Ontology (GO) Enrichment berbasis anotasi GO nyata
@@ -666,6 +668,7 @@ def run_annotation(
             feature_type=cfg.feature_type,
             contig_filter_pattern=contig_pattern,
             contig_pattern_source=contig_pattern_source,
+            ortholog_index_path=ortholog_candidate,
         )
         write_json(workspace / "go_enrichment.json", go_enrichment_data)
         sample_gff_ids = [

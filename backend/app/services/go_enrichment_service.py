@@ -30,6 +30,7 @@ from app.core.config import settings
 from app.services.chromosome_service import is_non_primary_contig
 from app.services.gene_id_utils import GENE_ID_RE, strip_isoform_suffix
 from app.services.go_ontology_service import GoOntology, load_go_ontology
+from app.services.ortholog_service import OrthologHit, build_ortholog_lookup, load_besthit_index
 from app.services.upload_validation import UploadValidationError, open_lines_bounded
 
 logger = logging.getLogger(__name__)
@@ -471,10 +472,24 @@ def _resolve_gene_go_entry(
     uploaded_lookup_by_go: dict[str, dict[str, str]] | None = None,
     allow_synthetic: bool | None = None,
     ontology: GoOntology | None = None,
+    ortholog_hit: OrthologHit | None = None,
 ) -> dict[str, Any]:
     """Memetakan satu gen kandidat ke istilah GO nyata (atau placeholder jika mode sintetis aktif)."""
     if allow_synthetic is None:
         allow_synthetic = _allow_synthetic_annotation()
+
+    ortholog_locus = ortholog_hit.subject_locus if ortholog_hit is not None else "-"
+    ortholog_detail = (
+        {
+            "subject_id": ortholog_hit.subject_id,
+            "pident": ortholog_hit.pident,
+            "evalue": ortholog_hit.evalue,
+            "bitscore": ortholog_hit.bitscore,
+            "n_loci_at_best": ortholog_hit.n_loci_at_best,
+        }
+        if ortholog_hit is not None
+        else None
+    )
 
     terms, src_kind, src_label = _merge_gene_go_terms(
         gff_go_ids=explicit_go_ids or [],
@@ -487,7 +502,8 @@ def _resolve_gene_go_entry(
         return {
             "gene_id": gene_id,
             "gene_name": gene_name or gene_id,
-            "ortholog": "-",
+            "ortholog": ortholog_locus,
+            "ortholog_detail": ortholog_detail,
             "terms": terms,
             "go_terms": go_ids,
             "source": src_kind,
@@ -501,7 +517,8 @@ def _resolve_gene_go_entry(
         return {
             "gene_id": gene_id,
             "gene_name": gene_name or gene_id,
-            "ortholog": "-",
+            "ortholog": ortholog_locus,
+            "ortholog_detail": ortholog_detail,
             "terms": placeholder,
             "go_terms": ["GO:0008150"],
             "source": "synthetic",
@@ -513,7 +530,8 @@ def _resolve_gene_go_entry(
     return {
         "gene_id": gene_id,
         "gene_name": gene_name or gene_id,
-        "ortholog": "-",
+        "ortholog": ortholog_locus,
+        "ortholog_detail": ortholog_detail,
         "terms": [],
         "go_terms": [],
         "source": "unavailable",
@@ -717,6 +735,7 @@ def run_go_enrichment_analysis(
     feature_type: str = "gene",
     contig_filter_pattern: str | None = None,
     contig_pattern_source: str | None = None,
+    ortholog_index_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """
     Menjalankan pemetaan Tabel GO dan analisis pengayaan hipergeometrik (GO Enrichment)
@@ -794,6 +813,23 @@ def run_go_enrichment_analysis(
         }
 
     ontology = load_go_ontology()
+    ortholog_available = False
+    ortholog_sha: str | None = None
+    ortholog_n_queries = 0
+    ortholog_lookup = None
+    if ortholog_index_path is not None and Path(ortholog_index_path).is_file():
+        try:
+            raw_ortholog_index = load_besthit_index(ortholog_index_path)
+            ortholog_lookup = build_ortholog_lookup(raw_ortholog_index)
+            ortholog_n_queries = len(raw_ortholog_index)
+            ortholog_sha = file_sha256_cached(ortholog_index_path)
+            ortholog_available = True
+        except Exception as exc:
+            logger.warning("Indeks ortolog dilewati: %s", exc)
+            ortholog_lookup = None
+            ortholog_sha = None
+            ortholog_n_queries = 0
+            ortholog_available = False
 
     gff_features, gff_go_map = _collect_gff_features(gff_path, gff_genes_by_chr, feature_type=feature_type)
     raw_annotations: dict[str, list[dict[str, str]]] = {}
@@ -916,12 +952,16 @@ def run_go_enrichment_analysis(
     n_cand_isoform = 0
     n_cand_unmatched = 0
     n_candidates_outside_universe = 0
+    n_candidates_with_ortholog = 0
 
     for gid in sorted(gene_meta_map.keys()):
         meta = gene_meta_map[gid]
         gkey = _normalize_gene_key(gid)
         explicit_go = list(dict.fromkeys([*(meta.get("go_ids") or []), *gff_go_map.get(gkey, [])]))
         mapped_terms, match_kind = index.lookup(gid)
+        orth_hit = ortholog_lookup.lookup(gid) if ortholog_lookup is not None else None
+        if orth_hit is not None:
+            n_candidates_with_ortholog += 1
 
         resolved = _resolve_gene_go_entry(
             gene_id=gid,
@@ -932,6 +972,7 @@ def run_go_enrichment_analysis(
             uploaded_lookup_by_go=uploaded_lookup_by_go,
             allow_synthetic=allow_synthetic,
             ontology=ontology,
+            ortholog_hit=orth_hit,
         )
         terms = resolved["terms"]
 
@@ -954,6 +995,7 @@ def run_go_enrichment_analysis(
             "gene_id": gid,
             "gene_name": resolved["gene_name"],
             "ortholog": resolved["ortholog"],
+            "ortholog_detail": resolved["ortholog_detail"],
             "biological_process": _format_domain_cell(terms, "BP"),
             "cellular_component": _format_domain_cell(terms, "CC"),
             "molecular_function": _format_domain_cell(terms, "MF"),
@@ -1051,7 +1093,7 @@ def run_go_enrichment_analysis(
         mapping_sha256=mapping_sha,
         gff_sha256=gff_sha,
         obo=ontology,
-        ortholog_sha256=None,
+        ortholog_sha256=ortholog_sha,
         feature_type=feature_type,
         contig_pattern=effective_pattern,
         allow_synthetic=allow_synthetic,
@@ -1089,7 +1131,16 @@ def run_go_enrichment_analysis(
             "n_mapping_genes_not_in_gff": n_mapping_genes_not_in_gff,
             "n_candidates_outside_universe": n_candidates_outside_universe,
         },
-        "ortholog": {"available": False},
+        "ortholog": (
+            {
+                "available": True,
+                "sha256": ortholog_sha,
+                "n_queries": ortholog_n_queries,
+                "n_candidates_with_ortholog": n_candidates_with_ortholog,
+            }
+            if ortholog_available
+            else {"available": False}
+        ),
     }
 
     result_payload = {

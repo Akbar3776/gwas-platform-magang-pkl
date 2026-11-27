@@ -543,6 +543,12 @@ def _resolve_dataset_go_mapping_path(db: Session, job: AnalysisJob | None) -> Pa
     return resolve_dataset_go_mapping_path(_resolve_dataset_for_job(db, job))
 
 
+def _resolve_dataset_ortholog_index_path(db: Session, job: AnalysisJob | None) -> Path | None:
+    from app.services.ortholog_service import resolve_dataset_ortholog_index_path
+
+    return resolve_dataset_ortholog_index_path(_resolve_dataset_for_job(db, job))
+
+
 def _resolve_dataset_fasta_path(db: Session, job: AnalysisJob | None) -> Path | None:
     dataset = _resolve_dataset_for_job(db, job)
     if dataset is None:
@@ -677,6 +683,7 @@ def refresh_go_if_stale(
     cached_go: dict[str, Any] | None = None,
     gff_path: Path | None = None,
     go_mapping_path: Path | None = None,
+    ortholog_index_path: Path | None = None,
 ) -> tuple[dict[str, Any] | None, bool]:
     """Menyegarkan hasil GO job secara lazy dan non-destruktif bila fingerprint input berubah."""
     from app.services import go_enrichment_service as go_svc
@@ -686,6 +693,8 @@ def refresh_go_if_stale(
         gff_path = _resolve_dataset_gff_path(db, job)
     if go_mapping_path is None:
         go_mapping_path = _resolve_dataset_go_mapping_path(db, job)
+    if ortholog_index_path is None:
+        ortholog_index_path = _resolve_dataset_ortholog_index_path(db, job)
 
     go_file = anno_dir / "go_enrichment.json"
     current_go: dict[str, Any] | None = cached_go if isinstance(cached_go, dict) else None
@@ -708,7 +717,7 @@ def refresh_go_if_stale(
         mapping_sha256=go_svc.file_sha256_cached(go_mapping_path),
         gff_sha256=go_svc.file_sha256_cached(gff_path),
         obo=load_go_ontology(),
-        ortholog_sha256=None,
+        ortholog_sha256=go_svc.file_sha256_cached(ortholog_index_path),
         feature_type=feature_type,
         contig_pattern=contig_pattern,
         allow_synthetic=go_svc._allow_synthetic_annotation(),
@@ -748,6 +757,7 @@ def refresh_go_if_stale(
             feature_type=feature_type,
             contig_filter_pattern=contig_pattern,
             contig_pattern_source=contig_pattern_source,
+            ortholog_index_path=ortholog_index_path,
         )
     except Exception:
         logger.exception("Gagal menyegarkan hasil GO untuk job=%s", getattr(job, "id", None))

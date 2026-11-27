@@ -79,6 +79,24 @@ def build_ortholog_lookup(index: dict[str, OrthologHit]) -> OrthologLookup:
     return OrthologLookup(exact=exact, base=base)
 
 
+def resolve_dataset_ortholog_index_path(dataset: Any) -> Path | None:
+    """Menemukan path indeks best-hit ortolog dataset (metadata lalu file kanonik storage)."""
+    if dataset is None:
+        return None
+    meta = getattr(dataset, "extra_metadata", None) or {}
+    orth_meta = meta.get("ortholog") if isinstance(meta, dict) else None
+    if isinstance(orth_meta, dict) and orth_meta.get("path"):
+        p = Path(orth_meta["path"])
+        if p.is_file():
+            return p
+    ds_id = getattr(dataset, "id", None)
+    if ds_id is not None:
+        cand = Path(settings.STORAGE_ROOT) / "datasets" / str(ds_id) / "ortholog_besthit.tsv.gz"
+        if cand.is_file():
+            return cand
+    return None
+
+
 def _is_finite_float(raw: str) -> float | None:
     try:
         val = float(raw)
